@@ -12,6 +12,7 @@ import { useDrawer } from '../_layout';
 import { gmailApi, type GmailFolder, type GmailThreadListItem } from '../../../lib/api';
 import { Colors } from '../../../constants/colors';
 import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
+import { isPendingDelete } from '../../../lib/pending-deletes';
 
 const FOLDERS: { key: GmailFolder; label: string }[] = [
   { key: 'inbox',  label: 'Inbox'  },
@@ -43,6 +44,12 @@ export default function InboxScreen() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [search]);
 
+  // Filter out items the user just deleted but that Gmail's API may still return
+  // for a few seconds due to eventual consistency.
+  const stripPendingDeletes = useCallback((list: GmailThreadListItem[]) => {
+    return list.filter((t) => !(t.draftId && isPendingDelete(t.draftId)));
+  }, []);
+
   const loadFirstPage = useCallback(async (force = false) => {
     setError(null);
     const cacheKey = `inbox:${folder}:${debouncedSearch}`;
@@ -50,7 +57,7 @@ export default function InboxScreen() {
     type CachedPage = { threads: GmailThreadListItem[]; nextPageToken?: string };
     const cached = cacheGet<CachedPage>(cacheKey);
     if (cached) {
-      setThreads(cached.threads);
+      setThreads(stripPendingDeletes(cached.threads));
       setNextPageToken(cached.nextPageToken);
       setLoading(false);
       // Skip network fetch only on initial mount when data is still fresh
@@ -77,9 +84,10 @@ export default function InboxScreen() {
           .filter((t) => !t.unread)
           .map((t) => t.id)
       );
-      const threads = (data.threads ?? []).map((t) =>
+      const fetched = (data.threads ?? []).map((t) =>
         locallyRead.has(t.id) ? { ...t, unread: false } : t
       );
+      const threads = stripPendingDeletes(fetched);
       cacheSet(cacheKey, { threads, nextPageToken: data.nextPageToken });
       setThreads(threads);
       setNextPageToken(data.nextPageToken);
@@ -94,7 +102,7 @@ export default function InboxScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [folder, debouncedSearch]);
+  }, [folder, debouncedSearch, stripPendingDeletes]);
 
   const loadMore = useCallback(async () => {
     if (!nextPageToken || loadingMore) return;

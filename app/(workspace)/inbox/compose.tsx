@@ -9,7 +9,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { gmailApi } from '../../../lib/api';
 import { cacheDelete } from '../../../lib/cache';
-import { sendMailDirectly, saveDraftDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
+import { markPendingDelete } from '../../../lib/pending-deletes';
+import { sendMailDirectly, saveDraftDirectly, readFileAsBase64, fetchAttachmentBase64Directly } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
 
 const GMAIL_LIMIT = 25 * 1024 * 1024; // 25 MB — hard Gmail cap
@@ -357,12 +358,15 @@ export default function ComposeScreen() {
       if (inlineAttachments.length > 0) {
         // Send directly to Gmail API — bypasses Next.js body size limit entirely
         const { accessToken } = await gmailApi.getGoogleToken();
-        // Resolve 'saved' attachments by fetching bytes from Gmail via attachment proxy
+        // Resolve 'saved' attachments by fetching bytes directly from Gmail API
         const resolvedAttachments = await Promise.all(
           inlineAttachments.map(async (f) => {
             if (f.status === 'saved' && f.attachmentId && f.savedMessageId) {
-              const url = gmailApi.attachmentUrl(f.savedMessageId, f.attachmentId, f.name, f.mimeType);
-              const base64Data = await readFileAsBase64(url);
+              const base64Data = await fetchAttachmentBase64Directly(
+                accessToken,
+                f.savedMessageId,
+                f.attachmentId
+              );
               return { filename: f.name, mimeType: f.mimeType, uri: '', base64Data };
             }
             return { filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data };
@@ -400,6 +404,15 @@ export default function ComposeScreen() {
   }
 
   async function saveDraft() {
+    // Block if any attachment is still being read into base64 — saving now
+    // would silently drop it. (Mirrors Gmail web: the Save button is disabled
+    // while attachments are still being processed.)
+    const preparing = attachments.find((f) => f.status === 'preparing');
+    if (preparing) {
+      Alert.alert('Please wait', `"${preparing.name}" is still being prepared.`);
+      return false;
+    }
+
     const driveLinks = attachments.filter((f) => f.status === 'drive' && f.driveLink);
     let draftBody = body;
     if (driveLinks.length > 0) {
@@ -412,14 +425,19 @@ export default function ComposeScreen() {
       // Save directly to Gmail API so attachments are preserved (bypasses backend body limit)
       const { accessToken } = await gmailApi.getGoogleToken();
 
-      // Resolve 'saved' attachments: re-fetch bytes from Gmail via attachment proxy
+      // Resolve 'saved' attachments: re-fetch bytes from Gmail directly using
+      // the Google access token (the backend proxy needs Supabase auth that
+      // readFileAsBase64 can't supply).
       const allAttachments = await Promise.all(
         attachments
           .filter((f) => f.status === 'ready' || f.status === 'saved')
           .map(async (f): Promise<{ filename: string; mimeType: string; uri: string; base64Data?: string }> => {
             if (f.status === 'saved' && f.attachmentId && f.savedMessageId) {
-              const url = gmailApi.attachmentUrl(f.savedMessageId, f.attachmentId, f.name, f.mimeType);
-              const base64Data = await readFileAsBase64(url);
+              const base64Data = await fetchAttachmentBase64Directly(
+                accessToken,
+                f.savedMessageId,
+                f.attachmentId
+              );
               return { filename: f.name, mimeType: f.mimeType, uri: '', base64Data };
             }
             return { filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data };
@@ -454,8 +472,12 @@ export default function ComposeScreen() {
 
   async function discardAndClose() {
     if (draftId) {
+      // Mark as pending-delete BEFORE awaiting Gmail — the inbox screen
+      // already filters by this set, so the row vanishes immediately on
+      // back-navigation even while Gmail catches up.
+      markPendingDelete(draftId);
       try { await gmailApi.deleteDraft(draftId); } catch { /* non-fatal */ }
-      // Bust the drafts cache so the inbox doesn't re-show the deleted draft
+      // Bust the drafts cache so the inbox refetches on focus
       cacheDelete('inbox:drafts:');
     }
     router.back();

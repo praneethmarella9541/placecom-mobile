@@ -46,6 +46,52 @@ export interface DirectSendOptions {
   attachments?: DirectSendAttachment[];
 }
 
+/**
+ * Mark a thread as read by removing the UNREAD label from all its messages.
+ * Calls Gmail API directly so we don't depend on backend gmail.modify scope state.
+ */
+export async function markThreadReadDirectly(
+  accessToken: string,
+  threadId: string
+): Promise<void> {
+  const url = `${GMAIL_API}/threads/${encodeURIComponent(threadId)}/modify`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Gmail mark-read failed (${res.status}): ${text}`);
+  }
+}
+
+/**
+ * Fetch a Gmail attachment's bytes directly from Gmail API (returns base64).
+ * Used when re-saving a draft that already has saved attachments.
+ */
+export async function fetchAttachmentBase64Directly(
+  accessToken: string,
+  messageId: string,
+  attachmentId: string
+): Promise<string> {
+  const url = `${GMAIL_API}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Gmail attachment fetch failed (${res.status}): ${text}`);
+  }
+  const data = (await res.json()) as { data?: string };
+  if (!data.data) throw new Error('Gmail attachment: no data returned');
+  // Gmail returns base64url — convert to standard base64 for embedding in MIME
+  return data.data.replace(/-/g, '+').replace(/_/g, '/');
+}
+
 export async function readFileAsBase64(uri: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
