@@ -87,7 +87,15 @@ export default function InboxScreen() {
       const fetched = (data.threads ?? []).map((t) =>
         locallyRead.has(t.id) ? { ...t, unread: false } : t
       );
-      const threads = stripPendingDeletes(fetched);
+      // Dedupe by id — Gmail can rarely return the same thread twice
+      // (e.g. on history-id churn during pagination).
+      const seen = new Set<string>();
+      const unique = fetched.filter((t) => {
+        if (seen.has(t.id)) return false;
+        seen.add(t.id);
+        return true;
+      });
+      const threads = stripPendingDeletes(unique);
       cacheSet(cacheKey, { threads, nextPageToken: data.nextPageToken });
       setThreads(threads);
       setNextPageToken(data.nextPageToken);
@@ -113,14 +121,23 @@ export default function InboxScreen() {
         pageToken: nextPageToken,
         search: debouncedSearch || undefined,
       });
-      setThreads((prev) => [...prev, ...(data.threads ?? [])]);
+      const incoming = stripPendingDeletes(data.threads ?? []);
+      setThreads((prev) => {
+        const seen = new Set(prev.map((t) => t.id));
+        const deduped = incoming.filter((t) => !seen.has(t.id));
+        const merged = [...prev, ...deduped];
+        // Keep the cache in sync so back-nav doesn't lose later pages
+        const cacheKey = `inbox:${folder}:${debouncedSearch}`;
+        cacheSet(cacheKey, { threads: merged, nextPageToken: data.nextPageToken });
+        return merged;
+      });
       setNextPageToken(data.nextPageToken);
     } catch (e: any) {
       console.error('[inbox] loadMore failed:', e?.message);
     } finally {
       setLoadingMore(false);
     }
-  }, [folder, nextPageToken, loadingMore, debouncedSearch]);
+  }, [folder, nextPageToken, loadingMore, debouncedSearch, stripPendingDeletes]);
 
   useEffect(() => {
     setLoading(true);
