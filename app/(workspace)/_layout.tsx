@@ -119,6 +119,7 @@ export default function WorkspaceLayout() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="inbox/index" />
           <Stack.Screen name="inbox/[id]" />
+          <Stack.Screen name="inbox/compose" />
           <Stack.Screen name="crm/index" />
           <Stack.Screen name="crm/[id]" />
           <Stack.Screen name="calls/index" />
@@ -132,6 +133,7 @@ export default function WorkspaceLayout() {
           <Stack.Screen name="meetings/[id]" />
           <Stack.Screen name="drive/index" />
           <Stack.Screen name="forms/index" />
+          <Stack.Screen name="forms/[formId]/edit" />
           <Stack.Screen name="broadcasting/index" />
           <Stack.Screen name="dashboard/index" />
           <Stack.Screen name="admin/index" />

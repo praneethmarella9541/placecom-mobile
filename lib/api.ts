@@ -12,16 +12,28 @@ async function authHeaders(): Promise<Record<string, string>> {
   };
 }
 
+function fetchWithTimeout(input: string, init: RequestInit, ms = 30000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 async function get<T>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString(), { headers: await authHeaders() });
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+  console.log('[api] GET', url.toString());
+  const res = await fetchWithTimeout(url.toString(), { headers: await authHeaders() });
+  if (!res.ok) {
+    let msg = `GET ${path} failed: ${res.status}`;
+    try { const b = await res.json(); if (b?.error) msg = b.error; } catch {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  console.log('[api] POST', `${BASE_URL}${path}`);
+  const res = await fetchWithTimeout(`${BASE_URL}${path}`, {
     method: 'POST',
     headers: await authHeaders(),
     body: JSON.stringify(body),
@@ -40,12 +52,90 @@ async function del<T>(path: string): Promise<T> {
 }
 
 // Gmail
+export type GmailFolder = 'inbox' | 'sent' | 'drafts';
+
+export interface GmailThreadListItem {
+  id: string;
+  snippet: string;
+  subject: string;
+  from: string;
+  date: string;
+  historyId?: string;
+  draftId?: string;
+  /** True if any message in the thread has Gmail's UNREAD label. */
+  unread?: boolean;
+}
+
+export interface GmailAttachment {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+export interface GmailMessage {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  body: string;
+  bodyHtml: string;
+  messageIdHeader?: string;
+  attachments: GmailAttachment[];
+}
+
+export interface GmailSendBody {
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  textBody: string;
+  threadId?: string;
+  inReplyToMessageId?: string;
+}
+
 export const gmailApi = {
-  listThreads: (folder = 'INBOX') => get<{ threads: any[] }>('/api/fetch-emails', { folder }),
-  getThread: (id: string) => get<any>(`/api/gmail/thread/${id}`),
-  send: (body: { to: string; subject: string; body: string; replyToMessageId?: string; attachments?: any[] }) =>
-    post('/api/gmail/send', body),
-  markRead: (messageId: string) => post('/api/gmail/mark-read', { messageId }),
+  listThreads: (
+    folder: GmailFolder = 'inbox',
+    opts?: { pageToken?: string; search?: string; maxResults?: number }
+  ) => {
+    const params: Record<string, string> = { folder };
+    if (opts?.pageToken) params.pageToken = opts.pageToken;
+    if (opts?.search) params.search = opts.search;
+    if (opts?.maxResults) params.maxResults = String(opts.maxResults);
+    return get<{ folder: GmailFolder; threads: GmailThreadListItem[]; nextPageToken?: string }>(
+      '/api/gmail/threads',
+      params
+    );
+  },
+  getThread: (id: string) =>
+    get<{ threadId: string; messages: GmailMessage[] }>(`/api/gmail/threads/${id}`),
+  send: (body: GmailSendBody) => post<{ id: string; threadId: string }>('/api/gmail/send', body),
+  getContacts: () =>
+    get<{ contacts: Array<{ email: string; displayName?: string }>; hint?: string }>('/api/gmail/contacts'),
+  getGoogleToken: () =>
+    get<{ accessToken: string }>('/api/gmail/token'),
+  attachmentUrl: (messageId: string, attachmentId: string, filename: string, mimeType: string) => {
+    const p = new URLSearchParams({ messageId, attachmentId, filename, mimeType });
+    return `${BASE_URL}/api/gmail/attachment?${p.toString()}`;
+  },
+  saveDraft: (data: { to?: string; cc?: string; bcc?: string; subject?: string; textBody?: string; draftId?: string; threadId?: string }) =>
+    post<{ draftId: string; messageId?: string; threadId?: string }>('/api/gmail/drafts', data),
+  getDraft: (draftId: string) =>
+    get<{ draftId: string; messageId?: string; threadId?: string; to: string; cc: string; bcc: string; subject: string; textBody: string; attachments?: Array<{ attachmentId: string; filename: string; mimeType: string; size: number; messageId: string }> }>(
+      '/api/gmail/drafts', { draftId }
+    ),
+  deleteDraft: async (draftId: string) => {
+    const headers = await authHeaders();
+    const res = await fetch(`${BASE_URL}/api/gmail/drafts?draftId=${encodeURIComponent(draftId)}`, {
+      method: 'DELETE',
+      headers,
+    });
+    if (!res.ok) throw new Error(`DELETE draft failed: ${res.status}`);
+    return res.json() as Promise<{ ok: boolean }>;
+  },
 };
 
 // CRM
@@ -60,10 +150,11 @@ export const crmApi = {
 
 // Calls
 export const callsApi = {
-  list: () => get<{ calls: any[] }>('/api/calls'),
-  getRecording: (callSid: string) => get<any>(`/api/calls/recording/${callSid}`),
-  getTranscript: (callLogId: string) => get<any>(`/api/calls/transcript/${callLogId}`),
-  makeCall: (to: string) => post('/api/calls', { to }),
+  list: () => get<{ logs: any[] }>('/api/calls'),
+  transcribe: (callLogId: string) => post<any>('/api/calls/transcribe', { callLogId }),
+  makeCall: (to: string) => post<{ ok: boolean; id: string }>('/api/calls', { to }),
+  refresh: (id: string) => post<{ ok: boolean; exotelStatus?: string; mappedStatus?: string; hasRecording?: boolean }>('/api/calls/refresh', { id }),
+  recordingUrl: (recordingSid: string) => `${BASE_URL}/api/calls/recording/${encodeURIComponent(recordingSid)}`,
 };
 
 // SMS
@@ -100,21 +191,65 @@ export const meetingsApi = {
 
 // Drive
 export const driveApi = {
-  listFiles: (folderId?: string) =>
-    get<{ files: any[] }>('/api/drive/files', folderId ? { folderId } : undefined),
-  uploadFile: (formData: FormData) =>
-    fetch(`${BASE_URL}/api/drive/upload`, {
+  listFiles: (parentId?: string, opts?: { pageToken?: string; search?: string; pageSize?: number }) => {
+    const params: Record<string, string> = { parent: parentId ?? 'root' };
+    if (opts?.pageToken) params.pageToken = opts.pageToken;
+    if (opts?.search) params.search = opts.search;
+    if (opts?.pageSize) params.pageSize = String(opts.pageSize);
+    return get<{ files: any[]; nextPageToken?: string }>('/api/drive/files', params);
+  },
+  uploadFile: async (formData: FormData) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    const res = await fetchWithTimeout(`${BASE_URL}/api/drive/upload`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
-    }).then((r) => r.json()),
-  downloadFile: (fileId: string) => get<any>(`/api/drive/download/${fileId}`),
+    }, 60000);
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    return res.json();
+  },
 };
 
 // Forms
+export type FormListRow = {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime: string;
+  formTitle?: string | null;
+};
+
 export const formsApi = {
-  list: () => get<{ forms: any[] }>('/api/forms'),
-  create: (data: any) => post('/api/forms', data),
-  update: (id: string, data: any) => post(`/api/forms/${id}`, data),
+  list: (opts?: { pageToken?: string; search?: string; pageSize?: number }) => {
+    const params: Record<string, string> = {};
+    if (opts?.pageToken) params.pageToken = opts.pageToken;
+    if (opts?.search) params.search = opts.search;
+    if (opts?.pageSize) params.pageSize = String(opts.pageSize);
+    return get<{ forms: FormListRow[]; nextPageToken?: string }>('/api/forms', params);
+  },
+  create: (title: string) => post<{ formId: string; responderUri?: string }>('/api/forms', { title }),
+  get: (id: string) => get<Record<string, unknown>>(`/api/forms/${encodeURIComponent(id)}`),
+  save: (id: string, state: unknown) =>
+    post<{ ok: boolean; form?: Record<string, unknown>; editorState?: unknown; noChanges?: boolean; error?: string; message?: string }>(
+      `/api/forms/${encodeURIComponent(id)}/save`,
+      { state }
+    ),
+};
+
+// Me
+export type MeMailbox = {
+  sessionEmail: string | null;
+  displayUsername: string | null;
+  role: string;
+  restrictedFeatures: string[];
+  mailboxOwnerId: string | null;
+  mailboxEmail: string | null;
+  hasStoredMailbox: boolean;
+};
+
+export const meApi = {
+  mailbox: () => get<MeMailbox>('/api/me/mailbox'),
 };
 
 // Broadcast
