@@ -10,9 +10,10 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
 import { gmailApi, type GmailFolder, type GmailThreadListItem } from '../../../lib/api';
+import { markThreadReadDirectly } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
 import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
-import { isPendingDelete } from '../../../lib/pending-deletes';
+import { isPendingDelete, markLocallyRead, isLocallyRead } from '../../../lib/pending-deletes';
 
 const FOLDERS: { key: GmailFolder; label: string }[] = [
   { key: 'inbox',  label: 'Inbox'  },
@@ -44,10 +45,14 @@ export default function InboxScreen() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [search]);
 
-  // Filter out items the user just deleted but that Gmail's API may still return
-  // for a few seconds due to eventual consistency.
-  const stripPendingDeletes = useCallback((list: GmailThreadListItem[]) => {
-    return list.filter((t) => !(t.draftId && isPendingDelete(t.draftId)));
+  // Apply session-wide local overlays:
+  //   - drop items the user just deleted (Gmail's list lags ~5-15s)
+  //   - force unread=false on threads the user already opened this session
+  //     (Gmail's UNREAD label propagation can lag a few seconds)
+  const applyLocalOverlays = useCallback((list: GmailThreadListItem[]) => {
+    return list
+      .filter((t) => !(t.draftId && isPendingDelete(t.draftId)))
+      .map((t) => (isLocallyRead(t.id) ? { ...t, unread: false } : t));
   }, []);
 
   const loadFirstPage = useCallback(async (force = false) => {
@@ -57,7 +62,7 @@ export default function InboxScreen() {
     type CachedPage = { threads: GmailThreadListItem[]; nextPageToken?: string };
     const cached = cacheGet<CachedPage>(cacheKey);
     if (cached) {
-      setThreads(stripPendingDeletes(cached.threads));
+      setThreads(applyLocalOverlays(cached.threads));
       setNextPageToken(cached.nextPageToken);
       setLoading(false);
       // Skip network fetch only on initial mount when data is still fresh
@@ -77,25 +82,17 @@ export default function InboxScreen() {
         maxResults: PAGE_SIZE,
         search: debouncedSearch || undefined,
       });
-      // Preserve any optimistic read-flips: if we locally marked a thread as read
-      // but Gmail hasn't caught up yet, keep it as read rather than re-bolding it.
-      const locallyRead = new Set(
-        (cacheGet<CachedPage>(cacheKey)?.threads ?? [])
-          .filter((t) => !t.unread)
-          .map((t) => t.id)
-      );
-      const fetched = (data.threads ?? []).map((t) =>
-        locallyRead.has(t.id) ? { ...t, unread: false } : t
-      );
       // Dedupe by id — Gmail can rarely return the same thread twice
-      // (e.g. on history-id churn during pagination).
+      // (history-id churn during pagination).
       const seen = new Set<string>();
-      const unique = fetched.filter((t) => {
+      const unique = (data.threads ?? []).filter((t) => {
         if (seen.has(t.id)) return false;
         seen.add(t.id);
         return true;
       });
-      const threads = stripPendingDeletes(unique);
+      // applyLocalOverlays handles both pending-delete filtering AND keeping
+      // locally-read threads as unread:false, even if Gmail still says UNREAD.
+      const threads = applyLocalOverlays(unique);
       cacheSet(cacheKey, { threads, nextPageToken: data.nextPageToken });
       setThreads(threads);
       setNextPageToken(data.nextPageToken);
@@ -110,7 +107,7 @@ export default function InboxScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [folder, debouncedSearch, stripPendingDeletes]);
+  }, [folder, debouncedSearch, applyLocalOverlays]);
 
   const loadMore = useCallback(async () => {
     if (!nextPageToken || loadingMore) return;
@@ -121,7 +118,7 @@ export default function InboxScreen() {
         pageToken: nextPageToken,
         search: debouncedSearch || undefined,
       });
-      const incoming = stripPendingDeletes(data.threads ?? []);
+      const incoming = applyLocalOverlays(data.threads ?? []);
       setThreads((prev) => {
         const seen = new Set(prev.map((t) => t.id));
         const deduped = incoming.filter((t) => !seen.has(t.id));
@@ -137,7 +134,7 @@ export default function InboxScreen() {
     } finally {
       setLoadingMore(false);
     }
-  }, [folder, nextPageToken, loadingMore, debouncedSearch, stripPendingDeletes]);
+  }, [folder, nextPageToken, loadingMore, debouncedSearch, applyLocalOverlays]);
 
   useEffect(() => {
     setLoading(true);
@@ -166,19 +163,17 @@ export default function InboxScreen() {
       router.push(`/(workspace)/inbox/compose?draftId=${encodeURIComponent(thread.draftId)}` as any);
       return;
     }
-    // Optimistic read-flip in state + cache
-    setThreads((prev) => {
-      const updated = prev.map((t) => (t.id === thread.id ? { ...t, unread: false } : t));
-      const cacheKey = `inbox:${folder}:${debouncedSearch}`;
-      const cached = cacheGet<{ threads: GmailThreadListItem[]; nextPageToken?: string }>(cacheKey);
-      if (cached) {
-        cacheSet(cacheKey, {
-          ...cached,
-          threads: cached.threads.map((t) => (t.id === thread.id ? { ...t, unread: false } : t)),
-        });
-      }
-      return updated;
-    });
+    // Mark locally-read for the session — applyLocalOverlays uses this set
+    // on every cache hit and every fresh fetch, so the row never re-bolds
+    // even if Gmail's UNREAD label hasn't propagated yet.
+    markLocallyRead(thread.id);
+    // Optimistic flip in current state
+    setThreads((prev) => prev.map((t) => (t.id === thread.id ? { ...t, unread: false } : t)));
+    // Fire mark-read directly to Gmail — no need to wait for the thread
+    // detail screen to mount before telling Gmail.
+    gmailApi.getGoogleToken()
+      .then(({ accessToken }) => markThreadReadDirectly(accessToken, thread.id))
+      .catch((e) => console.warn('[inbox] mark-read failed:', e?.message));
     router.push(`/(workspace)/inbox/${thread.id}` as any);
   }
 

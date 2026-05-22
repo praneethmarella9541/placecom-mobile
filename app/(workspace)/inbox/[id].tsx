@@ -14,7 +14,7 @@ import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../../lib/supabase';
 import { gmailApi, type GmailMessage } from '../../../lib/api';
-import { sendMailDirectly, readFileAsBase64, markThreadReadDirectly } from '../../../lib/gmail-send-direct';
+import { sendMailDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
 
 const GMAIL_LIMIT = 25 * 1024 * 1024;
@@ -86,13 +86,8 @@ export default function ThreadDetailScreen() {
         setError(e?.message ?? 'Failed to load thread');
       })
       .finally(() => setLoading(false));
-
-    // Mark-as-read directly via Gmail API. Fire-and-forget — if it fails,
-    // the optimistic flip in the inbox list still holds for the session,
-    // and the next fresh fetch will sync the truth.
-    gmailApi.getGoogleToken()
-      .then(({ accessToken }) => markThreadReadDirectly(accessToken, id))
-      .catch((e) => console.warn('[thread] mark-read failed:', e?.message));
+    // Note: mark-read is fired from the inbox's openThread (the moment the
+    // user taps the row), not here, so a slow thread load doesn't delay it.
   }, [id]);
 
   const lastMessage = messages?.[messages.length - 1];
