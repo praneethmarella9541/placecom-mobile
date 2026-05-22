@@ -15,6 +15,7 @@ import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../../lib/supabase';
 import { gmailApi, type GmailMessage } from '../../../lib/api';
 import { sendMailDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
+import { cacheDelete } from '../../../lib/cache';
 import { Colors } from '../../../constants/colors';
 
 const GMAIL_LIMIT = 25 * 1024 * 1024;
@@ -303,6 +304,8 @@ export default function ThreadDetailScreen() {
         await gmailApi.send(commonParams);
       }
 
+      // Bust Sent cache so it refetches on focus and shows the new message.
+      cacheDelete('inbox:sent:');
       Alert.alert('Sent', 'Message sent successfully.');
       setReplyMode(null);
       setReplyBody('');

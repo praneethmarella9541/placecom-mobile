@@ -392,6 +392,10 @@ export default function ComposeScreen() {
         });
       }
 
+      // Bust list caches so the inbox refetches on focus — the just-sent
+      // email should appear in Sent (and the source draft, if any, in Drafts).
+      cacheDelete('inbox:sent:');
+      cacheDelete('inbox:drafts:');
       Alert.alert('Sent', 'Your email was sent.', [
         { text: 'OK', onPress: () => router.back() },
       ]);

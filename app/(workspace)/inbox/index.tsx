@@ -143,9 +143,10 @@ export default function InboxScreen() {
     loadFirstPage();
   }, [loadFirstPage]);
 
-  // Refresh the list when we navigate back into Inbox from a thread,
-  // so opened threads flip from unread→read once Gmail confirms.
-  // Skip the very first focus (handled by the effect above).
+  // On back-navigation: by default, just re-apply local overlays so the
+  // scroll position and loaded pages are preserved. Only do a full refetch
+  // when the cache was explicitly busted (e.g. compose discarded/sent and
+  // called cacheDelete) — that signals the list is genuinely stale.
   const firstFocusRef = useRef(true);
   useFocusEffect(
     useCallback(() => {
@@ -153,8 +154,14 @@ export default function InboxScreen() {
         firstFocusRef.current = false;
         return;
       }
-      loadFirstPage(true);
-    }, [loadFirstPage])
+      const cacheKey = `inbox:${folder}:${debouncedSearch}`;
+      const cached = cacheGet(cacheKey);
+      if (!cached) {
+        loadFirstPage(true);
+      } else {
+        setThreads((prev) => applyLocalOverlays(prev));
+      }
+    }, [folder, debouncedSearch, loadFirstPage, applyLocalOverlays])
   );
 
   function openThread(thread: GmailThreadListItem) {
