@@ -212,7 +212,7 @@ export default function InboxScreen() {
       ) : (
         <FlatList
           data={threads}
-          keyExtractor={(item) => item.draftId ?? item.id}
+          keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
             <ThreadRow
               thread={item}
