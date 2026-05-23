@@ -152,7 +152,10 @@ export const crmApi = {
 export const callsApi = {
   list: () => get<{ logs: any[] }>('/api/calls'),
   transcribe: (callLogId: string) => post<any>('/api/calls/transcribe', { callLogId }),
-  makeCall: (to: string) => post<{ ok: boolean; id: string }>('/api/calls', { to }),
+  // `agentPhone` is this device's phone (in E.164) — required so the Exotel
+  // connect webhook can match the right pending row when this user calls in.
+  makeCall: (to: string, agentPhone?: string) =>
+    post<{ ok: boolean; id: string }>('/api/calls', { to, agentPhone }),
   refresh: (id: string) => post<{ ok: boolean; exotelStatus?: string; mappedStatus?: string; hasRecording?: boolean }>('/api/calls/refresh', { id }),
   recordingUrl: (recordingSid: string) => `${BASE_URL}/api/calls/recording/${encodeURIComponent(recordingSid)}`,
 };
