@@ -51,19 +51,21 @@ export interface CallLog {
   to_number: string;
   from_number: string;
   agent_number: string | null;
-  company: string | null;
+  company_name: string | null;
   notes: string | null;
   status: string;
-  duration: number | null;
+  duration_seconds: number | null;
+  started_at: string | null;
+  ended_at: string | null;
   recording_sid: string | null;
-  recording_duration: number | null;
+  recording_duration_seconds: number | null;
+  transcript: string | null;
+  transcript_segments: { speaker?: string; text: string }[] | null;
   created_at: string;
-}
-
-export interface CallTranscript {
-  id: string;
-  call_log_id: string;
-  transcript: string;
+  /** Derived server-side: 'incoming' for inbound, 'outbound' for outgoing. */
+  direction?: 'incoming' | 'outbound';
+  /** Derived server-side: the other party's number (never our own). */
+  peer_number?: string | null;
 }
 
 export interface SmsMessage {
@@ -133,20 +135,21 @@ export interface DriveFile {
   id: string;
   name: string;
   mimeType: string;
-  size: string | null;
+  size?: string | null;
   modifiedTime: string;
-  parents: string[];
-  webViewLink: string | null;
+  webViewLink?: string | null;
 }
 
 export interface CalendarEvent {
   id: string;
   summary: string;
-  start: { dateTime?: string; date?: string };
-  end: { dateTime?: string; date?: string };
+  start: { dateTime?: string; date?: string; timeZone?: string };
+  end: { dateTime?: string; date?: string; timeZone?: string };
   description?: string;
-  attendees?: { email: string; displayName?: string }[];
+  attendees?: { email?: string; displayName?: string; responseStatus?: string }[];
   location?: string;
+  htmlLink?: string;
+  hangoutLink?: string;
 }
 
 export interface TeamMember {

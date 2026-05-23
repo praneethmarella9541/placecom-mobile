@@ -172,13 +172,62 @@ export const whatsappApi = {
 };
 
 // Calendar
+export type CalendarEventInput = {
+  summary: string;
+  description?: string;
+  location?: string;
+  start: { dateTime?: string; date?: string; timeZone?: string };
+  end: { dateTime?: string; date?: string; timeZone?: string };
+  attendees?: { email: string }[];
+};
+
+export type CalendarEventResponse = {
+  id: string;
+  summary: string;
+  description?: string;
+  location?: string;
+  start: { dateTime?: string; date?: string; timeZone?: string };
+  end: { dateTime?: string; date?: string; timeZone?: string };
+  attendees?: { email?: string; displayName?: string; responseStatus?: string }[];
+  htmlLink?: string;
+  hangoutLink?: string;
+};
+
 export const calendarApi = {
   listEvents: (timeMin?: string, timeMax?: string) =>
-    get<{ events: any[] }>('/api/calendar/events', {
+    get<{ events: CalendarEventResponse[] }>('/api/calendar/events', {
       ...(timeMin ? { timeMin } : {}),
       ...(timeMax ? { timeMax } : {}),
     }),
-  createEvent: (data: any) => post('/api/calendar/events', data),
+  createEvent: (data: CalendarEventInput) =>
+    post<{ event: CalendarEventResponse }>('/api/calendar/events', data),
+  updateEvent: async (id: string, data: Partial<CalendarEventInput>) => {
+    const headers = await authHeaders();
+    const res = await fetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      let msg = `PATCH event failed: ${res.status}`;
+      try { const b = await res.json(); if (b?.error) msg = b.error; } catch {}
+      throw new Error(msg);
+    }
+    return res.json() as Promise<{ event: CalendarEventResponse }>;
+  },
+  deleteEvent: async (id: string) => {
+    const headers = await authHeaders();
+    const res = await fetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers,
+    });
+    if (!res.ok) {
+      let msg = `DELETE event failed: ${res.status}`;
+      try { const b = await res.json(); if (b?.error) msg = b.error; } catch {}
+      throw new Error(msg);
+    }
+    return res.json() as Promise<{ ok: boolean }>;
+  },
 };
 
 // Meetings
