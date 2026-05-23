@@ -11,11 +11,24 @@ import {
 } from 'date-fns';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { useDrawer } from '../_layout';
-import { calendarApi, type CalendarEventInput } from '../../../lib/api';
+import { calendarApi, gmailApi, type CalendarEventInput } from '../../../lib/api';
 import { Colors } from '../../../constants/colors';
 import type { CalendarEvent } from '../../../lib/types';
 
 const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+interface Contact { email: string; displayName?: string; }
+
+function currentToken(raw: string): string {
+  const parts = raw.split(/[,;]/);
+  return (parts[parts.length - 1] ?? '').trim().toLowerCase();
+}
+
+function replaceLastToken(raw: string, chosen: string): string {
+  const parts = raw.split(/[,;]/);
+  parts[parts.length - 1] = ' ' + chosen;
+  return parts.join(', ').replace(/^,\s*/, '') + ', ';
+}
 
 function combineDateTime(date: Date, hours: number, minutes: number): Date {
   const d = new Date(date);
@@ -53,6 +66,35 @@ export default function CalendarScreen() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [allContacts, setAllContacts] = useState<Contact[]>([]);
+  const [attendeeSuggestions, setAttendeeSuggestions] = useState<Contact[]>([]);
+
+  // Load contacts once for attendee autocomplete
+  useEffect(() => {
+    gmailApi.getContacts()
+      .then((r) => setAllContacts(r.contacts ?? []))
+      .catch(() => { /* non-fatal */ });
+  }, []);
+
+  function computeAttendeeSuggestions(raw: string) {
+    const token = currentToken(raw);
+    if (token.length < 2 || allContacts.length === 0) {
+      setAttendeeSuggestions([]);
+      return;
+    }
+    const matches = allContacts.filter(
+      (c) =>
+        c.email.toLowerCase().includes(token) ||
+        (c.displayName ?? '').toLowerCase().includes(token)
+    ).slice(0, 6);
+    setAttendeeSuggestions(matches);
+  }
+
+  function pickAttendee(contact: Contact) {
+    if (!editor) return;
+    setEditor({ ...editor, attendeesRaw: replaceLastToken(editor.attendeesRaw, contact.email) });
+    setAttendeeSuggestions([]);
+  }
 
   const loadEvents = useCallback(async () => {
     try {
@@ -162,6 +204,7 @@ export default function CalendarScreen() {
         await calendarApi.createEvent(payload);
       }
       setEditor(null);
+      setAttendeeSuggestions([]);
       await loadEvents();
     } catch (e: any) {
       Alert.alert('Could not save', e?.message ?? 'Unknown error');
@@ -188,6 +231,7 @@ export default function CalendarScreen() {
     try {
       await calendarApi.deleteEvent(editor.id);
       setEditor(null);
+      setAttendeeSuggestions([]);
       await loadEvents();
     } catch (e: any) {
       Alert.alert('Could not delete', e?.message ?? 'Unknown error');
@@ -276,7 +320,7 @@ export default function CalendarScreen() {
         )}
       </View>
 
-      <Modal visible={!!editor} transparent animationType="slide" onRequestClose={() => setEditor(null)}>
+      <Modal visible={!!editor} transparent animationType="slide" onRequestClose={() => { setEditor(null); setAttendeeSuggestions([]); }}>
         {editor && (
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -285,7 +329,7 @@ export default function CalendarScreen() {
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>{editor.id ? 'Edit Event' : 'New Event'}</Text>
-                <TouchableOpacity onPress={() => setEditor(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <TouchableOpacity onPress={() => { setEditor(null); setAttendeeSuggestions([]); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Ionicons name="close" size={22} color={Colors.text} />
                 </TouchableOpacity>
               </View>
@@ -341,12 +385,46 @@ export default function CalendarScreen() {
                 <TextInput
                   style={styles.input}
                   value={editor.attendeesRaw}
-                  onChangeText={(v) => setEditor({ ...editor, attendeesRaw: v })}
+                  onChangeText={(v) => {
+                    setEditor({ ...editor, attendeesRaw: v });
+                    computeAttendeeSuggestions(v);
+                  }}
+                  onFocus={() => computeAttendeeSuggestions(editor.attendeesRaw)}
+                  onBlur={() => setTimeout(() => setAttendeeSuggestions([]), 150)}
                   placeholder="email1@co.com, email2@co.com"
                   placeholderTextColor={Colors.textMuted}
                   autoCapitalize="none"
                   autoCorrect={false}
+                  keyboardType="email-address"
                 />
+                {attendeeSuggestions.length > 0 && (
+                  <View style={styles.suggestionBox}>
+                    {attendeeSuggestions.map((c) => (
+                      <TouchableOpacity
+                        key={c.email}
+                        style={styles.suggestionRow}
+                        onPress={() => pickAttendee(c)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.suggestionAvatar}>
+                          <Text style={styles.suggestionAvatarText}>
+                            {((c.displayName ?? c.email).charAt(0) || '?').toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          {c.displayName ? (
+                            <>
+                              <Text style={styles.suggestionName} numberOfLines={1}>{c.displayName}</Text>
+                              <Text style={styles.suggestionEmail} numberOfLines={1}>{c.email}</Text>
+                            </>
+                          ) : (
+                            <Text style={styles.suggestionName} numberOfLines={1}>{c.email}</Text>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
 
                 <FieldLabel label="Description (optional)" />
                 <TextInput
@@ -372,7 +450,7 @@ export default function CalendarScreen() {
                     }
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditor(null)} disabled={saving || deleting}>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => { setEditor(null); setAttendeeSuggestions([]); }} disabled={saving || deleting}>
                   <Text style={styles.cancelText}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.saveBtn} onPress={saveEvent} disabled={saving || deleting}>
@@ -632,6 +710,35 @@ const styles = StyleSheet.create({
   timeOptionTextSelected: { color: Colors.surface, fontWeight: '700' },
   doneBtn: { backgroundColor: Colors.primary, borderRadius: 8, padding: 10, alignItems: 'center' },
   doneBtnText: { color: Colors.surface, fontWeight: '700' },
+
+  suggestionBox: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    backgroundColor: Colors.surface,
+    marginTop: -6,
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+  },
+  suggestionAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  suggestionAvatarText: { fontSize: 12, fontWeight: '700', color: Colors.primary },
+  suggestionName: { fontSize: 13, color: Colors.text, fontWeight: '500' },
+  suggestionEmail: { fontSize: 11, color: Colors.textMuted, marginTop: 1 },
 
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
   deleteBtn: { padding: 13, borderRadius: 10, borderWidth: 1, borderColor: Colors.error, alignItems: 'center', justifyContent: 'center', width: 50 },
