@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
 import { Drawer } from 'react-native-drawer-layout';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
@@ -7,6 +7,8 @@ import { useRouter, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/colors';
 import { useAuth } from '../../hooks/useAuth';
+import { meApi, type MeMailbox } from '../../lib/api';
+import { MailboxSessionSync } from '../../components/MailboxSessionSync';
 
 const MODULES = [
   { key: 'inbox', label: 'Inbox', icon: 'mail-outline' as const, path: '/(workspace)/inbox', feature: 'inbox' },
@@ -34,7 +36,17 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
-  const { profile, signOut, hasFeature } = useAuth();
+  const { profile, user, signOut, hasFeature } = useAuth();
+  const [me, setMe] = useState<MeMailbox | null>(null);
+
+  useEffect(() => {
+    if (!user) { setMe(null); return; }
+    let cancelled = false;
+    meApi.mailbox()
+      .then((data) => { if (!cancelled) setMe(data); })
+      .catch(() => { /* keep null; we'll fall back to auth user */ });
+    return () => { cancelled = true; };
+  }, [user?.id]);
 
   const navigate = (path: string) => {
     onClose();
@@ -50,19 +62,48 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
           </View>
           <Text style={styles.logoText}>PlaceCom</Text>
         </View>
-        {profile && (
-          <View style={styles.userInfo}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {(profile.display_name ?? profile.email ?? '?').charAt(0).toUpperCase()}
-              </Text>
+        {(profile || user || me) && (() => {
+          // Multi-source fallback for the signed-in user's name + email
+          const meta = (user?.user_metadata ?? {}) as { full_name?: string; name?: string; email?: string };
+          const sessionEmail = me?.sessionEmail || profile?.email || user?.email || meta.email || '';
+          const emailName = sessionEmail ? sessionEmail.split('@')[0] : '';
+          const friendlyName =
+            (me?.displayUsername && me.displayUsername.trim()) ||
+            (profile?.display_name && profile.display_name.trim()) ||
+            (meta.full_name && meta.full_name.trim()) ||
+            (meta.name && meta.name.trim()) ||
+            (emailName ? emailName.replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '') ||
+            'User';
+          const avatarLetter = (friendlyName || sessionEmail || '?').charAt(0).toUpperCase();
+          const role = me?.role || profile?.role;
+          // Mailbox email — for staff this is the admin's Gmail being used to send/read mail.
+          // For admin role it's the same as their own connected Gmail.
+          const mailboxEmail = me?.mailboxEmail || '';
+          const isDifferentMailbox =
+            mailboxEmail && sessionEmail && mailboxEmail.toLowerCase() !== sessionEmail.toLowerCase();
+          return (
+            <View style={styles.userInfo}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{avatarLetter}</Text>
+              </View>
+              <View style={styles.userDetails}>
+                <Text style={styles.userName} numberOfLines={1}>{friendlyName}</Text>
+                {sessionEmail ? (
+                  <Text style={styles.userEmail} numberOfLines={1}>{sessionEmail}</Text>
+                ) : null}
+                {mailboxEmail ? (
+                  <View style={styles.mailboxRow}>
+                    <Ionicons name="mail-outline" size={11} color={Colors.sidebarText} />
+                    <Text style={styles.mailboxText} numberOfLines={1}>
+                      {isDifferentMailbox ? `via ${mailboxEmail}` : mailboxEmail}
+                    </Text>
+                  </View>
+                ) : null}
+                {role ? <Text style={styles.userRole}>{role}</Text> : null}
+              </View>
             </View>
-            <View style={styles.userDetails}>
-              <Text style={styles.userName} numberOfLines={1}>{profile.display_name ?? 'User'}</Text>
-              <Text style={styles.userRole}>{profile.role}</Text>
-            </View>
-          </View>
-        )}
+          );
+        })()}
       </View>
 
       <ScrollView style={styles.navList} showsVerticalScrollIndicator={false}>
@@ -106,6 +147,7 @@ export default function WorkspaceLayout() {
 
   return (
     <DrawerContext.Provider value={{ openDrawer, closeDrawer }}>
+      <MailboxSessionSync />
       <Drawer
         open={open}
         onOpen={() => setOpen(true)}
@@ -196,10 +238,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  userEmail: {
+    color: Colors.sidebarText,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  mailboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  mailboxText: {
+    color: Colors.sidebarText,
+    fontSize: 10,
+    opacity: 0.85,
+    flex: 1,
+  },
   userRole: {
     color: Colors.sidebarText,
-    fontSize: 12,
-    textTransform: 'capitalize',
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginTop: 2,
+    opacity: 0.7,
   },
   navList: { flex: 1, padding: 12 },
   navItem: {

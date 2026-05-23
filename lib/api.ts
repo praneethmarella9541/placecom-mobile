@@ -308,6 +308,18 @@ export const meApi = {
   mailbox: () => get<MeMailbox>('/api/me/mailbox'),
 };
 
+// Mailbox session sync — persists the Google refresh token server-side
+// so Gmail/Drive/Calendar keep working without re-consent.
+// Mobile passes the provider tokens explicitly because Bearer-authed
+// requests have no cookie session for the backend to read from.
+export const mailboxApi = {
+  registerSession: (data?: { providerRefreshToken?: string; providerAccessToken?: string }) =>
+    post<{ ok?: boolean; skipped?: boolean; reason?: string; error?: string }>(
+      '/api/mailbox/register-session',
+      data ?? {}
+    ),
+};
+
 // Broadcast
 export type BroadcastEmailPayload = {
   recipients: string[];
