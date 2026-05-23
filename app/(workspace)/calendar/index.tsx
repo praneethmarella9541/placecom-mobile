@@ -11,7 +11,7 @@ import {
 } from 'date-fns';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { useDrawer } from '../_layout';
-import { calendarApi, gmailApi, type CalendarEventInput } from '../../../lib/api';
+import { calendarApi, gmailApi, type CalendarEventInput, type CalendarSendUpdates } from '../../../lib/api';
 import { Colors } from '../../../constants/colors';
 import type { CalendarEvent } from '../../../lib/types';
 
@@ -195,7 +195,7 @@ export default function CalendarScreen() {
       .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))
       .map((email) => ({ email }));
 
-    const payload: CalendarEventInput = {
+    const basePayload: CalendarEventInput = {
       summary: editor.summary.trim(),
       description: editor.description.trim() || undefined,
       location: editor.location.trim() || undefined,
@@ -207,6 +207,28 @@ export default function CalendarScreen() {
       addMeet: editor.addMeet && !editor.hasExistingMeet,
     };
 
+    // Gmail/Google Calendar parity: if attendees exist, ask whether to notify.
+    // Skip the prompt when there's no one to notify.
+    if (attendees.length === 0) {
+      await doSave(basePayload);
+      return;
+    }
+
+    Alert.alert(
+      editor.id ? 'Update event' : 'Send invitations',
+      editor.id
+        ? `Send an update email to ${attendees.length} guest${attendees.length !== 1 ? 's' : ''}?`
+        : `Send an invitation email to ${attendees.length} guest${attendees.length !== 1 ? 's' : ''}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: "Don't send", onPress: () => doSave({ ...basePayload, sendUpdates: 'none' }) },
+        { text: 'Send', onPress: () => doSave({ ...basePayload, sendUpdates: 'all' }) },
+      ]
+    );
+  }
+
+  async function doSave(payload: CalendarEventInput) {
+    if (!editor) return;
     setSaving(true);
     try {
       if (editor.id) {
@@ -226,21 +248,35 @@ export default function CalendarScreen() {
 
   function confirmDelete() {
     if (!editor?.id) return;
+    const hasAttendees = editor.attendeesRaw.trim().length > 0;
+    if (!hasAttendees) {
+      Alert.alert(
+        'Delete event?',
+        `"${editor.summary}" will be removed from your Google Calendar.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: () => doDelete() },
+        ]
+      );
+      return;
+    }
+    // With attendees, ask whether to email cancellations (Gmail/Calendar parity)
     Alert.alert(
       'Delete event?',
-      `"${editor.summary}" will be removed from your Google Calendar.`,
+      'Send cancellation emails to guests?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: deleteEvent },
+        { text: "Don't send", style: 'destructive', onPress: () => doDelete('none') },
+        { text: 'Send', style: 'destructive', onPress: () => doDelete('all') },
       ]
     );
   }
 
-  async function deleteEvent() {
+  async function doDelete(sendUpdates?: CalendarSendUpdates) {
     if (!editor?.id) return;
     setDeleting(true);
     try {
-      await calendarApi.deleteEvent(editor.id);
+      await calendarApi.deleteEvent(editor.id, sendUpdates ? { sendUpdates } : undefined);
       setEditor(null);
       setAttendeeSuggestions([]);
       await loadEvents();

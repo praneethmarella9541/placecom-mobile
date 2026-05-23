@@ -172,6 +172,8 @@ export const whatsappApi = {
 };
 
 // Calendar
+export type CalendarSendUpdates = 'all' | 'externalOnly' | 'none';
+
 export type CalendarEventInput = {
   summary: string;
   description?: string;
@@ -181,6 +183,8 @@ export type CalendarEventInput = {
   attendees?: { email: string }[];
   /** If true, Google Calendar creates a Google Meet link on the event. */
   addMeet?: boolean;
+  /** 'all' = email everyone, 'externalOnly' = only non-owned-domain, 'none' = silent. */
+  sendUpdates?: CalendarSendUpdates;
 };
 
 export type CalendarEventResponse = {
@@ -217,9 +221,10 @@ export const calendarApi = {
     }
     return res.json() as Promise<{ event: CalendarEventResponse }>;
   },
-  deleteEvent: async (id: string) => {
+  deleteEvent: async (id: string, opts?: { sendUpdates?: CalendarSendUpdates }) => {
     const headers = await authHeaders();
-    const res = await fetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}`, {
+    const qs = opts?.sendUpdates ? `?sendUpdates=${encodeURIComponent(opts.sendUpdates)}` : '';
+    const res = await fetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}${qs}`, {
       method: 'DELETE',
       headers,
     });
