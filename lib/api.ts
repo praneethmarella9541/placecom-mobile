@@ -179,6 +179,8 @@ export type CalendarEventInput = {
   start: { dateTime?: string; date?: string; timeZone?: string };
   end: { dateTime?: string; date?: string; timeZone?: string };
   attendees?: { email: string }[];
+  /** If true, Google Calendar creates a Google Meet link on the event. */
+  addMeet?: boolean;
 };
 
 export type CalendarEventResponse = {

@@ -54,6 +54,10 @@ type EditorState = {
   endHour: number;
   endMinute: number;
   attendeesRaw: string;
+  /** Add Google Meet to a new event, or to an existing event that lacks one. */
+  addMeet: boolean;
+  /** Already has a Meet link (set when editing) — show as informational, can't unset via mobile. */
+  hasExistingMeet: boolean;
 };
 
 export default function CalendarScreen() {
@@ -140,6 +144,8 @@ export default function CalendarScreen() {
       endHour: end.getHours(),
       endMinute: 0,
       attendeesRaw: '',
+      addMeet: true, // default ON for new events, matching Gmail's quick-create
+      hasExistingMeet: false,
     });
   }
 
@@ -165,6 +171,8 @@ export default function CalendarScreen() {
       endHour: end.getHours(),
       endMinute: end.getMinutes(),
       attendeesRaw: attendees,
+      addMeet: false, // toggle only adds a Meet — existing one is shown separately
+      hasExistingMeet: !!e.hangoutLink,
     });
   }
 
@@ -194,6 +202,9 @@ export default function CalendarScreen() {
       start: { dateTime: start.toISOString(), timeZone: LOCAL_TZ },
       end: { dateTime: end.toISOString(), timeZone: LOCAL_TZ },
       attendees: attendees.length > 0 ? attendees : undefined,
+      // Only add a Meet when the toggle is on AND there isn't one already.
+      // Google rejects createRequest on events that already have a conference.
+      addMeet: editor.addMeet && !editor.hasExistingMeet,
     };
 
     setSaving(true);
@@ -424,6 +435,34 @@ export default function CalendarScreen() {
                       </TouchableOpacity>
                     ))}
                   </View>
+                )}
+
+                {editor.hasExistingMeet ? (
+                  <View style={styles.meetRow}>
+                    <Ionicons name="videocam" size={18} color={Colors.primary} />
+                    <Text style={styles.meetRowText}>Google Meet link attached</Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.meetToggleRow}
+                    onPress={() => setEditor({ ...editor, addMeet: !editor.addMeet })}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={editor.addMeet ? 'videocam' : 'videocam-outline'}
+                      size={20}
+                      color={editor.addMeet ? Colors.primary : Colors.textMuted}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.meetToggleTitle}>Add Google Meet video call</Text>
+                      <Text style={styles.meetToggleSub}>
+                        {editor.addMeet ? 'A Meet link will be generated' : 'No video call'}
+                      </Text>
+                    </View>
+                    <View style={[styles.toggleTrack, editor.addMeet && styles.toggleTrackOn]}>
+                      <View style={[styles.toggleThumb, editor.addMeet && styles.toggleThumbOn]} />
+                    </View>
+                  </TouchableOpacity>
                 )}
 
                 <FieldLabel label="Description (optional)" />
@@ -739,6 +778,44 @@ const styles = StyleSheet.create({
   suggestionAvatarText: { fontSize: 12, fontWeight: '700', color: Colors.primary },
   suggestionName: { fontSize: 13, color: Colors.text, fontWeight: '500' },
   suggestionEmail: { fontSize: 11, color: Colors.textMuted, marginTop: 1 },
+
+  meetToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    backgroundColor: Colors.background,
+  },
+  meetToggleTitle: { fontSize: 14, fontWeight: '600', color: Colors.text },
+  meetToggleSub: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
+  toggleTrack: {
+    width: 38,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.border,
+    padding: 2,
+    justifyContent: 'center',
+  },
+  toggleTrackOn: { backgroundColor: Colors.primary },
+  toggleThumb: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: Colors.surface,
+  },
+  toggleThumbOn: { alignSelf: 'flex-end' },
+  meetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 8,
+  },
+  meetRowText: { fontSize: 13, color: Colors.primary, fontWeight: '600' },
 
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
   deleteBtn: { padding: 13, borderRadius: 10, borderWidth: 1, borderColor: Colors.error, alignItems: 'center', justifyContent: 'center', width: 50 },
