@@ -9,6 +9,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import { useDrawer } from '../_layout';
 import { broadcastApi } from '../../../lib/api';
 import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
+import { MailMergePanel } from '../../../components/MailMergePanel';
 import { Colors } from '../../../constants/colors';
 
 // Vercel's JSON body limit is ~4.5 MB. Cap the total attachment payload
@@ -26,6 +27,7 @@ type PickedAttachment = {
 };
 
 type Channel = 'email' | 'sms' | 'whatsapp';
+type EmailSubView = 'broadcast' | 'merge';
 
 const CHANNELS: { key: Channel; label: string; icon: any; color: string }[] = [
   { key: 'email', label: 'Email', icon: 'mail-outline', color: Colors.primary },
@@ -36,6 +38,7 @@ const CHANNELS: { key: Channel; label: string; icon: any; color: string }[] = [
 export default function BroadcastingScreen() {
   const { openDrawer } = useDrawer();
   const [channel, setChannel] = useState<Channel>('email');
+  const [emailSubView, setEmailSubView] = useState<EmailSubView>('broadcast');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [recipients, setRecipients] = useState('');
@@ -177,6 +180,30 @@ export default function BroadcastingScreen() {
           ))}
         </View>
 
+        {/* Email has two sub-views: simple broadcast and mail merge. */}
+        {channel === 'email' && (
+          <View style={styles.subTabRow}>
+            {([
+              { key: 'broadcast' as const, label: 'Broadcast' },
+              { key: 'merge' as const, label: 'Mail merge' },
+            ]).map((t) => (
+              <TouchableOpacity
+                key={t.key}
+                style={[styles.subTabBtn, emailSubView === t.key && styles.subTabBtnActive]}
+                onPress={() => setEmailSubView(t.key)}
+              >
+                <Text style={[styles.subTabBtnText, emailSubView === t.key && styles.subTabBtnTextActive]}>
+                  {t.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {channel === 'email' && emailSubView === 'merge' ? (
+          <MailMergePanel />
+        ) : (
+        <>
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Message</Text>
 
@@ -291,6 +318,8 @@ export default function BroadcastingScreen() {
             </>
           )}
         </TouchableOpacity>
+        </>
+        )}
       </ScrollView>
     </View>
   );
@@ -300,6 +329,22 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: 16, gap: 16, paddingBottom: 32 },
   channelRow: { flexDirection: 'row', gap: 8 },
+  subTabRow: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    padding: 4,
+    gap: 4,
+  },
+  subTabBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  subTabBtnActive: { backgroundColor: Colors.primaryLight },
+  subTabBtnText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  subTabBtnTextActive: { color: Colors.primary, fontWeight: '700' },
   channelBtn: {
     flex: 1,
     flexDirection: 'row',

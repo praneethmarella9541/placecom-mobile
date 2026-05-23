@@ -345,6 +345,51 @@ export const broadcastApi = {
     post<{ sent: number; failed: Array<{ phone: string; error: string }> }>('/api/broadcast/whatsapp', data),
 };
 
+// Mail merge
+export type MailMergeRow = {
+  email: string;
+  fields: Record<string, string>;
+};
+export type MailMergeParseResult = {
+  rows: MailMergeRow[];
+  columns: string[];
+  headerLabels: string[];
+  skipped?: number;
+  truncated?: boolean;
+  maxRows?: number;
+  samplePreview?: { subject: string; body: string };
+};
+export type MailMergeSendPayload = {
+  subjectTemplate: string;
+  bodyTemplate: string;
+  rows: MailMergeRow[];
+  attachments?: Array<{ filename: string; mimeType: string; base64Data: string }>;
+};
+export type MailMergeSendResult = {
+  sent: number;
+  failed: Array<{ email: string; error: string }>;
+  recipients: number;
+};
+
+export const mailMergeApi = {
+  parseFile: async (uri: string, filename: string, mimeType: string) => {
+    const headers = await authHeaders();
+    delete (headers as Record<string, string>)['Content-Type']; // let fetch set multipart boundary
+    const form = new FormData();
+    form.append('file', { uri, name: filename, type: mimeType } as any);
+    const res = await fetchWithTimeout(`${BASE_URL}/api/broadcast/parse-mail-merge`, {
+      method: 'POST',
+      headers,
+      body: form,
+    }, 60000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error ?? `Parse failed: ${res.status}`);
+    return data as MailMergeParseResult;
+  },
+  send: (data: MailMergeSendPayload) =>
+    post<MailMergeSendResult>('/api/broadcast/mail-merge', data),
+};
+
 // Admin
 export const adminApi = {
   listTeam: () => get<{ members: any[] }>('/api/admin/team'),
