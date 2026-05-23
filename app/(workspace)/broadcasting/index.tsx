@@ -8,7 +8,22 @@ import * as DocumentPicker from 'expo-document-picker';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { useDrawer } from '../_layout';
 import { broadcastApi } from '../../../lib/api';
+import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
+
+// Vercel's JSON body limit is ~4.5 MB. Cap the total attachment payload
+// (base64-encoded, so multiply raw bytes by ~1.37) so we stay safely under.
+const MAX_TOTAL_ATTACH_BYTES = 3 * 1024 * 1024; // 3 MB raw → ~4 MB base64
+
+type PickedAttachment = {
+  name: string;
+  mimeType: string;
+  size: number;
+  uri: string;
+  base64Data?: string;
+  status: 'preparing' | 'ready' | 'error';
+  errorMsg?: string;
+};
 
 type Channel = 'email' | 'sms' | 'whatsapp';
 
@@ -25,18 +40,65 @@ export default function BroadcastingScreen() {
   const [body, setBody] = useState('');
   const [recipients, setRecipients] = useState('');
   const [sending, setSending] = useState(false);
-  const [attachmentName, setAttachmentName] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<PickedAttachment[]>([]);
+
+  const totalAttachBytes = attachments.reduce((n, a) => n + a.size, 0);
+  const overLimit = totalAttachBytes > MAX_TOTAL_ATTACH_BYTES;
+  const hasPreparing = attachments.some((a) => a.status === 'preparing');
 
   async function pickAttachment() {
-    const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
-    if (!result.canceled && result.assets[0]) {
-      setAttachmentName(result.assets[0].name);
+    const result = await DocumentPicker.getDocumentAsync({
+      type: '*/*',
+      copyToCacheDirectory: true,
+      multiple: true,
+    });
+    if (result.canceled) return;
+    for (const a of result.assets) {
+      const file: PickedAttachment = {
+        name: a.name,
+        mimeType: a.mimeType ?? 'application/octet-stream',
+        size: a.size ?? 0,
+        uri: a.uri,
+        status: 'preparing',
+      };
+      setAttachments((prev) => [...prev, file]);
+      // Read base64 in background so send is instant
+      readFileAsBase64(a.uri)
+        .then((base64Data) => {
+          setAttachments((prev) =>
+            prev.map((p) => (p.uri === a.uri ? { ...p, status: 'ready', base64Data } : p))
+          );
+        })
+        .catch((e) => {
+          setAttachments((prev) =>
+            prev.map((p) => (p.uri === a.uri ? { ...p, status: 'error', errorMsg: e?.message ?? 'Read failed' } : p))
+          );
+        });
     }
+  }
+
+  function removeAttachment(uri: string) {
+    setAttachments((prev) => prev.filter((a) => a.uri !== uri));
   }
 
   async function send() {
     if (!body.trim() || !recipients.trim()) {
       Alert.alert('Validation', 'Please fill in body and recipients.');
+      return;
+    }
+    if (channel === 'email' && !subject.trim()) {
+      Alert.alert('Validation', 'Subject is required for email broadcasts.');
+      return;
+    }
+    if (channel === 'email' && hasPreparing) {
+      Alert.alert('Please wait', 'Attachments are still being prepared.');
+      return;
+    }
+    if (channel === 'email' && overLimit) {
+      Alert.alert(
+        'Attachments too large',
+        `Total ${(totalAttachBytes / 1024 / 1024).toFixed(1)} MB exceeds the 3 MB broadcast limit. Remove some files or use the Inbox compose screen for large attachments.`
+      );
       return;
     }
     const recipientList = recipients.split(/[,\n]/).map((r) => r.trim()).filter(Boolean);
@@ -48,17 +110,47 @@ export default function BroadcastingScreen() {
     setSending(true);
     try {
       if (channel === 'email') {
-        await broadcastApi.sendEmail({ subject, body, recipients: recipientList });
+        const readyAttachments = attachments
+          .filter((a): a is PickedAttachment & { base64Data: string } => a.status === 'ready' && !!a.base64Data)
+          .map((a) => ({ filename: a.name, mimeType: a.mimeType, base64Data: a.base64Data }));
+        const res = await broadcastApi.sendEmail({
+          subject: subject.trim(),
+          textBody: body,
+          recipients: recipientList,
+          attachments: readyAttachments.length > 0 ? readyAttachments : undefined,
+        });
+        const failedCount = res.failed?.length ?? 0;
+        if (failedCount > 0) {
+          const sample = res.failed.slice(0, 3).map((f) => `• ${f.email}: ${f.error}`).join('\n');
+          const more = failedCount > 3 ? `\n…and ${failedCount - 3} more` : '';
+          Alert.alert(
+            `Sent ${res.sent}/${res.recipients}`,
+            `${failedCount} failed:\n${sample}${more}`
+          );
+        } else {
+          Alert.alert('Sent!', `Email sent to ${res.sent} recipient${res.sent !== 1 ? 's' : ''}.`);
+        }
       } else if (channel === 'sms') {
-        await broadcastApi.sendSms({ body, recipients: recipientList });
+        const res = await broadcastApi.sendSms({ text: body, recipients: recipientList });
+        const failedCount = res.failed?.length ?? 0;
+        if (failedCount > 0) {
+          Alert.alert(`Sent ${res.sent}/${recipientList.length}`, `${failedCount} failed.`);
+        } else {
+          Alert.alert('Sent!', `SMS sent to ${res.sent} recipient${res.sent !== 1 ? 's' : ''}.`);
+        }
       } else {
-        await broadcastApi.sendWhatsApp({ body, recipients: recipientList });
+        const res = await broadcastApi.sendWhatsApp({ text: body, recipients: recipientList });
+        const failedCount = res.failed?.length ?? 0;
+        if (failedCount > 0) {
+          Alert.alert(`Sent ${res.sent}/${recipientList.length}`, `${failedCount} failed.`);
+        } else {
+          Alert.alert('Sent!', `WhatsApp sent to ${res.sent} recipient${res.sent !== 1 ? 's' : ''}.`);
+        }
       }
-      Alert.alert('Sent!', `Broadcast sent to ${recipientList.length} recipient${recipientList.length !== 1 ? 's' : ''}.`);
       setSubject('');
       setBody('');
       setRecipients('');
-      setAttachmentName(null);
+      setAttachments([]);
     } catch (e: any) {
       Alert.alert('Error', e.message ?? 'Broadcast failed');
     } finally {
@@ -115,17 +207,45 @@ export default function BroadcastingScreen() {
           </View>
 
           {channel === 'email' && (
-            <TouchableOpacity style={styles.attachBtn} onPress={pickAttachment}>
-              <Ionicons name="attach-outline" size={18} color={Colors.primary} />
-              <Text style={styles.attachText}>
-                {attachmentName ? attachmentName : 'Add Attachment'}
-              </Text>
-              {attachmentName && (
-                <TouchableOpacity onPress={() => setAttachmentName(null)}>
-                  <Ionicons name="close-circle" size={16} color={Colors.error} />
-                </TouchableOpacity>
+            <>
+              <TouchableOpacity style={styles.attachBtn} onPress={pickAttachment}>
+                <Ionicons name="attach-outline" size={18} color={Colors.primary} />
+                <Text style={styles.attachText}>Add attachment</Text>
+              </TouchableOpacity>
+              {attachments.length > 0 && (
+                <View style={{ gap: 6 }}>
+                  {attachments.map((a) => (
+                    <View key={a.uri} style={styles.attachChip}>
+                      {a.status === 'preparing' ? (
+                        <ActivityIndicator size="small" color={Colors.primary} />
+                      ) : a.status === 'error' ? (
+                        <Ionicons name="warning-outline" size={14} color={Colors.error} />
+                      ) : (
+                        <Ionicons name="document-outline" size={14} color={Colors.primary} />
+                      )}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.attachChipName} numberOfLines={1}>{a.name}</Text>
+                        <Text style={styles.attachChipSize}>
+                          {a.status === 'preparing'
+                            ? 'Preparing…'
+                            : a.status === 'error'
+                            ? a.errorMsg ?? 'Failed'
+                            : `${(a.size / 1024).toFixed(1)} KB`}
+                        </Text>
+                      </View>
+                      <TouchableOpacity onPress={() => removeAttachment(a.uri)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                        <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  {overLimit && (
+                    <Text style={styles.warnText}>
+                      Total {(totalAttachBytes / 1024 / 1024).toFixed(1)} MB — over the 3 MB broadcast limit.
+                    </Text>
+                  )}
+                </View>
               )}
-            </TouchableOpacity>
+            </>
           )}
         </View>
 
@@ -153,7 +273,15 @@ export default function BroadcastingScreen() {
           )}
         </View>
 
-        <TouchableOpacity style={[styles.sendBtn, { backgroundColor: ch.color }]} onPress={send} disabled={sending}>
+        <TouchableOpacity
+          style={[
+            styles.sendBtn,
+            { backgroundColor: ch.color },
+            (sending || (channel === 'email' && (hasPreparing || overLimit))) && { opacity: 0.6 },
+          ]}
+          onPress={send}
+          disabled={sending || (channel === 'email' && (hasPreparing || overLimit))}
+        >
           {sending ? (
             <ActivityIndicator color={Colors.surface} />
           ) : (
@@ -224,6 +352,20 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   attachText: { flex: 1, fontSize: 13, color: Colors.primary },
+  attachChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  attachChipName: { fontSize: 13, color: Colors.text, fontWeight: '500' },
+  attachChipSize: { fontSize: 11, color: Colors.textMuted, marginTop: 1 },
+  warnText: { fontSize: 12, color: Colors.error, fontWeight: '500' },
   sendBtn: {
     flexDirection: 'row',
     alignItems: 'center',

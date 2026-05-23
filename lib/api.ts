@@ -253,10 +253,25 @@ export const meApi = {
 };
 
 // Broadcast
+export type BroadcastEmailPayload = {
+  recipients: string[];
+  subject: string;
+  textBody: string;
+  attachments?: Array<{ filename: string; mimeType: string; base64Data: string }>;
+};
+export type BroadcastEmailResult = {
+  sent: number;
+  failed: Array<{ email: string; error: string }>;
+  recipients: number;
+};
+
 export const broadcastApi = {
-  sendEmail: (data: any) => post('/api/broadcast/email', data),
-  sendSms: (data: any) => post('/api/broadcast/sms', data),
-  sendWhatsApp: (data: any) => post('/api/broadcast/whatsapp', data),
+  sendEmail: (data: BroadcastEmailPayload) =>
+    post<BroadcastEmailResult>('/api/broadcast/email', data),
+  sendSms: (data: { recipients: string[]; text: string }) =>
+    post<{ sent: number; failed: Array<{ phone: string; error: string }> }>('/api/broadcast/sms', data),
+  sendWhatsApp: (data: { recipients: string[]; text: string }) =>
+    post<{ sent: number; failed: Array<{ phone: string; error: string }> }>('/api/broadcast/whatsapp', data),
 };
 
 // Admin
