@@ -47,12 +47,19 @@ export default function LoginScreen() {
   async function handleGoogleSignIn() {
     setGoogleLoading(true);
     try {
+      // PKCE flow: Supabase will redirect to <redirectTo>?code=… after the
+      // Google round-trip. The deep link `placecom://auth/callback` MUST be
+      // in Supabase Dashboard → Authentication → URL Configuration →
+      // Redirect URLs, otherwise Supabase falls back to the Site URL (the
+      // web app) and the user ends up there instead of back in the app.
       const redirectTo = makeRedirectUri({ scheme: 'placecom', path: 'auth/callback' });
       console.log('[OAuth] redirectTo =', redirectTo);
+
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo,
+          skipBrowserRedirect: true,
           queryParams: {
             access_type: 'offline',
             prompt: 'consent',
@@ -62,17 +69,32 @@ export default function LoginScreen() {
         },
       });
       if (error) throw error;
-      if (data.url) {
-        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-        if (result.type === 'success' && result.url) {
-          const url = new URL(result.url);
-          const accessToken = url.searchParams.get('access_token');
-          const refreshToken = url.searchParams.get('refresh_token');
-          if (accessToken && refreshToken) {
-            await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
-          }
-        }
+      if (!data.url) throw new Error('Supabase did not return an OAuth URL.');
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+      if (result.type !== 'success' || !result.url) {
+        return; // user cancelled or the browser didn't return a URL
       }
+
+      // PKCE: returned URL has ?code=…
+      const url = new URL(result.url);
+      const code = url.searchParams.get('code');
+      if (!code) {
+        // Some configurations (implicit/legacy) still put tokens in the hash.
+        // Fall back to hash parsing so old sessions don't get stuck.
+        const hash = result.url.split('#')[1] ?? '';
+        const hashParams = new URLSearchParams(hash);
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+        if (accessToken && refreshToken) {
+          await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+          return;
+        }
+        throw new Error('No code or tokens returned from Supabase.');
+      }
+
+      const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(code);
+      if (exchangeErr) throw exchangeErr;
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Google sign-in failed');
     } finally {

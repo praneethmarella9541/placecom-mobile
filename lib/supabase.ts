@@ -9,6 +9,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
+    // PKCE: Supabase returns ?code=… in the deep-link redirect (no fragment),
+    // we exchange it via supabase.auth.exchangeCodeForSession() in our
+    // callback handler. Cleaner + more secure than implicit on mobile.
+    flowType: 'pkce',
     detectSessionInUrl: false,
   },
 });
