@@ -26,6 +26,10 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  // Captures the OAuth redirect URI on first Google-sign-in attempt so it can
+  // be displayed and copy-pasted into the Supabase Redirect URLs allowlist.
+  // Once sign-in works end-to-end this debug strip can be removed.
+  const [oauthRedirect, setOauthRedirect] = useState<string | null>(null);
 
   async function handleEmailAuth() {
     if (!email || !password) {
@@ -54,6 +58,7 @@ export default function LoginScreen() {
       // web app) and the user ends up there instead of back in the app.
       const redirectTo = makeRedirectUri({ scheme: 'placecom', path: 'auth/callback' });
       console.log('[OAuth] redirectTo =', redirectTo);
+      setOauthRedirect(redirectTo);
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -170,6 +175,15 @@ export default function LoginScreen() {
             )}
           </TouchableOpacity>
 
+          {/* Debug strip — shows the redirect URI Supabase needs allowlisted.
+              Remove (or hide behind a long-press) once sign-in is working. */}
+          {oauthRedirect && (
+            <View style={styles.debugStrip}>
+              <Text style={styles.debugLabel}>OAuth redirect URI (add to Supabase):</Text>
+              <Text style={styles.debugValue} selectable>{oauthRedirect}</Text>
+            </View>
+          )}
+
           <TouchableOpacity onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')} style={styles.switchMode}>
             <Text style={styles.switchModeText}>
               {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
@@ -244,6 +258,17 @@ const styles = StyleSheet.create({
     minHeight: 46,
   },
   googleBtnText: { fontSize: 15, fontWeight: '600', color: Colors.text },
+  debugStrip: {
+    marginTop: 8,
+    padding: 10,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    gap: 4,
+  },
+  debugLabel: { fontSize: 10, fontWeight: '700', color: '#92400E' },
+  debugValue: { fontSize: 11, color: '#78350F', fontFamily: 'monospace' },
   switchMode: { alignItems: 'center' },
   switchModeText: { fontSize: 13, color: Colors.textSecondary },
   switchModeLink: { color: Colors.primary, fontWeight: '700' },
