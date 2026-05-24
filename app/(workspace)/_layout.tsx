@@ -11,18 +11,16 @@ import { meApi, type MeMailbox } from '../../lib/api';
 import { MailboxSessionSync } from '../../components/MailboxSessionSync';
 
 const MODULES = [
-  { key: 'inbox', label: 'Inbox', icon: 'mail-outline' as const, path: '/(workspace)/inbox', feature: 'inbox' },
-  { key: 'crm', label: 'CRM', icon: 'people-outline' as const, path: '/(workspace)/crm', feature: 'crm' },
-  { key: 'calls', label: 'Calls', icon: 'call-outline' as const, path: '/(workspace)/calls', feature: 'calls' },
-  { key: 'sms', label: 'SMS', icon: 'chatbubble-outline' as const, path: '/(workspace)/sms', feature: 'sms' },
-  { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' as const, path: '/(workspace)/whatsapp', feature: 'whatsapp' },
-  { key: 'calendar', label: 'Calendar', icon: 'calendar-outline' as const, path: '/(workspace)/calendar', feature: 'calendar' },
-  { key: 'meetings', label: 'Meetings', icon: 'videocam-outline' as const, path: '/(workspace)/meetings', feature: 'meetings' },
-  { key: 'drive', label: 'Drive', icon: 'cloud-outline' as const, path: '/(workspace)/drive', feature: 'drive' },
-  { key: 'forms', label: 'Forms', icon: 'document-text-outline' as const, path: '/(workspace)/forms', feature: 'forms' },
-  { key: 'broadcasting', label: 'Broadcast', icon: 'megaphone-outline' as const, path: '/(workspace)/broadcasting', feature: 'broadcasting' },
-  { key: 'dashboard', label: 'Dashboard', icon: 'analytics-outline' as const, path: '/(workspace)/dashboard', feature: 'dashboard' },
-  { key: 'admin', label: 'Team', icon: 'shield-checkmark-outline' as const, path: '/(workspace)/admin', feature: null },
+  { key: 'inbox',        label: 'Inbox',     icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false },
+  { key: 'calls',        label: 'Calls',     icon: 'call-outline' as const,            path: '/(workspace)/calls',        feature: 'calls',        googleOnly: false },
+  { key: 'calendar',     label: 'Calendar',  icon: 'calendar-outline' as const,        path: '/(workspace)/calendar',     feature: 'calendar',     googleOnly: false },
+  { key: 'meetings',     label: 'Meetings',  icon: 'videocam-outline' as const,        path: '/(workspace)/meetings',     feature: 'meetings',     googleOnly: false },
+  { key: 'drive',        label: 'Drive',     icon: 'cloud-outline' as const,           path: '/(workspace)/drive',        feature: 'drive',        googleOnly: false },
+  { key: 'forms',        label: 'Forms',     icon: 'document-text-outline' as const,   path: '/(workspace)/forms',        feature: 'forms',        googleOnly: false },
+  { key: 'broadcasting', label: 'Broadcast', icon: 'megaphone-outline' as const,       path: '/(workspace)/broadcasting', feature: 'broadcasting', googleOnly: false },
+  // Dashboard and Team are admin-only: only visible when signed in via Google OAuth
+  { key: 'dashboard',   label: 'Dashboard', icon: 'analytics-outline' as const,       path: '/(workspace)/dashboard',    feature: 'dashboard',    googleOnly: true  },
+  { key: 'admin',        label: 'Team',      icon: 'shield-checkmark-outline' as const, path: '/(workspace)/admin',       feature: null,           googleOnly: true  },
 ] as const;
 
 interface DrawerCtx {
@@ -37,6 +35,12 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const { profile, user, signOut, hasFeature } = useAuth();
+
+  // True only when the user authenticated via Google OAuth.
+  // Email-password users have provider = 'email'; Google OAuth users have 'google'.
+  const isGoogleUser =
+    (user?.app_metadata?.provider === 'google') ||
+    ((user?.app_metadata?.providers as string[] | undefined)?.includes('google') ?? false);
   const [me, setMe] = useState<MeMailbox | null>(null);
 
   useEffect(() => {
@@ -108,6 +112,8 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
 
       <ScrollView style={styles.navList} showsVerticalScrollIndicator={false}>
         {MODULES.map((mod) => {
+          // googleOnly modules (Dashboard, Team) are hidden for email-login users
+          if (mod.googleOnly && !isGoogleUser) return null;
           const allowed = mod.feature === null || hasFeature(mod.feature);
           if (!allowed) return null;
           const active = pathname.includes(mod.key);
@@ -162,14 +168,8 @@ export default function WorkspaceLayout() {
           <Stack.Screen name="inbox/index" />
           <Stack.Screen name="inbox/[id]" />
           <Stack.Screen name="inbox/compose" />
-          <Stack.Screen name="crm/index" />
-          <Stack.Screen name="crm/[id]" />
           <Stack.Screen name="calls/index" />
           <Stack.Screen name="calls/[id]" />
-          <Stack.Screen name="sms/index" />
-          <Stack.Screen name="sms/[peer]" />
-          <Stack.Screen name="whatsapp/index" />
-          <Stack.Screen name="whatsapp/[peer]" />
           <Stack.Screen name="calendar/index" />
           <Stack.Screen name="meetings/index" />
           <Stack.Screen name="meetings/[id]" />
