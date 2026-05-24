@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Linking,
@@ -13,10 +13,12 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../../lib/supabase';
-import { gmailApi, type GmailMessage } from '../../../lib/api';
+import { gmailApi, type GmailLabel, type GmailMessage } from '../../../lib/api';
 import { sendMailDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
 import { cacheDelete } from '../../../lib/cache';
 import { Colors } from '../../../constants/colors';
+import { LabelChip } from '../../../components/LabelChip';
+import { LabelPickerModal } from '../../../components/LabelPickerModal';
 
 const GMAIL_LIMIT = 25 * 1024 * 1024;
 
@@ -76,12 +78,26 @@ export default function ThreadDetailScreen() {
   const [sending, setSending] = useState(false);
   const bodyInputRef = useRef<TextInput>(null);
 
+  // Labels — loaded in parallel with the thread, used by chips + picker.
+  const [allLabels, setAllLabels] = useState<GmailLabel[]>([]);
+  const [threadLabelIds, setThreadLabelIds] = useState<string[]>([]);
+  const [labelBusy, setLabelBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const labelsById = useMemo(() => {
+    const m = new Map<string, GmailLabel>();
+    for (const l of allLabels) m.set(l.id, l);
+    return m;
+  }, [allLabels]);
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
     setError(null);
     gmailApi.getThread(id)
-      .then((data) => setMessages(data.messages ?? []))
+      .then((data) => {
+        setMessages(data.messages ?? []);
+        setThreadLabelIds(data.labelIds ?? []);
+      })
       .catch((e) => {
         console.error('[thread] load failed:', e?.message);
         setError(e?.message ?? 'Failed to load thread');
@@ -90,6 +106,40 @@ export default function ThreadDetailScreen() {
     // Note: mark-read is fired from the inbox's openThread (the moment the
     // user taps the row), not here, so a slow thread load doesn't delay it.
   }, [id]);
+
+  // Labels list — load once. Cached server-side so this is cheap.
+  useEffect(() => {
+    gmailApi.listLabels()
+      .then((r) => setAllLabels(r.labels ?? []))
+      .catch(() => { /* non-fatal */ });
+  }, []);
+
+  async function toggleLabel(labelId: string, nextChecked: boolean) {
+    if (!id) return;
+    const prev = threadLabelIds;
+    setThreadLabelIds((cur) =>
+      nextChecked ? Array.from(new Set([...cur, labelId])) : cur.filter((x) => x !== labelId)
+    );
+    setLabelBusy(true);
+    try {
+      await gmailApi.modifyThreadLabels(id, nextChecked ? { add: [labelId] } : { remove: [labelId] });
+    } catch (e: any) {
+      setThreadLabelIds(prev);
+      Alert.alert('Could not update labels', e?.message ?? 'Try again.');
+    } finally {
+      setLabelBusy(false);
+    }
+  }
+
+  async function createAndApplyLabel(name: string) {
+    try {
+      const r = await gmailApi.createLabel(name);
+      setAllLabels((prev) => [...prev, r.label]);
+      await toggleLabel(r.label.id, true);
+    } catch (e: any) {
+      Alert.alert('Could not create label', e?.message ?? 'Try again.');
+    }
+  }
 
   const lastMessage = messages?.[messages.length - 1];
   const firstMessage = messages?.[0];
@@ -352,7 +402,31 @@ export default function ThreadDetailScreen() {
             <Ionicons name="arrow-back" size={24} color={Colors.text} />
           </TouchableOpacity>
           <Text style={styles.subject} numberOfLines={2}>{subject || '(No Subject)'}</Text>
+          <TouchableOpacity
+            onPress={() => setPickerOpen(true)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            disabled={labelBusy}
+          >
+            <Ionicons name="pricetag-outline" size={22} color={labelBusy ? Colors.textMuted : Colors.primary} />
+          </TouchableOpacity>
         </View>
+
+        {/* Label chips for this thread */}
+        {threadLabelIds.length > 0 && (
+          <View style={styles.threadLabelsRow}>
+            {threadLabelIds
+              .map((tid) => labelsById.get(tid))
+              .filter((l): l is GmailLabel => !!l && l.surfaced)
+              .map((l) => (
+                <LabelChip
+                  key={l.id}
+                  label={l}
+                  size="md"
+                  onRemove={labelBusy ? undefined : () => void toggleLabel(l.id, false)}
+                />
+              ))}
+          </View>
+        )}
 
         {/* Thread messages */}
         <ScrollView style={styles.messages} contentContainerStyle={{ padding: 12, gap: 12 }}>
@@ -480,6 +554,17 @@ export default function ThreadDetailScreen() {
           </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
+
+      {/* Labels picker — bottom sheet */}
+      <LabelPickerModal
+        visible={pickerOpen}
+        allLabels={allLabels}
+        selected={new Set(threadLabelIds)}
+        onToggle={(labelId, nextChecked) => void toggleLabel(labelId, nextChecked)}
+        onCreate={async (name) => { await createAndApplyLabel(name); }}
+        onClose={() => setPickerOpen(false)}
+        busy={labelBusy}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -826,6 +911,16 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   subject: { flex: 1, fontSize: 15, fontWeight: '700', color: Colors.text },
+  threadLabelsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
   messages: { flex: 1 },
 
   // Action bar

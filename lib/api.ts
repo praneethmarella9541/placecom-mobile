@@ -64,6 +64,18 @@ export interface GmailThreadListItem {
   draftId?: string;
   /** True if any message in the thread has Gmail's UNREAD label. */
   unread?: boolean;
+  /** Folder-state labels (INBOX/SENT/etc.) are stripped server-side. */
+  labelIds?: string[];
+}
+
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type: 'system' | 'user';
+  surfaced: boolean;
+  isSystem: boolean;
+  isCategory: boolean;
+  color?: { backgroundColor?: string; textColor?: string };
 }
 
 export interface GmailAttachment {
@@ -99,19 +111,28 @@ export interface GmailSendBody {
 export const gmailApi = {
   listThreads: (
     folder: GmailFolder = 'inbox',
-    opts?: { pageToken?: string; search?: string; maxResults?: number }
+    opts?: { pageToken?: string; search?: string; maxResults?: number; labelId?: string }
   ) => {
     const params: Record<string, string> = { folder };
     if (opts?.pageToken) params.pageToken = opts.pageToken;
     if (opts?.search) params.search = opts.search;
     if (opts?.maxResults) params.maxResults = String(opts.maxResults);
+    if (opts?.labelId) params.labelId = opts.labelId;
     return get<{ folder: GmailFolder; threads: GmailThreadListItem[]; nextPageToken?: string }>(
       '/api/gmail/threads',
       params
     );
   },
   getThread: (id: string) =>
-    get<{ threadId: string; messages: GmailMessage[] }>(`/api/gmail/threads/${id}`),
+    get<{ threadId: string; messages: GmailMessage[]; labelIds?: string[] }>(`/api/gmail/threads/${id}`),
+  listLabels: () => get<{ labels: GmailLabel[] }>('/api/gmail/labels'),
+  createLabel: (name: string) =>
+    post<{ label: GmailLabel }>('/api/gmail/labels', { name }),
+  modifyThreadLabels: (threadId: string, changes: { add?: string[]; remove?: string[] }) =>
+    post<{ threadId: string; labelIds: string[] }>(
+      `/api/gmail/threads/${encodeURIComponent(threadId)}/labels`,
+      changes
+    ),
   send: (body: GmailSendBody) => post<{ id: string; threadId: string }>('/api/gmail/send', body),
   getContacts: () =>
     get<{ contacts: Array<{ email: string; displayName?: string }>; hint?: string }>('/api/gmail/contacts'),

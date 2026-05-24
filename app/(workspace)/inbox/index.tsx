@@ -9,11 +9,12 @@ import { format, isToday, isYesterday } from 'date-fns';
 import ScreenHeader from '../../../components/ScreenHeader';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
-import { gmailApi, type GmailFolder, type GmailThreadListItem } from '../../../lib/api';
+import { gmailApi, type GmailFolder, type GmailLabel, type GmailThreadListItem } from '../../../lib/api';
 import { markThreadReadDirectly } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
 import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
 import { isPendingDelete, markLocallyRead, isLocallyRead } from '../../../lib/pending-deletes';
+import { LabelChip } from '../../../components/LabelChip';
 
 const FOLDERS: { key: GmailFolder; label: string }[] = [
   { key: 'inbox',  label: 'Inbox'  },
@@ -38,6 +39,23 @@ export default function InboxScreen() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
+  // Labels — loaded once, used for chip rendering on rows + filtering.
+  const [allLabels, setAllLabels] = useState<GmailLabel[]>([]);
+  const [filterLabelId, setFilterLabelId] = useState<string | null>(null);
+
+  useEffect(() => {
+    gmailApi.listLabels()
+      .then((r) => setAllLabels(r.labels ?? []))
+      .catch(() => { /* non-fatal — chips will be empty */ });
+  }, []);
+
+  // O(1) lookup by id when rendering chips on a row.
+  const labelsById = React.useMemo(() => {
+    const m = new Map<string, GmailLabel>();
+    for (const l of allLabels) m.set(l.id, l);
+    return m;
+  }, [allLabels]);
+
   // Debounce search input → only hit backend after 400ms of stillness
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -57,7 +75,7 @@ export default function InboxScreen() {
 
   const loadFirstPage = useCallback(async (force = false) => {
     setError(null);
-    const cacheKey = `inbox:${folder}:${debouncedSearch}`;
+    const cacheKey = `inbox:${folder}:${debouncedSearch}:${filterLabelId ?? ''}`;
 
     type CachedPage = { threads: GmailThreadListItem[]; nextPageToken?: string };
     const cached = cacheGet<CachedPage>(cacheKey);
@@ -81,6 +99,7 @@ export default function InboxScreen() {
       const data = await gmailApi.listThreads(folder, {
         maxResults: PAGE_SIZE,
         search: debouncedSearch || undefined,
+        labelId: filterLabelId ?? undefined,
       });
       // Dedupe by id — Gmail can rarely return the same thread twice
       // (history-id churn during pagination).
@@ -107,7 +126,7 @@ export default function InboxScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [folder, debouncedSearch, applyLocalOverlays]);
+  }, [folder, debouncedSearch, applyLocalOverlays, filterLabelId]);
 
   const loadMore = useCallback(async () => {
     if (!nextPageToken || loadingMore) return;
@@ -117,6 +136,7 @@ export default function InboxScreen() {
         maxResults: PAGE_SIZE,
         pageToken: nextPageToken,
         search: debouncedSearch || undefined,
+        labelId: filterLabelId ?? undefined,
       });
       const incoming = applyLocalOverlays(data.threads ?? []);
       setThreads((prev) => {
@@ -124,7 +144,7 @@ export default function InboxScreen() {
         const deduped = incoming.filter((t) => !seen.has(t.id));
         const merged = [...prev, ...deduped];
         // Keep the cache in sync so back-nav doesn't lose later pages
-        const cacheKey = `inbox:${folder}:${debouncedSearch}`;
+        const cacheKey = `inbox:${folder}:${debouncedSearch}:${filterLabelId ?? ''}`;
         cacheSet(cacheKey, { threads: merged, nextPageToken: data.nextPageToken });
         return merged;
       });
@@ -134,7 +154,7 @@ export default function InboxScreen() {
     } finally {
       setLoadingMore(false);
     }
-  }, [folder, nextPageToken, loadingMore, debouncedSearch, applyLocalOverlays]);
+  }, [folder, nextPageToken, loadingMore, debouncedSearch, applyLocalOverlays, filterLabelId]);
 
   useEffect(() => {
     setLoading(true);
@@ -154,7 +174,7 @@ export default function InboxScreen() {
         firstFocusRef.current = false;
         return;
       }
-      const cacheKey = `inbox:${folder}:${debouncedSearch}`;
+      const cacheKey = `inbox:${folder}:${debouncedSearch}:${filterLabelId ?? ''}`;
       const cached = cacheGet(cacheKey);
       if (!cached) {
         loadFirstPage(true);
@@ -226,6 +246,37 @@ export default function InboxScreen() {
         )}
       </View>
 
+      {/* Label filter chips — only user labels, only for inbox/sent (not drafts) */}
+      {folder !== 'drafts' && allLabels.some((l) => l.type === 'user') && (
+        <View style={styles.labelFilterBar}>
+          <TouchableOpacity
+            onPress={() => setFilterLabelId(null)}
+            style={[styles.labelFilterChip, filterLabelId === null && styles.labelFilterChipActive]}
+          >
+            <Text style={[styles.labelFilterChipText, filterLabelId === null && styles.labelFilterChipTextActive]}>
+              All
+            </Text>
+          </TouchableOpacity>
+          <FlatList
+            data={allLabels.filter((l) => l.type === 'user')}
+            keyExtractor={(l) => l.id}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 6 }}
+            renderItem={({ item: l }) => (
+              <TouchableOpacity
+                onPress={() => setFilterLabelId(filterLabelId === l.id ? null : l.id)}
+                style={[styles.labelFilterChip, filterLabelId === l.id && styles.labelFilterChipActive]}
+              >
+                <Text style={[styles.labelFilterChipText, filterLabelId === l.id && styles.labelFilterChipTextActive]} numberOfLines={1}>
+                  {l.name}
+                </Text>
+              </TouchableOpacity>
+            )}
+          />
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
       ) : error ? (
@@ -243,6 +294,7 @@ export default function InboxScreen() {
           renderItem={({ item }) => (
             <ThreadRow
               thread={item}
+              labelsById={labelsById}
               onPress={() => openThread(item)}
             />
           )}
@@ -308,11 +360,23 @@ function avatarInitial(name: string): string {
   return (cleaned.charAt(0) || '?').toUpperCase();
 }
 
-function ThreadRow({ thread, onPress }: { thread: GmailThreadListItem; onPress: () => void }) {
+function ThreadRow({
+  thread,
+  labelsById,
+  onPress,
+}: {
+  thread: GmailThreadListItem;
+  labelsById: Map<string, GmailLabel>;
+  onPress: () => void;
+}) {
   const { name: fromName } = parseFromHeader(thread.from);
   const date = formatDate(thread.date);
   const initial = avatarInitial(fromName);
   const isUnread = Boolean(thread.unread);
+  const chips = (thread.labelIds ?? [])
+    .map((id) => labelsById.get(id))
+    .filter((l): l is GmailLabel => !!l && l.surfaced)
+    .slice(0, 3);
   return (
     <TouchableOpacity
       style={[styles.threadRow, isUnread && styles.threadRowUnread]}
@@ -336,6 +400,13 @@ function ThreadRow({ thread, onPress }: { thread: GmailThreadListItem; onPress: 
           {thread.subject || '(no subject)'}
         </Text>
         <Text style={styles.threadSnippet} numberOfLines={1}>{thread.snippet}</Text>
+        {chips.length > 0 && (
+          <View style={styles.threadChipsRow}>
+            {chips.map((l) => (
+              <LabelChip key={l.id} label={l} />
+            ))}
+          </View>
+        )}
       </View>
     </TouchableOpacity>
   );
@@ -410,6 +481,29 @@ const styles = StyleSheet.create({
   threadSubject: { fontSize: 13, color: Colors.text, fontWeight: '400' },
   threadSubjectUnread: { fontWeight: '700' },
   threadSnippet: { fontSize: 12, color: Colors.textMuted },
+  threadChipsRow: { flexDirection: 'row', gap: 4, flexWrap: 'wrap', marginTop: 4 },
+  labelFilterBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    backgroundColor: Colors.background,
+  },
+  labelFilterChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  labelFilterChipActive: {
+    backgroundColor: Colors.primaryLight,
+    borderColor: Colors.primary,
+  },
+  labelFilterChipText: { fontSize: 11, fontWeight: '600', color: Colors.textSecondary },
+  labelFilterChipTextActive: { color: Colors.primary },
   footerLoader: { paddingVertical: 16, alignItems: 'center' },
   errorText: { fontSize: 14, color: Colors.error, textAlign: 'center' },
   retryBtn: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Colors.primary, borderRadius: 8 },
