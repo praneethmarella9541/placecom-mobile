@@ -56,7 +56,15 @@ export default function LoginScreen() {
       // in Supabase Dashboard → Authentication → URL Configuration →
       // Redirect URLs, otherwise Supabase falls back to the Site URL (the
       // web app) and the user ends up there instead of back in the app.
-      const redirectTo = makeRedirectUri({ scheme: 'placecom', path: 'auth/callback' });
+      // Force the native scheme. `makeRedirectUri` otherwise returns an
+      // exp://<lan-ip>:8081 URL when running inside Expo Go — which is
+      // unstable (changes every time the LAN IP changes) and not what
+      // we want for our custom dev/standalone build.
+      const redirectTo = makeRedirectUri({
+        scheme: 'placecom',
+        path: 'auth/callback',
+        native: 'placecom://auth/callback',
+      });
       console.log('[OAuth] redirectTo =', redirectTo);
       setOauthRedirect(redirectTo);
 
