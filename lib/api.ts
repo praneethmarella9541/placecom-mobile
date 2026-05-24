@@ -64,7 +64,11 @@ export interface GmailThreadListItem {
   draftId?: string;
   /** True if any message in the thread has Gmail's UNREAD label. */
   unread?: boolean;
-  /** Folder-state labels (INBOX/SENT/etc.) are stripped server-side. */
+  /** True if STARRED is on any message in the thread. */
+  starred?: boolean;
+  /** True if any message's Content-Type starts with multipart/mixed. */
+  hasAttachments?: boolean;
+  /** Folder-state labels (INBOX/SENT/etc.) and STARRED are stripped server-side. */
   labelIds?: string[];
 }
 
@@ -132,6 +136,18 @@ export const gmailApi = {
     post<{ threadId: string; labelIds: string[] }>(
       `/api/gmail/threads/${encodeURIComponent(threadId)}/labels`,
       changes
+    ),
+  /** Apply the same add/remove to many thread ids. Bounded server-side. */
+  batchModifyThreads: (threadIds: string[], changes: { add?: string[]; remove?: string[] }) =>
+    post<{ requested: number; succeeded: number; failed: { threadId: string; error: string }[] }>(
+      '/api/gmail/threads/batch-modify',
+      { threadIds, ...changes }
+    ),
+  /** Thread total + unread per label/folder. */
+  folderCounts: (ids: string[]) =>
+    get<{ counts: Record<string, { total: number; unread: number }> }>(
+      '/api/gmail/folder-counts',
+      { ids: ids.join(',') }
     ),
   send: (body: GmailSendBody) => post<{ id: string; threadId: string }>('/api/gmail/send', body),
   getContacts: () =>
