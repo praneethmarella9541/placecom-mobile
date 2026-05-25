@@ -1,0 +1,13 @@
+diff --git a/node_modules/react-native-reanimated/lib/module/fabricUtils.js b/node_modules/react-native-reanimated/lib/module/fabricUtils.js
+index 9010529..a1d019a 100644
+--- a/node_modules/react-native-reanimated/lib/module/fabricUtils.js
++++ b/node_modules/react-native-reanimated/lib/module/fabricUtils.js
+@@ -12,7 +12,7 @@ export function getShadowNodeWrapperFromRef(ref, hostInstance) {
+     } else if (ref._reactInternals) {
+       resolvedInstance = findHostInstance(ref).__internalInstanceHandle;
+     } else {
+-      throw new ReanimatedError(`Failed to find host instance for a ref.}`);
++      throw new ReanimatedError(`Failed to find host instance for a ref.`);
+     }
+   }
+   return resolvedInstance.stateNode.node;
