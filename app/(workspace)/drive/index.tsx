@@ -275,7 +275,9 @@ export default function DriveScreen() {
         rightAction={{ icon: 'cloud-upload-outline', onPress: uploadFile }}
       />
 
-      {folderStack.length > 0 && (
+      {/* Breadcrumb is hidden while searching — search is drive-wide,
+          matching Google Drive's UX. */}
+      {folderStack.length > 0 && !debouncedSearch && (
         <View style={styles.breadcrumb}>
           <TouchableOpacity onPress={goBack} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={16} color={Colors.primary} />
@@ -290,15 +292,28 @@ export default function DriveScreen() {
         </View>
       )}
 
+      {/* Search-mode banner — replaces breadcrumb while a query is active */}
+      {debouncedSearch ? (
+        <View style={styles.searchBanner}>
+          <Ionicons name="search" size={13} color={Colors.textSecondary} />
+          <Text style={styles.searchBannerText} numberOfLines={1}>
+            Searching all of Drive for{' '}
+            <Text style={styles.searchBannerTerm}>&ldquo;{debouncedSearch}&rdquo;</Text>
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.searchBar}>
         <Ionicons name="search-outline" size={16} color={Colors.textMuted} />
         <TextInput
           style={styles.searchInput}
           value={search}
           onChangeText={setSearch}
-          placeholder="Search files..."
+          placeholder="Search Drive (name + contents)"
           placeholderTextColor={Colors.textMuted}
           returnKeyType="search"
+          autoCorrect={false}
+          autoCapitalize="none"
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -466,6 +481,18 @@ const styles = StyleSheet.create({
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   backText: { fontSize: 13, color: Colors.primary },
   currentFolder: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.text },
+  searchBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: Colors.primaryLight,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  searchBannerText: { fontSize: 12, color: Colors.textSecondary, flexShrink: 1 },
+  searchBannerTerm: { fontWeight: '700', color: Colors.text },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
