@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "PlaceCom",
+    "name": "The Nucleus",
     "slug": "placecom-mobile",
     "version": "1.0.0",
     "scheme": "placecom",
@@ -11,7 +11,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#fafafa"
     },
     "ios": {
       "supportsTablet": true,
@@ -20,11 +20,15 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#fafafa"
       },
       "package": "com.placecom.mobile",
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -37,7 +41,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow PlaceCom to access your photos for attachments."
+          "photosPermission": "Allow The Nucleus to access your photos for attachments."
         }
       ],
       [
@@ -45,10 +49,18 @@
         {
           "iCloudContainerEnvironment": "Production"
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7f4a0831-6b02-4dbd-aa39-6d71d345bde6"
+      }
+    },
+    "owner": "dreamerslabs"
   }
 }
