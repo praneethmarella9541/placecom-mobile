@@ -18,7 +18,7 @@
     "@supabase/supabase-js": "^2.106.0",
     "date-fns": "^4.2.1",
     "expo": "~54.0.33",
-    "expo-audio": "^56.0.11",
+    "expo-audio": "~1.1.1",
     "expo-auth-session": "~7.0.11",
     "expo-constants": "~18.0.13",
     "expo-dev-client": "~6.0.21",
@@ -31,7 +31,7 @@
     "expo-sharing": "~14.0.8",
     "expo-status-bar": "~3.0.9",
     "expo-web-browser": "~15.0.11",
-    "react": "^19.2.6",
+    "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-drawer-layout": "^4.2.4",
     "react-native-gesture-handler": "~2.28.0",
@@ -46,5 +46,8 @@
     "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "react-dom": "19.1.0"
+  }
 }
