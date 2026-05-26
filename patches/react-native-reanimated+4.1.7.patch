@@ -1,8 +1,8 @@
 diff --git a/node_modules/react-native-reanimated/lib/module/fabricUtils.js b/node_modules/react-native-reanimated/lib/module/fabricUtils.js
-index 9010529..a1d019a 100644
+index dad13f0..d2485bc 100644
 --- a/node_modules/react-native-reanimated/lib/module/fabricUtils.js
 +++ b/node_modules/react-native-reanimated/lib/module/fabricUtils.js
-@@ -12,7 +12,7 @@ export function getShadowNodeWrapperFromRef(ref, hostInstance) {
+@@ -10,7 +10,7 @@ export function getShadowNodeWrapperFromRef(ref, hostInstance) {
      } else if (ref._reactInternals) {
        resolvedInstance = findHostInstance(ref).__internalInstanceHandle;
      } else {

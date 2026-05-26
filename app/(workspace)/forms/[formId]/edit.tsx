@@ -145,7 +145,7 @@ export default function FormEditScreen() {
 
   async function shareResponderLink() {
     if (!responderUri) return;
-    try { await Share.share({ message: responderUri, url: responderUri }); } catch {}
+    try { await Share.share({ message: responderUri }); } catch {}
   }
 
   if (loading) {

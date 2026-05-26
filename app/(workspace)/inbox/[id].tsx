@@ -15,7 +15,7 @@ import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../../lib/supabase';
 import { gmailApi, type GmailLabel, type GmailMessage } from '../../../lib/api';
 import { sendMailDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
-import { cacheDelete } from '../../../lib/cache';
+import { cacheDelete, cacheGet, cacheSet } from '../../../lib/cache';
 import { Colors } from '../../../constants/colors';
 import { LabelChip } from '../../../components/LabelChip';
 import { LabelPickerModal } from '../../../components/LabelPickerModal';
@@ -91,10 +91,31 @@ export default function ThreadDetailScreen() {
 
   useEffect(() => {
     if (!id) return;
+    const cacheKey = `thread:${id}`;
+
+    // Use prefetched data immediately if available — the inbox screen fires
+    // the fetch on press-in, so by the time this screen mounts it's often done.
+    const cached = cacheGet<{ messages: GmailMessage[]; labelIds?: string[] }>(cacheKey);
+    if (cached) {
+      setMessages(cached.messages ?? []);
+      setThreadLabelIds(cached.labelIds ?? []);
+      setLoading(false);
+      // Revalidate in the background so subsequent opens are fresh.
+      gmailApi.getThread(id)
+        .then((data) => {
+          cacheSet(cacheKey, data);
+          setMessages(data.messages ?? []);
+          setThreadLabelIds(data.labelIds ?? []);
+        })
+        .catch(() => { /* non-fatal — cached data is shown */ });
+      return;
+    }
+
     setLoading(true);
     setError(null);
     gmailApi.getThread(id)
       .then((data) => {
+        cacheSet(cacheKey, data);
         setMessages(data.messages ?? []);
         setThreadLabelIds(data.labelIds ?? []);
       })
@@ -103,8 +124,6 @@ export default function ThreadDetailScreen() {
         setError(e?.message ?? 'Failed to load thread');
       })
       .finally(() => setLoading(false));
-    // Note: mark-read is fired from the inbox's openThread (the moment the
-    // user taps the row), not here, so a slow thread load doesn't delay it.
   }, [id]);
 
   // Labels list — load once. Cached server-side so this is cheap.
@@ -416,7 +435,7 @@ export default function ThreadDetailScreen() {
           <View style={styles.threadLabelsRow}>
             {threadLabelIds
               .map((tid) => labelsById.get(tid))
-              .filter((l): l is GmailLabel => !!l && l.surfaced)
+              .filter((l): l is GmailLabel => !!l && l.type === 'user')
               .map((l) => (
                 <LabelChip
                   key={l.id}

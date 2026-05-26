@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "The Nucleus",
-    "slug": "placecom-mobile",
+    "slug": "pal-mobile",
     "version": "1.0.0",
     "scheme": "placecom",
     "orientation": "portrait",
@@ -58,9 +58,10 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "7f4a0831-6b02-4dbd-aa39-6d71d345bde6"
+        "projectId": "cd94f770-d2ca-414a-86dc-a4a59319ae2f"
       }
     },
     "owner": "dreamerslabs"
   }
 }
+

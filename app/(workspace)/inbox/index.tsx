@@ -9,6 +9,7 @@ import { format, isToday, isYesterday } from 'date-fns';
 import ScreenHeader from '../../../components/ScreenHeader';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
+import { useAuth } from '../../../hooks/useAuth';
 import { gmailApi, type GmailFolder, type GmailLabel, type GmailThreadListItem } from '../../../lib/api';
 import { markThreadReadDirectly } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
@@ -27,6 +28,7 @@ const PAGE_SIZE = 15;
 export default function InboxScreen() {
   const router = useRouter();
   const { openDrawer } = useDrawer();
+  const { session } = useAuth();
   const [folder, setFolder] = useState<GmailFolder>('inbox');
   const [threads, setThreads] = useState<GmailThreadListItem[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
@@ -59,7 +61,7 @@ export default function InboxScreen() {
   // Multi-select via long-press. selection.size > 0 means we're in
   // "selection mode" and the top bar swaps to bulk actions.
   const [selection, setSelection] = useState<Set<string>>(new Set());
-  const [bulkBusy, setBulkBusy] = useState(false);
+  // bulkBusy removed — actions are fire-and-forget with instant optimistic UI
   // Per-row busy (for the optimistic star toggle)
   const [rowBusy, setRowBusy] = useState<Set<string>>(new Set());
 
@@ -112,37 +114,29 @@ export default function InboxScreen() {
     }
   }
 
-  async function bulkAction(action: 'archive' | 'trash' | 'markRead' | 'markUnread' | 'star') {
+  function bulkAction(action: 'markRead' | 'markUnread' | 'star') {
     const ids = Array.from(selection);
     if (ids.length === 0) return;
+
+    // 1. Optimistic UI — instant.
     const prev = threads;
-    const removeFromList = action === 'archive' || action === 'trash';
-    if (removeFromList) {
-      setThreads((rows) => rows.filter((r) => !selection.has(r.id)));
-    } else if (action === 'markRead' || action === 'markUnread') {
+    if (action === 'markRead' || action === 'markUnread') {
       setThreads((rows) => rows.map((r) => (selection.has(r.id) ? { ...r, unread: action === 'markUnread' } : r)));
     } else if (action === 'star') {
       setThreads((rows) => rows.map((r) => (selection.has(r.id) ? { ...r, starred: true } : r)));
     }
+
+    // 2. Clear selection immediately — user is unblocked.
+    setSelection(new Set());
+
+    // 3. Fire API in the background — silently roll back on failure.
     const body =
-      action === 'archive' ? { remove: ['INBOX'] } :
-      action === 'trash' ? { add: ['TRASH'], remove: ['INBOX'] } :
-      action === 'markRead' ? { remove: ['UNREAD'] } :
-      action === 'markUnread' ? { add: ['UNREAD'] } :
-      { add: ['STARRED'] };
-    setBulkBusy(true);
-    try {
-      const r = await gmailApi.batchModifyThreads(ids, body);
-      if ((r.failed?.length ?? 0) > 0) {
-        Alert.alert(`Done with errors`, `${r.failed.length} of ${r.requested} failed.`);
-      }
-      setSelection(new Set());
-    } catch (e: any) {
+      action === 'markRead'   ? { remove: ['UNREAD'] } :
+      action === 'markUnread' ? { add: ['UNREAD'] }    :
+                                { add: ['STARRED'] };
+    gmailApi.batchModifyThreads(ids, body).catch(() => {
       setThreads(prev);
-      Alert.alert('Bulk action failed', e?.message ?? 'Try again');
-    } finally {
-      setBulkBusy(false);
-    }
+    });
   }
 
   // O(1) lookup by id when rendering chips on a row.
@@ -252,12 +246,17 @@ export default function InboxScreen() {
     }
   }, [folder, nextPageToken, loadingMore, debouncedSearch, applyLocalOverlays, effectiveLabelId]);
 
+  // Wait for the Supabase session to be restored from SecureStore before
+  // firing the first API call. Without this guard the call races the session
+  // restore on cold-start and the server receives an unauthenticated request,
+  // returning "Not signed in" even though the user is logged in.
   useEffect(() => {
+    if (!session) return;
     setLoading(true);
     setThreads([]);
     setNextPageToken(undefined);
     loadFirstPage();
-  }, [loadFirstPage]);
+  }, [session, loadFirstPage]);
 
   // On back-navigation: by default, just re-apply local overlays so the
   // scroll position and loaded pages are preserved. Only do a full refetch
@@ -279,6 +278,17 @@ export default function InboxScreen() {
       }
     }, [folder, debouncedSearch, loadFirstPage, applyLocalOverlays])
   );
+
+  // Prefetch thread detail on press-in (fires ~100ms before onPress on native).
+  // Stores the resolved data in the session cache so the detail screen reads
+  // it immediately instead of waiting for a fresh network round-trip.
+  function prefetchThread(threadId: string) {
+    const key = `thread:${threadId}`;
+    if (cacheGet(key)) return; // already cached this session
+    gmailApi.getThread(threadId)
+      .then((data) => cacheSet(key, data))
+      .catch(() => { /* non-fatal — detail screen will fetch itself */ });
+  }
 
   function openThread(thread: GmailThreadListItem) {
     // Drafts → open compose pre-filled so the user can continue editing
@@ -379,12 +389,14 @@ export default function InboxScreen() {
           </TouchableOpacity>
           <Text style={styles.selectionText}>{selection.size} selected</Text>
           <View style={styles.selectionActions}>
-            <SelectionActionBtn icon="mail-unread-outline" onPress={() => void bulkAction('markUnread')} disabled={bulkBusy} />
-            <SelectionActionBtn icon="mail-open-outline" onPress={() => void bulkAction('markRead')} disabled={bulkBusy} />
-            <SelectionActionBtn icon="star-outline" onPress={() => void bulkAction('star')} disabled={bulkBusy} />
-            <SelectionActionBtn icon="archive-outline" onPress={() => void bulkAction('archive')} disabled={bulkBusy} />
-            <SelectionActionBtn icon="trash-outline" onPress={() => void bulkAction('trash')} disabled={bulkBusy} />
-            {bulkBusy && <ActivityIndicator size="small" color={Colors.primary} />}
+            {/* Star */}
+            <SelectionActionBtn icon="star-outline" onPress={() => bulkAction('star')} />
+            {/* Single read/unread toggle — if all selected are read, offer "mark unread"; otherwise offer "mark read" */}
+            {Array.from(selection).every((id) => !threads.find((t) => t.id === id)?.unread) ? (
+              <SelectionActionBtn icon="mail-unread-outline" onPress={() => bulkAction('markUnread')} />
+            ) : (
+              <SelectionActionBtn icon="mail-open-outline" onPress={() => bulkAction('markRead')} />
+            )}
           </View>
         </View>
       )}
@@ -448,7 +460,7 @@ export default function InboxScreen() {
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
-      ) : error ? (
+      ) : error && threads.length === 0 ? (
         <View style={styles.center}>
           <Ionicons name="warning-outline" size={32} color={Colors.error} />
           <Text style={styles.errorText}>{error}</Text>
@@ -467,6 +479,7 @@ export default function InboxScreen() {
               selected={selection.has(item.id)}
               selectionMode={selection.size > 0}
               rowBusy={rowBusy.has(item.id)}
+              onPressIn={() => { if (selection.size === 0 && folder !== 'drafts') prefetchThread(item.id); }}
               onPress={() => {
                 if (selection.size > 0) toggleSelect(item.id);
                 else openThread(item);
@@ -558,6 +571,7 @@ function ThreadRow({
   selected,
   selectionMode,
   rowBusy,
+  onPressIn,
   onPress,
   onLongPress,
   onToggleStar,
@@ -567,6 +581,7 @@ function ThreadRow({
   selected: boolean;
   selectionMode: boolean;
   rowBusy: boolean;
+  onPressIn?: () => void;
   onPress: () => void;
   onLongPress: () => void;
   onToggleStar: (next: boolean) => void;
@@ -578,7 +593,7 @@ function ThreadRow({
   const isStarred = Boolean(thread.starred);
   const chips = (thread.labelIds ?? [])
     .map((id) => labelsById.get(id))
-    .filter((l): l is GmailLabel => !!l && l.surfaced)
+    .filter((l): l is GmailLabel => !!l && l.type === 'user')
     .slice(0, 3);
   return (
     <TouchableOpacity
@@ -587,6 +602,7 @@ function ThreadRow({
         isUnread && styles.threadRowUnread,
         selected && styles.threadRowSelected,
       ]}
+      onPressIn={onPressIn}
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={300}

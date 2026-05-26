@@ -3,7 +3,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { useAuth } from '../hooks/useAuth';
+import { AuthContext, useAuth, useAuthState } from '../hooks/useAuth';
 import LoadingScreen from '../components/LoadingScreen';
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -23,16 +23,20 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 export default function RootLayout() {
+  const auth = useAuthState();
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar style="auto" />
-        <AuthGuard>
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="(auth)" />
-            <Stack.Screen name="(workspace)" />
-          </Stack>
-        </AuthGuard>
+        <AuthContext.Provider value={auth}>
+          <AuthGuard>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="(auth)" />
+              <Stack.Screen name="(workspace)" />
+            </Stack>
+          </AuthGuard>
+        </AuthContext.Provider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

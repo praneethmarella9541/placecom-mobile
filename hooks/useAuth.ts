@@ -1,9 +1,31 @@
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { Profile } from '../lib/types';
 
+interface AuthCtx {
+  session: Session | null;
+  user: User | null;
+  profile: Profile | null;
+  loading: boolean;
+  signOut: () => Promise<void>;
+  hasFeature: (feature: string) => boolean;
+}
+
+export const AuthContext = createContext<AuthCtx>({
+  session: null,
+  user: null,
+  profile: null,
+  loading: true,
+  signOut: async () => {},
+  hasFeature: () => false,
+});
+
 export function useAuth() {
+  return useContext(AuthContext);
+}
+
+export function useAuthState(): AuthCtx {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);

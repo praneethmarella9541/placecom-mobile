@@ -12,6 +12,7 @@ import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
 import { formsApi, type FormListRow } from '../../../lib/api';
 import { Colors } from '../../../constants/colors';
+import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
 
 export default function FormsScreen() {
   const router = useRouter();
@@ -26,12 +27,30 @@ export default function FormsScreen() {
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
 
+  const FORMS_CACHE_KEY = 'forms:list';
+
   const load = useCallback(async (opts: { append: boolean; pageToken?: string }) => {
     if (!opts.append) {
       setError(null);
+
+      // Serve stale data immediately while revalidating
+      const cached = cacheGet<FormListRow[]>(FORMS_CACHE_KEY);
+      if (cached) {
+        setForms(cached);
+        setLoading(false);
+        if (!cacheIsStale(FORMS_CACHE_KEY)) {
+          setRefreshing(false);
+          return;
+        }
+      }
     }
+
     try {
-      const data = await formsApi.list({ pageSize: 30, pageToken: opts.pageToken });
+      const data = await formsApi.list({ pageSize: 20, pageToken: opts.pageToken });
+      const updated = opts.append
+        ? [...(cacheGet<FormListRow[]>(FORMS_CACHE_KEY) ?? []), ...(data.forms ?? [])]
+        : data.forms ?? [];
+      if (!opts.append) cacheSet(FORMS_CACHE_KEY, updated);
       setForms((prev) => (opts.append ? [...prev, ...(data.forms ?? [])] : data.forms ?? []));
       setNextPageToken(data.nextPageToken);
     } catch (e: any) {
