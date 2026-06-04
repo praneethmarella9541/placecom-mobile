@@ -38,7 +38,14 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     headers: await authHeaders(),
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
+  if (!res.ok) {
+    let msg = `POST ${path} failed: ${res.status}`;
+    try {
+      const b = await res.json();
+      if (b?.error) msg = b.error;
+    } catch {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -150,8 +157,14 @@ export const gmailApi = {
       { ids: ids.join(',') }
     ),
   send: (body: GmailSendBody) => post<{ id: string; threadId: string }>('/api/gmail/send', body),
-  getContacts: () =>
-    get<{ contacts: Array<{ email: string; displayName?: string }>; hint?: string }>('/api/gmail/contacts'),
+  getContacts: (opts?: { q?: string }) => {
+    const params: Record<string, string> = {};
+    if (opts?.q?.trim()) params.q = opts.q.trim();
+    return get<{ contacts: Array<{ email: string; displayName?: string }>; hint?: string }>(
+      '/api/gmail/contacts',
+      Object.keys(params).length ? params : undefined
+    );
+  },
   getGoogleToken: () =>
     get<{ accessToken: string }>('/api/gmail/token'),
   attachmentUrl: (messageId: string, attachmentId: string, filename: string, mimeType: string) => {
@@ -187,7 +200,11 @@ export const crmApi = {
 
 // Calls
 export const callsApi = {
-  list: () => get<{ logs: any[] }>('/api/calls'),
+  list: () =>
+    get<{
+      logs: any[];
+      telephony?: { mobilePhone: string | null; exotelVirtualNumber: string | null };
+    }>('/api/calls'),
   transcribe: (callLogId: string) => post<any>('/api/calls/transcribe', { callLogId }),
   // `agentPhone` is this device's phone (in E.164) — required so the Exotel
   // connect webhook can match the right pending row when this user calls in.
@@ -286,9 +303,19 @@ export const meetingsApi = {
 };
 
 // Drive
+export type DriveListView = 'folder' | 'starred' | 'recent' | 'shared';
+
 export const driveApi = {
-  listFiles: (parentId?: string, opts?: { pageToken?: string; search?: string; pageSize?: number }) => {
-    const params: Record<string, string> = { parent: parentId ?? 'root' };
+  listFiles: (
+    parentId?: string,
+    opts?: { pageToken?: string; search?: string; pageSize?: number; view?: DriveListView }
+  ) => {
+    const params: Record<string, string> = {};
+    if (opts?.view && opts.view !== 'folder') {
+      params.view = opts.view;
+    } else {
+      params.parent = parentId ?? 'root';
+    }
     if (opts?.pageToken) params.pageToken = opts.pageToken;
     if (opts?.search) params.search = opts.search;
     if (opts?.pageSize) params.pageSize = String(opts.pageSize);
@@ -305,6 +332,11 @@ export const driveApi = {
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     return res.json();
   },
+  createFolder: (name: string, parentId?: string) =>
+    post<{ id: string; name: string }>('/api/drive/folders', {
+      name,
+      parent: parentId ?? 'root',
+    }),
 };
 
 // Forms
@@ -429,10 +461,46 @@ export const mailMergeApi = {
 
 // Admin
 export const adminApi = {
-  listTeam: () => get<{ members: any[] }>('/api/admin/team'),
-  createMember: (data: any) => post('/api/admin/team', data),
-  updateMember: (id: string, data: any) => post(`/api/admin/team/${id}`, data),
-  deleteMember: (id: string) => del(`/api/admin/team/${id}`),
+  listExotelNumbers: () => get<{ numbers: string[] }>('/api/admin/exotel-numbers'),
+  listTeam: () => get<{ members: any[] }>('/api/admin/team-members'),
+  createMember: (data: {
+    email: string;
+    password: string;
+    role: 'staff' | 'committee';
+    restrictedFeatures?: string[];
+    mobilePhone?: string | null;
+    exotelVirtualNumber?: string | null;
+  }) => post('/api/admin/staff-users', data),
+  updateMember: async (
+    userId: string,
+    data: {
+      email?: string;
+      password?: string;
+      role?: 'staff' | 'committee';
+      restrictedFeatures?: string[];
+      mobilePhone?: string | null;
+      exotelVirtualNumber?: string | null;
+    }
+  ) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/team-members`, {
+      method: 'PATCH',
+      headers: await authHeaders(),
+      body: JSON.stringify({ userId, ...data }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
+    return body;
+  },
+  deleteMember: async (userId: string) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/team-members`, {
+      method: 'DELETE',
+      headers: await authHeaders(),
+      body: JSON.stringify({ userId }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
+    return body;
+  },
 };
 
 // Dashboard / Extraction

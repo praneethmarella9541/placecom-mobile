@@ -6,6 +6,8 @@ export interface Profile {
   display_name: string | null;
   role: UserRole;
   restricted_features: string[];
+  mobile_phone: string | null;
+  exotel_virtual_number: string | null;
 }
 
 export type LeadStage =
@@ -138,6 +140,9 @@ export interface DriveFile {
   size?: string | null;
   modifiedTime: string;
   webViewLink?: string | null;
+  starred?: boolean;
+  shared?: boolean;
+  thumbnailLink?: string | null;
 }
 
 export interface CalendarEvent {

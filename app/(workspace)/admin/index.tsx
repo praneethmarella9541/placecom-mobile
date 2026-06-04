@@ -37,12 +37,17 @@ export default function AdminScreen() {
   const [newRole, setNewRole] = useState<'admin' | 'staff' | 'committee'>('staff');
   const [newPassword, setNewPassword] = useState('');
   const [restrictedFeatures, setRestrictedFeatures] = useState<string[]>([]);
+  const [mobilePhone, setMobilePhone] = useState('');
+  const [exotelNumber, setExotelNumber] = useState('');
+  const [exotelNumbers, setExotelNumbers] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   const loadMembers = useCallback(async () => {
     try {
       const data = await adminApi.listTeam();
-      setMembers(data.members ?? []);
+      setMembers(
+        (data.members ?? []).filter((m) => m.role === 'staff' || m.role === 'committee')
+      );
     } catch {
       setMembers([]);
     } finally {
@@ -52,6 +57,10 @@ export default function AdminScreen() {
   }, []);
 
   useEffect(() => { loadMembers(); }, [loadMembers]);
+
+  useEffect(() => {
+    adminApi.listExotelNumbers().then((d) => setExotelNumbers(d.numbers ?? [])).catch(() => setExotelNumbers([]));
+  }, []);
 
   if (profile?.role !== 'admin') {
     return (
@@ -68,16 +77,20 @@ export default function AdminScreen() {
     setNewRole('staff');
     setNewPassword('');
     setRestrictedFeatures([]);
+    setMobilePhone('');
+    setExotelNumber('');
     setEditMember(null);
     setShowAdd(true);
   }
 
   function openEdit(member: any) {
     setNewEmail(member.email ?? '');
-    setNewName(member.display_name ?? '');
+    setNewName(member.displayUsername ?? member.display_name ?? '');
     setNewRole(member.role ?? 'staff');
     setNewPassword('');
-    setRestrictedFeatures(member.restricted_features ?? []);
+    setRestrictedFeatures(member.restrictedFeatures ?? member.restricted_features ?? []);
+    setMobilePhone(member.mobilePhone ?? member.mobile_phone ?? '');
+    setExotelNumber(member.exotelVirtualNumber ?? member.exotel_virtual_number ?? '');
     setEditMember(member);
     setShowAdd(true);
   }
@@ -86,19 +99,30 @@ export default function AdminScreen() {
     setSaving(true);
     try {
       if (editMember) {
+        if (newRole === 'admin') {
+          Alert.alert('Error', 'Use the web app to manage admin accounts.');
+          return;
+        }
         await adminApi.updateMember(editMember.id, {
-          display_name: newName,
-          role: newRole,
-          restricted_features: restrictedFeatures,
+          email: newEmail.trim().toLowerCase(),
+          role: newRole as 'staff' | 'committee',
+          restrictedFeatures: newRole === 'committee' ? restrictedFeatures : [],
+          mobilePhone: mobilePhone.trim() || null,
+          exotelVirtualNumber: exotelNumber.trim() || null,
           ...(newPassword ? { password: newPassword } : {}),
         });
       } else {
+        if (newRole === 'admin') {
+          Alert.alert('Error', 'New admins must be created on the web app.');
+          return;
+        }
         await adminApi.createMember({
-          email: newEmail,
-          display_name: newName,
-          role: newRole,
+          email: newEmail.trim().toLowerCase(),
+          role: newRole as 'staff' | 'committee',
           password: newPassword,
-          restricted_features: restrictedFeatures,
+          restrictedFeatures: newRole === 'committee' ? restrictedFeatures : [],
+          mobilePhone: mobilePhone.trim() || null,
+          exotelVirtualNumber: exotelNumber.trim() || null,
         });
       }
       setShowAdd(false);
@@ -151,7 +175,7 @@ export default function AdminScreen() {
             <MemberRow
               member={item}
               onEdit={() => openEdit(item)}
-              onDelete={() => deleteMember(item.id, item.display_name ?? item.email)}
+              onDelete={() => deleteMember(item.id, item.displayUsername ?? item.display_name ?? item.email)}
             />
           )}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadMembers(); }} tintColor={Colors.primary} />}
@@ -208,6 +232,54 @@ export default function AdminScreen() {
                 <TextInput style={styles.input} value={newPassword} onChangeText={setNewPassword} placeholder="Password" placeholderTextColor={Colors.textMuted} secureTextEntry />
               </View>
 
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Personal mobile</Text>
+                <Text style={styles.sublabel}>Incoming Exotel calls transfer to this number</Text>
+                <TextInput
+                  style={styles.input}
+                  value={mobilePhone}
+                  onChangeText={setMobilePhone}
+                  placeholder="+919876543210"
+                  placeholderTextColor={Colors.textMuted}
+                  keyboardType="phone-pad"
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Exotel number</Text>
+                <Text style={styles.sublabel}>Which virtual line this member uses for calls</Text>
+                {exotelNumbers.length > 0 ? (
+                  <View style={styles.roleRow}>
+                    <TouchableOpacity
+                      style={[styles.roleBtn, !exotelNumber && styles.roleBtnActive]}
+                      onPress={() => setExotelNumber('')}
+                    >
+                      <Text style={[styles.roleBtnText, !exotelNumber && styles.roleBtnTextActive]}>None</Text>
+                    </TouchableOpacity>
+                    {exotelNumbers.map((n) => (
+                      <TouchableOpacity
+                        key={n}
+                        style={[styles.roleBtn, exotelNumber === n && styles.roleBtnActive]}
+                        onPress={() => setExotelNumber(n)}
+                      >
+                        <Text style={[styles.roleBtnText, exotelNumber === n && styles.roleBtnTextActive]} numberOfLines={1}>
+                          {n.replace('+91', '+91 ')}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : (
+                  <TextInput
+                    style={styles.input}
+                    value={exotelNumber}
+                    onChangeText={setExotelNumber}
+                    placeholder="+91…"
+                    placeholderTextColor={Colors.textMuted}
+                    keyboardType="phone-pad"
+                  />
+                )}
+              </View>
+
               {newRole === 'committee' && (
                 <View style={styles.fieldGroup}>
                   <Text style={styles.label}>Restricted Features</Text>
@@ -252,8 +324,13 @@ function MemberRow({ member, onEdit, onDelete }: { member: any; onEdit: () => vo
         </Text>
       </View>
       <View style={styles.memberInfo}>
-        <Text style={styles.memberName}>{member.display_name ?? 'No name'}</Text>
+        <Text style={styles.memberName}>{member.displayUsername ?? member.display_name ?? 'No name'}</Text>
         <Text style={styles.memberEmail}>{member.email}</Text>
+        {(member.exotelVirtualNumber ?? member.exotel_virtual_number) ? (
+          <Text style={styles.memberMeta}>
+            Exotel: {member.exotelVirtualNumber ?? member.exotel_virtual_number}
+          </Text>
+        ) : null}
         <Badge label={member.role} bgColor={rc.bg} color={rc.text} />
       </View>
       <View style={styles.memberActions}>
@@ -296,6 +373,7 @@ const styles = StyleSheet.create({
   memberInfo: { flex: 1, gap: 3 },
   memberName: { fontSize: 14, fontWeight: '700', color: Colors.text },
   memberEmail: { fontSize: 12, color: Colors.textSecondary },
+  memberMeta: { fontSize: 11, color: Colors.textMuted },
   memberActions: { flexDirection: 'row', gap: 4 },
   actionBtn: { padding: 6 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
