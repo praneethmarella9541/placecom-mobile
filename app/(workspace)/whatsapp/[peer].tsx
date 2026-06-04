@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { format } from 'date-fns';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { whatsappApi } from '../../../lib/api';
+import { isValidE164, normalizePhone } from '../../../lib/phone';
 import { Colors } from '../../../constants/colors';
 
 export default function WhatsAppConversationScreen() {
@@ -20,8 +21,11 @@ export default function WhatsAppConversationScreen() {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [businessLine, setBusinessLine] = useState<string | null>(null);
+  const [needsTemplate, setNeedsTemplate] = useState(false);
+  const [templateVar1, setTemplateVar1] = useState('');
+  const [templateVar2, setTemplateVar2] = useState('');
 
-  const peerDecoded = decodeURIComponent(peer ?? '');
+  const peerDecoded = normalizePhone(decodeURIComponent(peer ?? ''));
 
   const loadMessages = useCallback(async () => {
     try {
@@ -35,13 +39,35 @@ export default function WhatsAppConversationScreen() {
     }
   }, [peerDecoded]);
 
-  useEffect(() => { loadMessages(); }, [loadMessages]);
+  useEffect(() => {
+    if (!isValidE164(peerDecoded)) {
+      Alert.alert('Invalid number', 'Use +918489431508 or 8489431508');
+      router.back();
+      return;
+    }
+    loadMessages();
+  }, [loadMessages, peerDecoded, router]);
+
+  useEffect(() => {
+    whatsappApi.session(peerDecoded).then((d) => setNeedsTemplate(d.requiresTemplate ?? !d.sessionOpen)).catch(() => setNeedsTemplate(false));
+  }, [peerDecoded]);
 
   async function send() {
-    if (!text.trim()) return;
+    if (needsTemplate) {
+      if (!templateVar1.trim() || !templateVar2.trim()) {
+        Alert.alert('Template required', 'Enter recipient name and your name for the opening template.');
+        return;
+      }
+    } else if (!text.trim()) {
+      return;
+    }
     setSending(true);
     try {
-      await whatsappApi.send(peerDecoded, text.trim());
+      await whatsappApi.send(peerDecoded, {
+        text: needsTemplate ? undefined : text.trim(),
+        useTemplate: needsTemplate,
+        templateVariables: needsTemplate ? [templateVar1.trim(), templateVar2.trim()] : undefined,
+      });
       setText('');
       await loadMessages();
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
@@ -83,17 +109,48 @@ export default function WhatsAppConversationScreen() {
           />
         )}
 
+        {needsTemplate ? (
+          <View style={styles.templateBox}>
+            <Text style={styles.templateTitle}>First message uses approved template</Text>
+            <Text style={styles.templateHint}>Hi [name], this is [you] from PlaceCom</Text>
+            <View style={styles.templateRow}>
+              <TextInput
+                style={styles.templateInput}
+                value={templateVar1}
+                onChangeText={setTemplateVar1}
+                placeholder="Recipient name"
+                placeholderTextColor={Colors.textMuted}
+              />
+              <TextInput
+                style={styles.templateInput}
+                value={templateVar2}
+                onChangeText={setTemplateVar2}
+                placeholder="Your name"
+                placeholderTextColor={Colors.textMuted}
+              />
+            </View>
+          </View>
+        ) : null}
+
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <TextInput
             style={styles.input}
             value={text}
             onChangeText={setText}
-            placeholder="Message..."
+            placeholder={needsTemplate ? 'Free text after they reply…' : 'Message...'}
             placeholderTextColor={Colors.textMuted}
             multiline
             maxLength={1600}
+            editable={!needsTemplate}
           />
-          <TouchableOpacity style={styles.sendBtn} onPress={send} disabled={sending || !text.trim()}>
+          <TouchableOpacity
+            style={styles.sendBtn}
+            onPress={send}
+            disabled={
+              sending ||
+              (needsTemplate ? !templateVar1.trim() || !templateVar2.trim() : !text.trim())
+            }
+          >
             {sending ? (
               <ActivityIndicator size="small" color={Colors.surface} />
             ) : (
@@ -170,6 +227,26 @@ const styles = StyleSheet.create({
   mediaHintOut: { color: '#4CAF50' },
   bubbleTime: { fontSize: 10, color: Colors.textMuted, textAlign: 'right' },
   bubbleTimeOut: { color: '#7CB875' },
+  templateBox: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    padding: 10,
+    backgroundColor: '#FFF8E1',
+    borderRadius: 8,
+    gap: 6,
+  },
+  templateTitle: { fontSize: 12, fontWeight: '700', color: '#92400E' },
+  templateHint: { fontSize: 11, color: '#B45309' },
+  templateRow: { flexDirection: 'row', gap: 8 },
+  templateInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 8,
+    padding: 8,
+    fontSize: 14,
+    backgroundColor: Colors.surface,
+  },
   inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',

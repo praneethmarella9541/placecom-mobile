@@ -10,6 +10,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
 import { whatsappApi } from '../../../lib/api';
+import { isValidE164, normalizePhone } from '../../../lib/phone';
 import { Colors } from '../../../constants/colors';
 
 export default function WhatsAppScreen() {
@@ -40,9 +41,20 @@ export default function WhatsAppScreen() {
   useEffect(() => { load(); }, [load]);
 
   function newConversation() {
-    Alert.prompt('New WhatsApp Message', 'Enter phone number (with country code)', (num) => {
-      if (num) router.push(`/(workspace)/whatsapp/${encodeURIComponent(num)}` as any);
-    }, 'plain-text');
+    Alert.prompt(
+      'New WhatsApp Message',
+      'Enter mobile (+91… or 10 digits, e.g. 8489431508)',
+      (num) => {
+        if (!num?.trim()) return;
+        const peer = normalizePhone(num.trim());
+        if (!isValidE164(peer)) {
+          Alert.alert('Invalid number', 'Use +918489431508 or 8489431508');
+          return;
+        }
+        router.push(`/(workspace)/whatsapp/${encodeURIComponent(peer)}` as any);
+      },
+      'plain-text'
+    );
   }
 
   const filtered = conversations.filter((c) => {
