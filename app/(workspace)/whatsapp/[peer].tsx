@@ -19,6 +19,7 @@ export default function WhatsAppConversationScreen() {
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [businessLine, setBusinessLine] = useState<string | null>(null);
 
   const peerDecoded = decodeURIComponent(peer ?? '');
 
@@ -26,6 +27,7 @@ export default function WhatsAppConversationScreen() {
     try {
       const data = await whatsappApi.getMessages(peerDecoded);
       setMessages(data.messages ?? []);
+      if (data.businessLine) setBusinessLine(data.businessLine);
     } catch {
       setMessages([]);
     } finally {
@@ -62,7 +64,9 @@ export default function WhatsAppConversationScreen() {
           </View>
           <View style={styles.headerInfo}>
             <Text style={styles.headerTitle}>{peerDecoded}</Text>
-            <Text style={styles.headerSub}>WhatsApp</Text>
+            <Text style={styles.headerSub}>
+              {businessLine ? `via ${businessLine}` : 'WhatsApp'}
+            </Text>
           </View>
         </View>
 

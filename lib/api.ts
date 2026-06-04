@@ -223,9 +223,20 @@ export const smsApi = {
 
 // WhatsApp
 export const whatsappApi = {
-  listConversations: () => get<{ conversations: any[] }>('/api/whatsapp/conversations'),
-  getMessages: (peer: string) => get<{ messages: any[] }>('/api/whatsapp/messages', { peer }),
-  send: (to: string, body: string) => post('/api/whatsapp/send', { to, body }),
+  status: () =>
+    get<{
+      sendConfigured?: boolean;
+      businessLine?: string | null;
+      lineError?: string | null;
+      suggestedInboundWebhookUrl?: string | null;
+    }>('/api/whatsapp/status'),
+  listConversations: () =>
+    get<{ conversations: any[]; businessLine?: string | null; error?: string }>(
+      '/api/whatsapp/conversations'
+    ),
+  getMessages: (peer: string) =>
+    get<{ messages: any[]; businessLine?: string | null }>('/api/whatsapp/messages', { peer }),
+  send: (to: string, body: string) => post('/api/whatsapp/send', { to, text: body }),
 };
 
 // Calendar

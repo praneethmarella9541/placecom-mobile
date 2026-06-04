@@ -19,13 +19,18 @@ export default function WhatsAppScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const [businessLine, setBusinessLine] = useState<string | null>(null);
+  const [lineError, setLineError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const data = await whatsappApi.listConversations();
       setConversations(data.conversations ?? []);
-    } catch {
+      setBusinessLine(data.businessLine ?? null);
+      setLineError((data as { error?: string }).error ?? null);
+    } catch (e: unknown) {
       setConversations([]);
+      setLineError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -40,9 +45,11 @@ export default function WhatsAppScreen() {
     }, 'plain-text');
   }
 
-  const filtered = conversations.filter((c) =>
-    c.peer_e164?.includes(search) || c.last_message?.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = conversations.filter((c) => {
+    const q = search.toLowerCase();
+    const body = (c.last_body ?? c.last_message ?? '').toLowerCase();
+    return c.peer_e164?.includes(search) || body.includes(q);
+  });
 
   return (
     <View style={styles.container}>
@@ -51,6 +58,15 @@ export default function WhatsAppScreen() {
         onMenuPress={openDrawer}
         rightAction={{ icon: 'create-outline', onPress: newConversation }}
       />
+      {lineError && !businessLine ? (
+        <View style={styles.banner}>
+          <Text style={styles.bannerText}>{lineError}</Text>
+        </View>
+      ) : businessLine ? (
+        <View style={styles.lineBanner}>
+          <Text style={styles.lineBannerText}>Your line: {businessLine}</Text>
+        </View>
+      ) : null}
       <View style={styles.searchBar}>
         <Ionicons name="search-outline" size={16} color={Colors.textMuted} />
         <TextInput
@@ -89,10 +105,14 @@ function ConvRow({ conv, onPress }: { conv: any; onPress: () => void }) {
         <View style={styles.rowTop}>
           <Text style={styles.peerNum}>{conv.peer_e164}</Text>
           <Text style={styles.time}>
-            {conv.last_message_at ? formatDistanceToNow(new Date(conv.last_message_at), { addSuffix: true }) : ''}
+            {(conv.last_at ?? conv.last_message_at)
+              ? formatDistanceToNow(new Date(conv.last_at ?? conv.last_message_at), { addSuffix: true })
+              : ''}
           </Text>
         </View>
-        <Text style={styles.lastMsg} numberOfLines={1}>{conv.last_message ?? 'No messages yet'}</Text>
+        <Text style={styles.lastMsg} numberOfLines={1}>
+          {conv.last_body ?? conv.last_message ?? 'No messages yet'}
+        </Text>
       </View>
       {conv.unread_count > 0 && (
         <View style={styles.badge}>
@@ -106,6 +126,22 @@ function ConvRow({ conv, onPress }: { conv: any; onPress: () => void }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  banner: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    padding: 12,
+    backgroundColor: '#FEF3C7',
+    borderRadius: 8,
+  },
+  bannerText: { fontSize: 13, color: '#92400E' },
+  lineBanner: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    padding: 10,
+    backgroundColor: '#DCFCE7',
+    borderRadius: 8,
+  },
+  lineBannerText: { fontSize: 12, color: '#166534' },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
