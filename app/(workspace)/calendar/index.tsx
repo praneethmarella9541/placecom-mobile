@@ -1,862 +1,874 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Alert, Modal, TextInput,
-  ScrollView, KeyboardAvoidingView, Platform,
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  StyleSheet,
+  RefreshControl,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval,
-  isSameDay, isToday, addMinutes,
+  format,
+  startOfMonth,
+  endOfMonth,
+  eachDayOfInterval,
+  isSameDay,
+  isToday,
+  startOfWeek,
+  endOfWeek,
+  addWeeks,
+  subWeeks,
+  addMonths,
+  subMonths,
+  addDays,
+  subDays,
+  isSameMonth,
+  isBefore,
+  startOfDay,
+  endOfDay,
 } from 'date-fns';
-import ScreenHeader from '../../../components/ScreenHeader';
 import { useDrawer } from '../_layout';
-import { calendarApi, gmailApi, type CalendarEventInput, type CalendarSendUpdates } from '../../../lib/api';
-import { Colors } from '../../../constants/colors';
+import {
+  calendarApi,
+  gmailApi,
+  type CalendarEventInput,
+  type CalendarSendUpdates,
+} from '../../../lib/api';
 import type { CalendarEvent } from '../../../lib/types';
+import { CalendarTheme, getEventColor } from '../../../constants/calendarTheme';
+import { CalendarEventRow } from '../../../components/calendar/CalendarEventRow';
+import { CalendarEventDetailSheet } from '../../../components/calendar/CalendarEventDetailSheet';
+import { CalendarEventEditor } from '../../../components/calendar/CalendarEventEditor';
+import { CalendarNotifySheet } from '../../../components/calendar/CalendarNotifySheet';
+import {
+  parseEventDate,
+  parseEventEnd,
+  editorFromEvent,
+  newEventEditor,
+  buildEventPayload,
+  validateEditor,
+  attendeeCount,
+  isAllDayEvent,
+  type CalendarEditorState,
+} from '../../../lib/calendar-utils';
+import { copyText, joinGoogleMeet } from '../../../lib/calendar-actions';
 
-const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+type ViewMode = 'month' | 'week' | 'day' | 'list';
+type NotifyMode = 'save' | 'delete' | null;
+interface Contact { email: string; displayName?: string }
 
-interface Contact { email: string; displayName?: string; }
+const HOUR_HEIGHT = 56;
+const TIME_GUTTER = 46;
+const SCREEN_W = Dimensions.get('window').width;
+const WEEK_COL_W = (SCREEN_W - TIME_GUTTER) / 7;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function currentToken(raw: string): string {
   const parts = raw.split(/[,;]/);
   return (parts[parts.length - 1] ?? '').trim().toLowerCase();
 }
-
 function replaceLastToken(raw: string, chosen: string): string {
   const parts = raw.split(/[,;]/);
   parts[parts.length - 1] = ' ' + chosen;
   return parts.join(', ').replace(/^,\s*/, '') + ', ';
 }
-
-function combineDateTime(date: Date, hours: number, minutes: number): Date {
-  const d = new Date(date);
-  d.setHours(hours, minutes, 0, 0);
-  return d;
+function eventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
+  return events
+    .filter((e) => { const d = parseEventDate(e); return d && isSameDay(d, day); })
+    .sort((a, b) => (parseEventDate(a)?.getTime() ?? 0) - (parseEventDate(b)?.getTime() ?? 0));
 }
 
-function parseEventDate(e: CalendarEvent): Date | null {
-  const s = e.start.dateTime ?? e.start.date;
-  if (!s) return null;
-  try { return parseISO(s); } catch { return null; }
+// ─── TimeGrid — shared between Week and Day views ────────────────────────────
+
+function TimeGrid({
+  days,
+  events,
+  selectedDay,
+  onSelectDay,
+  onSelectEvent,
+}: {
+  days: Date[];
+  events: CalendarEvent[];
+  selectedDay: Date;
+  onSelectDay: (d: Date) => void;
+  onSelectEvent: (e: CalendarEvent) => void;
+}) {
+  const scrollRef = useRef<ScrollView>(null);
+  const isDay = days.length === 1;
+
+  useEffect(() => {
+    const hour = Math.max(0, new Date().getHours() - 1);
+    setTimeout(() => scrollRef.current?.scrollTo({ y: hour * HOUR_HEIGHT, animated: false }), 80);
+  }, [days[0]?.toISOString()]);
+
+  const now = new Date();
+  const nowTop = (now.getHours() * 60 + now.getMinutes()) / 60 * HOUR_HEIGHT;
+
+  const allDayForDays = days.map((day) =>
+    events.filter((e) => isAllDayEvent(e) && parseEventDate(e) && isSameDay(parseEventDate(e)!, day))
+  );
+  const hasAllDay = allDayForDays.some((arr) => arr.length > 0);
+
+  const colW = isDay ? SCREEN_W - TIME_GUTTER : WEEK_COL_W;
+
+  return (
+    <View style={{ flex: 1 }}>
+      {/* Day header row */}
+      <View style={styles.gridDayHeaderRow}>
+        <View style={{ width: TIME_GUTTER }} />
+        {days.map((day) => {
+          const sel = isSameDay(day, selectedDay);
+          const tod = isToday(day);
+          return (
+            <TouchableOpacity
+              key={day.toISOString()}
+              style={{ flex: 1, alignItems: 'center', paddingVertical: 4 }}
+              onPress={() => onSelectDay(day)}
+            >
+              {!isDay && (
+                <Text style={[styles.gridDayName, tod && { color: CalendarTheme.todayRed }]}>
+                  {format(day, 'EEE')}
+                </Text>
+              )}
+              <View style={[
+                styles.gridDayCircle,
+                sel && { backgroundColor: CalendarTheme.blue },
+                tod && !sel && { backgroundColor: CalendarTheme.todayRed },
+              ]}>
+                <Text style={[
+                  styles.gridDayNum,
+                  (sel || tod) && { color: '#fff', fontWeight: '700' },
+                ]}>
+                  {isDay ? format(day, 'EEE d') : format(day, 'd')}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* All-day strip */}
+      {hasAllDay && (
+        <View style={styles.allDayStrip}>
+          <View style={{ width: TIME_GUTTER }}>
+            <Text style={styles.allDayLabel}>all{'\n'}day</Text>
+          </View>
+          {days.map((day, i) => (
+            <View key={day.toISOString()} style={{ flex: 1, paddingHorizontal: 1, gap: 1 }}>
+              {allDayForDays[i].slice(0, 2).map((e) => (
+                <TouchableOpacity
+                  key={e.id}
+                  style={[styles.allDayChip, { backgroundColor: getEventColor(e) }]}
+                  onPress={() => onSelectEvent(e)}
+                >
+                  <Text style={styles.allDayChipText} numberOfLines={1}>
+                    {e.summary || '(No title)'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Time grid */}
+      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false}>
+        <View style={{ flexDirection: 'row', height: 24 * HOUR_HEIGHT }}>
+          {/* Time gutter */}
+          <View style={{ width: TIME_GUTTER }}>
+            {Array.from({ length: 24 }, (_, h) => (
+              <View key={h} style={[styles.timeGutterCell, { height: HOUR_HEIGHT }]}>
+                {h > 0 && (
+                  <Text style={styles.timeLabel}>
+                    {h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`}
+                  </Text>
+                )}
+              </View>
+            ))}
+          </View>
+
+          {/* Day columns */}
+          {days.map((day) => {
+            const timedEvents = eventsForDay(events, day).filter((e) => !isAllDayEvent(e));
+            const isCurDay = isToday(day);
+
+            return (
+              <View
+                key={day.toISOString()}
+                style={[
+                  { width: colW, height: 24 * HOUR_HEIGHT, position: 'relative' },
+                  // Vertical grid line between day columns (week view only).
+                  !isDay && styles.dayColumnBorder,
+                ]}
+              >
+                {/* Hour divider lines */}
+                {Array.from({ length: 24 }, (_, h) => (
+                  <View
+                    key={h}
+                    style={[
+                      styles.hourLine,
+                      { top: h * HOUR_HEIGHT },
+                      isSameDay(day, selectedDay) && { backgroundColor: '#EAF1FD' },
+                    ]}
+                  />
+                ))}
+
+                {/* Timed events */}
+                {timedEvents.map((e) => {
+                  const start = parseEventDate(e);
+                  if (!start) return null;
+                  const end = parseEventEnd(e) ?? addDays(start, 0);
+                  const startMin = start.getHours() * 60 + start.getMinutes();
+                  const endMin = end.getHours() * 60 + end.getMinutes();
+                  const top = (startMin / 60) * HOUR_HEIGHT;
+                  const height = Math.max(((Math.max(endMin - startMin, 15)) / 60) * HOUR_HEIGHT, 22);
+                  const color = getEventColor(e);
+                  return (
+                    <TouchableOpacity
+                      key={e.id}
+                      style={[
+                        styles.gridEvent,
+                        { top, height, backgroundColor: color + '22', borderLeftColor: color },
+                        isDay && { left: 2, right: 2 },
+                      ]}
+                      onPress={() => onSelectEvent(e)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.gridEventTitle, { color }]} numberOfLines={2}>
+                        {e.summary || '(No title)'}
+                      </Text>
+                      {height > 34 && (
+                        <Text style={[styles.gridEventTime, { color }]} numberOfLines={1}>
+                          {format(start, 'h:mm a')}
+                          {end ? ` – ${format(end, 'h:mm a')}` : ''}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* Current time line */}
+                {isCurDay && (
+                  <>
+                    <View style={[styles.nowLine, { top: nowTop - 1 }]} />
+                    <View style={[styles.nowDot, { top: nowTop - 4 }]} />
+                  </>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      </ScrollView>
+    </View>
+  );
 }
 
-type EditorState = {
-  id?: string;
-  summary: string;
-  location: string;
-  description: string;
-  startDate: Date;
-  startHour: number;
-  startMinute: number;
-  endDate: Date;
-  endHour: number;
-  endMinute: number;
-  attendeesRaw: string;
-  /** Add Google Meet to a new event, or to an existing event that lacks one. */
-  addMeet: boolean;
-  /** Already has a Meet link (set when editing) — show as informational, can't unset via mobile. */
-  hasExistingMeet: boolean;
-};
+// ─── List (schedule) view ─────────────────────────────────────────────────────
+
+function ListView({
+  events,
+  onSelectEvent,
+  onJoinMeet,
+  loading,
+  onRefresh,
+  refreshing,
+}: {
+  events: CalendarEvent[];
+  onSelectEvent: (e: CalendarEvent) => void;
+  onJoinMeet: (link: string) => void;
+  loading: boolean;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const today = startOfDay(new Date());
+  const sorted = [...events]
+    .filter((e) => { const d = parseEventDate(e); return d && !isBefore(d, today); })
+    .sort((a, b) => (parseEventDate(a)?.getTime() ?? 0) - (parseEventDate(b)?.getTime() ?? 0));
+
+  const groups: { date: Date; items: CalendarEvent[] }[] = [];
+  for (const e of sorted) {
+    const d = parseEventDate(e);
+    if (!d) continue;
+    const last = groups[groups.length - 1];
+    if (last && isSameDay(last.date, d)) last.items.push(e);
+    else groups.push({ date: d, items: [e] });
+  }
+
+  if (loading) return <View style={styles.center}><ActivityIndicator color={CalendarTheme.blue} /></View>;
+  if (groups.length === 0) return (
+    <View style={styles.center}>
+      <Ionicons name="calendar-outline" size={44} color={CalendarTheme.border} />
+      <Text style={styles.emptyText}>No upcoming events</Text>
+    </View>
+  );
+
+  return (
+    <FlatList
+      data={groups}
+      keyExtractor={(g) => g.date.toISOString()}
+      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 }}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={CalendarTheme.blue} />}
+      renderItem={({ item: g }) => (
+        <View style={styles.scheduleGroup}>
+          <View style={styles.scheduleDateCol}>
+            <Text style={[styles.schedWeekday, isToday(g.date) && { color: CalendarTheme.todayRed }]}>
+              {isToday(g.date) ? 'TODAY' : format(g.date, 'EEE').toUpperCase()}
+            </Text>
+            <View style={[styles.schedDayCircle, isToday(g.date) && { backgroundColor: CalendarTheme.todayRed }]}>
+              <Text style={[styles.schedDayNum, isToday(g.date) && { color: '#fff' }]}>
+                {format(g.date, 'd')}
+              </Text>
+            </View>
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            {g.items.map((e) => (
+              <CalendarEventRow
+                key={e.id}
+                event={e}
+                color={getEventColor(e)}
+                onPress={() => onSelectEvent(e)}
+                onJoinMeet={e.hangoutLink ? () => onJoinMeet(e.hangoutLink!) : undefined}
+              />
+            ))}
+          </View>
+        </View>
+      )}
+    />
+  );
+}
+
+// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function CalendarScreen() {
   const { openDrawer } = useDrawer();
+  const insets = useSafeAreaInsets();
+
+  const [viewMode, setViewMode] = useState<ViewMode>('month');
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [selectedDay, setSelectedDay] = useState<Date>(new Date());
-  const [editor, setEditor] = useState<EditorState | null>(null);
+  const [anchor, setAnchor] = useState(new Date());
+  const [selectedDay, setSelectedDay] = useState(new Date());
+
+  const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null);
+  const [editor, setEditor] = useState<CalendarEditorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [pendingPayload, setPendingPayload] = useState<CalendarEventInput | null>(null);
+  const [notifyMode, setNotifyMode] = useState<NotifyMode>(null);
   const [allContacts, setAllContacts] = useState<Contact[]>([]);
   const [attendeeSuggestions, setAttendeeSuggestions] = useState<Contact[]>([]);
 
-  // Load contacts once for attendee autocomplete
   useEffect(() => {
-    gmailApi.getContacts()
-      .then((r) => setAllContacts(r.contacts ?? []))
-      .catch(() => { /* non-fatal */ });
+    gmailApi.getContacts().then((r) => setAllContacts(r.contacts ?? [])).catch(() => {});
   }, []);
-
-  function computeAttendeeSuggestions(raw: string) {
-    const token = currentToken(raw);
-    if (token.length < 2 || allContacts.length === 0) {
-      setAttendeeSuggestions([]);
-      return;
-    }
-    const matches = allContacts.filter(
-      (c) =>
-        c.email.toLowerCase().includes(token) ||
-        (c.displayName ?? '').toLowerCase().includes(token)
-    ).slice(0, 6);
-    setAttendeeSuggestions(matches);
-  }
-
-  function pickAttendee(contact: Contact) {
-    if (!editor) return;
-    setEditor({ ...editor, attendeesRaw: replaceLastToken(editor.attendeesRaw, contact.email) });
-    setAttendeeSuggestions([]);
-  }
 
   const loadEvents = useCallback(async () => {
     try {
-      const start = startOfMonth(currentDate).toISOString();
-      const end = endOfMonth(currentDate).toISOString();
+      let start = startOfMonth(anchor).toISOString();
+      let end = endOfMonth(anchor).toISOString();
+      if (viewMode === 'week') {
+        const ws = startOfWeek(anchor).toISOString();
+        const we = endOfWeek(anchor).toISOString();
+        start = ws < start ? ws : start;
+        end = we > end ? we : end;
+      } else if (viewMode === 'day') {
+        start = startOfDay(anchor).toISOString();
+        end = endOfDay(anchor).toISOString();
+      }
       const data = await calendarApi.listEvents(start, end);
       setEvents((data.events as CalendarEvent[]) ?? []);
-    } catch (e: any) {
-      Alert.alert('Could not load calendar', e?.message ?? 'Unknown error');
+    } catch (e: unknown) {
+      Alert.alert('Could not load calendar', e instanceof Error ? e.message : 'Unknown error');
       setEvents([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentDate]);
+  }, [anchor, viewMode]);
 
-  useEffect(() => { loadEvents(); }, [loadEvents]);
+  useEffect(() => { setLoading(true); loadEvents(); }, [loadEvents]);
 
-  const days = eachDayOfInterval({ start: startOfMonth(currentDate), end: endOfMonth(currentDate) });
-  const dayEvents = events
-    .filter((e) => {
-      const d = parseEventDate(e);
-      return d && isSameDay(d, selectedDay);
-    })
-    .sort((a, b) => {
-      const da = parseEventDate(a)?.getTime() ?? 0;
-      const db = parseEventDate(b)?.getTime() ?? 0;
-      return da - db;
-    });
-
-  function openNewEvent() {
-    const now = new Date();
-    const start = combineDateTime(selectedDay, now.getHours() + 1, 0);
-    const end = addMinutes(start, 60);
-    setEditor({
-      summary: '',
-      location: '',
-      description: '',
-      startDate: start,
-      startHour: start.getHours(),
-      startMinute: 0,
-      endDate: end,
-      endHour: end.getHours(),
-      endMinute: 0,
-      attendeesRaw: '',
-      addMeet: true, // default ON for new events, matching Gmail's quick-create
-      hasExistingMeet: false,
-    });
+  // ── navigation ───────────────────────────────────────────────────────────
+  function navPrev() {
+    if (viewMode === 'week') setAnchor((a) => subWeeks(a, 1));
+    else if (viewMode === 'day') setAnchor((a) => { const d = subDays(a, 1); setSelectedDay(d); return d; });
+    else setAnchor((a) => subMonths(a, 1));
+  }
+  function navNext() {
+    if (viewMode === 'week') setAnchor((a) => addWeeks(a, 1));
+    else if (viewMode === 'day') setAnchor((a) => { const d = addDays(a, 1); setSelectedDay(d); return d; });
+    else setAnchor((a) => addMonths(a, 1));
+  }
+  function goToday() {
+    const t = new Date();
+    setAnchor(t);
+    setSelectedDay(t);
   }
 
-  function openExistingEvent(e: CalendarEvent) {
-    const start = parseEventDate(e) ?? selectedDay;
-    const endRaw = e.end.dateTime ?? e.end.date;
-    let end: Date;
-    try { end = endRaw ? parseISO(endRaw) : addMinutes(start, 60); }
-    catch { end = addMinutes(start, 60); }
-    const attendees = (e.attendees ?? [])
-      .map((a) => a.email)
-      .filter((x): x is string => !!x)
-      .join(', ');
-    setEditor({
-      id: e.id,
-      summary: e.summary ?? '',
-      location: e.location ?? '',
-      description: e.description ?? '',
-      startDate: start,
-      startHour: start.getHours(),
-      startMinute: start.getMinutes(),
-      endDate: end,
-      endHour: end.getHours(),
-      endMinute: end.getMinutes(),
-      attendeesRaw: attendees,
-      addMeet: false, // toggle only adds a Meet — existing one is shown separately
-      hasExistingMeet: !!e.hangoutLink,
-    });
-  }
+  // ── month grid ───────────────────────────────────────────────────────────
+  const monthDays = eachDayOfInterval({ start: startOfMonth(anchor), end: endOfMonth(anchor) });
+  const dayEvents = eventsForDay(events, selectedDay);
 
-  async function saveEvent() {
-    if (!editor) return;
-    if (!editor.summary.trim()) {
-      Alert.alert('Title required', 'Please enter an event title.');
-      return;
-    }
-    const start = combineDateTime(editor.startDate, editor.startHour, editor.startMinute);
-    const end = combineDateTime(editor.endDate, editor.endHour, editor.endMinute);
-    if (end <= start) {
-      Alert.alert('Invalid time', 'End time must be after start time.');
-      return;
-    }
-
-    const attendees = editor.attendeesRaw
-      .split(/[,;\n]/)
-      .map((s) => s.trim())
-      .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))
-      .map((email) => ({ email }));
-
-    const basePayload: CalendarEventInput = {
-      summary: editor.summary.trim(),
-      description: editor.description.trim() || undefined,
-      location: editor.location.trim() || undefined,
-      start: { dateTime: start.toISOString(), timeZone: LOCAL_TZ },
-      end: { dateTime: end.toISOString(), timeZone: LOCAL_TZ },
-      attendees: attendees.length > 0 ? attendees : undefined,
-      // Only add a Meet when the toggle is on AND there isn't one already.
-      // Google rejects createRequest on events that already have a conference.
-      addMeet: editor.addMeet && !editor.hasExistingMeet,
-    };
-
-    // Gmail/Google Calendar parity: if attendees exist, ask whether to notify.
-    // Skip the prompt when there's no one to notify.
-    if (attendees.length === 0) {
-      await doSave(basePayload);
-      return;
-    }
-
-    Alert.alert(
-      editor.id ? 'Update event' : 'Send invitations',
-      editor.id
-        ? `Send an update email to ${attendees.length} guest${attendees.length !== 1 ? 's' : ''}?`
-        : `Send an invitation email to ${attendees.length} guest${attendees.length !== 1 ? 's' : ''}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: "Don't send", onPress: () => doSave({ ...basePayload, sendUpdates: 'none' }) },
-        { text: 'Send', onPress: () => doSave({ ...basePayload, sendUpdates: 'all' }) },
-      ]
+  // ── attendee suggestions ─────────────────────────────────────────────────
+  function computeAttendeeSuggestions(raw: string) {
+    const token = currentToken(raw);
+    if (token.length < 2) { setAttendeeSuggestions([]); return; }
+    setAttendeeSuggestions(
+      allContacts
+        .filter((c) => c.email.toLowerCase().includes(token) || (c.displayName ?? '').toLowerCase().includes(token))
+        .slice(0, 6)
     );
+  }
+
+  // ── editor actions ───────────────────────────────────────────────────────
+  function openNewEvent() { setDetailEvent(null); setEditor(newEventEditor(selectedDay)); }
+  function openDetail(e: CalendarEvent) { setDetailEvent(e); }
+  function openEditFromDetail() {
+    if (!detailEvent) return;
+    setEditor(editorFromEvent(detailEvent, selectedDay));
+    setDetailEvent(null);
   }
 
   async function doSave(payload: CalendarEventInput) {
     if (!editor) return;
     setSaving(true);
     try {
-      if (editor.id) {
-        await calendarApi.updateEvent(editor.id, payload);
-      } else {
-        await calendarApi.createEvent(payload);
-      }
+      if (editor.id) await calendarApi.updateEvent(editor.id, payload);
+      else await calendarApi.createEvent(payload);
       setEditor(null);
       setAttendeeSuggestions([]);
       await loadEvents();
-    } catch (e: any) {
-      Alert.alert('Could not save', e?.message ?? 'Unknown error');
-    } finally {
-      setSaving(false);
-    }
+    } catch (e: unknown) {
+      Alert.alert('Could not save', e instanceof Error ? e.message : 'Unknown error');
+    } finally { setSaving(false); setPendingPayload(null); }
   }
 
+  function saveEvent() {
+    if (!editor) return;
+    const err = validateEditor(editor);
+    if (err) { Alert.alert('Check event', err); return; }
+    const payload = buildEventPayload(editor);
+    if (attendeeCount(editor) === 0) { doSave(payload); return; }
+    setPendingPayload(payload);
+    setNotifyMode('save');
+  }
+  function onNotifySave(choice: CalendarSendUpdates) {
+    if (!pendingPayload) return;
+    doSave({ ...pendingPayload, sendUpdates: choice });
+    setNotifyMode(null);
+  }
   function confirmDelete() {
     if (!editor?.id) return;
-    const hasAttendees = editor.attendeesRaw.trim().length > 0;
-    if (!hasAttendees) {
-      Alert.alert(
-        'Delete event?',
-        `"${editor.summary}" will be removed from your Google Calendar.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: () => doDelete() },
-        ]
-      );
+    if (attendeeCount(editor) === 0) {
+      Alert.alert('Delete event?', `"${editor.summary}" will be removed from Google Calendar.`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => doDelete() },
+      ]);
       return;
     }
-    // With attendees, ask whether to email cancellations (Gmail/Calendar parity)
-    Alert.alert(
-      'Delete event?',
-      'Send cancellation emails to guests?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: "Don't send", style: 'destructive', onPress: () => doDelete('none') },
-        { text: 'Send', style: 'destructive', onPress: () => doDelete('all') },
-      ]
-    );
+    setNotifyMode('delete');
   }
-
+  function confirmDeleteFromDetail() {
+    if (!detailEvent) return;
+    setEditor(editorFromEvent(detailEvent, selectedDay));
+    setDetailEvent(null);
+    confirmDelete();
+  }
   async function doDelete(sendUpdates?: CalendarSendUpdates) {
-    if (!editor?.id) return;
+    const id = editor?.id;
+    if (!id) return;
     setDeleting(true);
     try {
-      await calendarApi.deleteEvent(editor.id, sendUpdates ? { sendUpdates } : undefined);
-      setEditor(null);
-      setAttendeeSuggestions([]);
+      await calendarApi.deleteEvent(id, sendUpdates ? { sendUpdates } : undefined);
+      setEditor(null); setDetailEvent(null); setAttendeeSuggestions([]);
       await loadEvents();
-    } catch (e: any) {
-      Alert.alert('Could not delete', e?.message ?? 'Unknown error');
-    } finally {
-      setDeleting(false);
-    }
+    } catch (e: unknown) {
+      Alert.alert('Could not delete', e instanceof Error ? e.message : 'Unknown error');
+    } finally { setDeleting(false); setNotifyMode(null); }
   }
 
-  const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
-  const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+  const activeMeetLink = editor?.hangoutLink ?? detailEvent?.hangoutLink;
+
+  // ── header label ─────────────────────────────────────────────────────────
+  let headerLabel = '';
+  if (viewMode === 'month' || viewMode === 'list') {
+    headerLabel = format(anchor, 'MMMM yyyy');
+  } else if (viewMode === 'week') {
+    const ws = startOfWeek(anchor);
+    const we = endOfWeek(anchor);
+    headerLabel = isSameMonth(ws, we)
+      ? `${format(ws, 'MMM d')} – ${format(we, 'd, yyyy')}`
+      : `${format(ws, 'MMM d')} – ${format(we, 'MMM d, yyyy')}`;
+  } else {
+    headerLabel = format(anchor, 'EEE, MMM d, yyyy');
+  }
 
   return (
-    <View style={styles.container}>
-      <ScreenHeader
-        title="Calendar"
-        onMenuPress={openDrawer}
-        rightAction={{ icon: 'add-circle-outline', onPress: openNewEvent }}
-      />
-
-      <View style={styles.calHeader}>
-        <TouchableOpacity onPress={prevMonth} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="chevron-back" size={22} color={Colors.text} />
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      {/* ── Header ── */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={openDrawer} style={styles.menuBtn}>
+          <Ionicons name="menu" size={24} color={CalendarTheme.text} />
         </TouchableOpacity>
-        <Text style={styles.monthLabel}>{format(currentDate, 'MMMM yyyy')}</Text>
-        <TouchableOpacity onPress={nextMonth} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="chevron-forward" size={22} color={Colors.text} />
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.dayHeaders}>
-        {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
-          <Text key={d} style={styles.dayHeaderText}>{d}</Text>
-        ))}
-      </View>
-
-      <View style={styles.grid}>
-        {Array(days[0].getDay()).fill(null).map((_, i) => <View key={`empty-${i}`} style={styles.dayCell} />)}
-        {days.map((day) => {
-          const hasEvents = events.some((e) => {
-            const d = parseEventDate(e);
-            return d && isSameDay(d, day);
-          });
-          const selected = isSameDay(day, selectedDay);
-          const today = isToday(day);
-          return (
-            <TouchableOpacity
-              key={day.toISOString()}
-              style={[styles.dayCell, selected && styles.dayCellSelected, today && !selected && styles.dayCellToday]}
-              onPress={() => setSelectedDay(day)}
-            >
-              <Text style={[styles.dayText, selected && styles.dayTextSelected, today && !selected && styles.dayTextToday]}>
-                {format(day, 'd')}
-              </Text>
-              {hasEvents && <View style={[styles.eventDot, selected && styles.eventDotSelected]} />}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      <View style={styles.eventsSection}>
-        <View style={styles.eventsHeader}>
-          <Text style={styles.eventsTitle}>{format(selectedDay, 'EEEE, MMMM d')}</Text>
-          <TouchableOpacity onPress={openNewEvent} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={styles.addLink}>+ Add</Text>
+        <View style={styles.headerCenter}>
+          <TouchableOpacity onPress={navPrev} hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}>
+            <Ionicons name="chevron-back" size={22} color={CalendarTheme.text} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={goToday} activeOpacity={0.7} style={{ minWidth: 160, alignItems: 'center' }}>
+            <Text style={styles.headerLabel}>{headerLabel}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={navNext} hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}>
+            <Ionicons name="chevron-forward" size={22} color={CalendarTheme.text} />
           </TouchableOpacity>
         </View>
-        {loading ? (
-          <ActivityIndicator color={Colors.primary} style={{ marginTop: 16 }} />
-        ) : dayEvents.length === 0 ? (
-          <Text style={styles.noEvents}>No events scheduled. Tap + to create one.</Text>
-        ) : (
-          <FlatList
-            data={dayEvents}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <EventRow event={item} onPress={() => openExistingEvent(item)} />
-            )}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={() => { setRefreshing(true); loadEvents(); }}
-                tintColor={Colors.primary}
-              />
-            }
-          />
-        )}
+        <TouchableOpacity onPress={goToday} style={styles.todayBtn}>
+          <Text style={styles.todayBtnText}>Today</Text>
+        </TouchableOpacity>
       </View>
 
-      <Modal visible={!!editor} transparent animationType="slide" onRequestClose={() => { setEditor(null); setAttendeeSuggestions([]); }}>
-        {editor && (
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={styles.modalOverlay}
+      {/* ── View switcher ── */}
+      <View style={styles.viewSwitcher}>
+        {([
+          ['month', 'Month'],
+          ['week', 'Week'],
+          ['day', 'Day'],
+          ['list', 'List'],
+        ] as [ViewMode, string][]).map(([v, label]) => (
+          <TouchableOpacity
+            key={v}
+            style={[styles.viewTab, viewMode === v && styles.viewTabActive]}
+            onPress={() => setViewMode(v)}
           >
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>{editor.id ? 'Edit Event' : 'New Event'}</Text>
-                <TouchableOpacity onPress={() => { setEditor(null); setAttendeeSuggestions([]); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Ionicons name="close" size={22} color={Colors.text} />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView style={{ maxHeight: 480 }} contentContainerStyle={{ gap: 12 }} keyboardShouldPersistTaps="handled">
-                <FieldLabel label="Title" />
-                <TextInput
-                  style={styles.input}
-                  value={editor.summary}
-                  onChangeText={(v) => setEditor({ ...editor, summary: v })}
-                  placeholder="Event title"
-                  placeholderTextColor={Colors.textMuted}
-                />
-
-                <FieldLabel label="Start" />
-                <DateTimePickerRow
-                  date={editor.startDate}
-                  hour={editor.startHour}
-                  minute={editor.startMinute}
-                  onChange={(d, h, m) => {
-                    const newStart = combineDateTime(d, h, m);
-                    const newEnd = addMinutes(newStart, 60);
-                    setEditor({
-                      ...editor,
-                      startDate: d,
-                      startHour: h,
-                      startMinute: m,
-                      endDate: newEnd,
-                      endHour: newEnd.getHours(),
-                      endMinute: newEnd.getMinutes(),
-                    });
-                  }}
-                />
-
-                <FieldLabel label="End" />
-                <DateTimePickerRow
-                  date={editor.endDate}
-                  hour={editor.endHour}
-                  minute={editor.endMinute}
-                  onChange={(d, h, m) => setEditor({ ...editor, endDate: d, endHour: h, endMinute: m })}
-                />
-
-                <FieldLabel label="Location (optional)" />
-                <TextInput
-                  style={styles.input}
-                  value={editor.location}
-                  onChangeText={(v) => setEditor({ ...editor, location: v })}
-                  placeholder="Location or meeting link"
-                  placeholderTextColor={Colors.textMuted}
-                />
-
-                <FieldLabel label="Attendees (optional)" />
-                <TextInput
-                  style={styles.input}
-                  value={editor.attendeesRaw}
-                  onChangeText={(v) => {
-                    setEditor({ ...editor, attendeesRaw: v });
-                    computeAttendeeSuggestions(v);
-                  }}
-                  onFocus={() => computeAttendeeSuggestions(editor.attendeesRaw)}
-                  onBlur={() => setTimeout(() => setAttendeeSuggestions([]), 150)}
-                  placeholder="email1@co.com, email2@co.com"
-                  placeholderTextColor={Colors.textMuted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="email-address"
-                />
-                {attendeeSuggestions.length > 0 && (
-                  <View style={styles.suggestionBox}>
-                    {attendeeSuggestions.map((c) => (
-                      <TouchableOpacity
-                        key={c.email}
-                        style={styles.suggestionRow}
-                        onPress={() => pickAttendee(c)}
-                        activeOpacity={0.7}
-                      >
-                        <View style={styles.suggestionAvatar}>
-                          <Text style={styles.suggestionAvatarText}>
-                            {((c.displayName ?? c.email).charAt(0) || '?').toUpperCase()}
-                          </Text>
-                        </View>
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          {c.displayName ? (
-                            <>
-                              <Text style={styles.suggestionName} numberOfLines={1}>{c.displayName}</Text>
-                              <Text style={styles.suggestionEmail} numberOfLines={1}>{c.email}</Text>
-                            </>
-                          ) : (
-                            <Text style={styles.suggestionName} numberOfLines={1}>{c.email}</Text>
-                          )}
-                        </View>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {editor.hasExistingMeet ? (
-                  <View style={styles.meetRow}>
-                    <Ionicons name="videocam" size={18} color={Colors.primary} />
-                    <Text style={styles.meetRowText}>Google Meet link attached</Text>
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    style={styles.meetToggleRow}
-                    onPress={() => setEditor({ ...editor, addMeet: !editor.addMeet })}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons
-                      name={editor.addMeet ? 'videocam' : 'videocam-outline'}
-                      size={20}
-                      color={editor.addMeet ? Colors.primary : Colors.textMuted}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.meetToggleTitle}>Add Google Meet video call</Text>
-                      <Text style={styles.meetToggleSub}>
-                        {editor.addMeet ? 'A Meet link will be generated' : 'No video call'}
-                      </Text>
-                    </View>
-                    <View style={[styles.toggleTrack, editor.addMeet && styles.toggleTrackOn]}>
-                      <View style={[styles.toggleThumb, editor.addMeet && styles.toggleThumbOn]} />
-                    </View>
-                  </TouchableOpacity>
-                )}
-
-                <FieldLabel label="Description (optional)" />
-                <TextInput
-                  style={[styles.input, styles.inputMulti]}
-                  value={editor.description}
-                  onChangeText={(v) => setEditor({ ...editor, description: v })}
-                  placeholder="Notes / agenda"
-                  placeholderTextColor={Colors.textMuted}
-                  multiline
-                />
-              </ScrollView>
-
-              <View style={styles.modalActions}>
-                {editor.id && (
-                  <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={confirmDelete}
-                    disabled={saving || deleting}
-                  >
-                    {deleting
-                      ? <ActivityIndicator size="small" color={Colors.error} />
-                      : <Ionicons name="trash-outline" size={20} color={Colors.error} />
-                    }
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => { setEditor(null); setAttendeeSuggestions([]); }} disabled={saving || deleting}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.saveBtn} onPress={saveEvent} disabled={saving || deleting}>
-                  {saving
-                    ? <ActivityIndicator size="small" color={Colors.surface} />
-                    : <Text style={styles.saveText}>{editor.id ? 'Save' : 'Create'}</Text>
-                  }
-                </TouchableOpacity>
-              </View>
-            </View>
-          </KeyboardAvoidingView>
-        )}
-      </Modal>
-    </View>
-  );
-}
-
-function FieldLabel({ label }: { label: string }) {
-  return <Text style={styles.fieldLabel}>{label}</Text>;
-}
-
-function DateTimePickerRow({
-  date, hour, minute, onChange,
-}: {
-  date: Date;
-  hour: number;
-  minute: number;
-  onChange: (d: Date, h: number, m: number) => void;
-}) {
-  const [showDate, setShowDate] = useState(false);
-  const [showTime, setShowTime] = useState(false);
-
-  return (
-    <>
-      <View style={styles.dtRow}>
-        <TouchableOpacity style={styles.dtPill} onPress={() => { setShowDate(!showDate); setShowTime(false); }}>
-          <Ionicons name="calendar-outline" size={14} color={Colors.primary} />
-          <Text style={styles.dtPillText}>{format(date, 'EEE, MMM d')}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.dtPill} onPress={() => { setShowTime(!showTime); setShowDate(false); }}>
-          <Ionicons name="time-outline" size={14} color={Colors.primary} />
-          <Text style={styles.dtPillText}>
-            {String(hour % 12 === 0 ? 12 : hour % 12).padStart(2, '0')}:
-            {String(minute).padStart(2, '0')} {hour < 12 ? 'AM' : 'PM'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-      {showDate && (
-        <InlineDatePicker
-          date={date}
-          onChange={(d) => { onChange(d, hour, minute); setShowDate(false); }}
-        />
-      )}
-      {showTime && (
-        <InlineTimePicker
-          hour={hour}
-          minute={minute}
-          onChange={(h, m) => onChange(date, h, m)}
-          onDone={() => setShowTime(false)}
-        />
-      )}
-    </>
-  );
-}
-
-/** Tiny inline date picker: month nav + day grid */
-function InlineDatePicker({ date, onChange }: { date: Date; onChange: (d: Date) => void }) {
-  const [viewMonth, setViewMonth] = useState(new Date(date.getFullYear(), date.getMonth(), 1));
-  const days = eachDayOfInterval({ start: startOfMonth(viewMonth), end: endOfMonth(viewMonth) });
-  return (
-    <View style={styles.pickerCard}>
-      <View style={styles.pickerHeader}>
-        <TouchableOpacity onPress={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1))}>
-          <Ionicons name="chevron-back" size={18} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.pickerHeaderText}>{format(viewMonth, 'MMMM yyyy')}</Text>
-        <TouchableOpacity onPress={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1))}>
-          <Ionicons name="chevron-forward" size={18} color={Colors.text} />
-        </TouchableOpacity>
-      </View>
-      <View style={styles.miniDayHeaders}>
-        {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
-          <Text key={d} style={styles.miniDayHeaderText}>{d}</Text>
+            <Text style={[styles.viewTabText, viewMode === v && styles.viewTabTextActive]}>
+              {label}
+            </Text>
+          </TouchableOpacity>
         ))}
       </View>
-      <View style={styles.miniGrid}>
-        {Array(days[0].getDay()).fill(null).map((_, i) => <View key={`e-${i}`} style={styles.miniDayCell} />)}
-        {days.map((day) => {
-          const selected = isSameDay(day, date);
-          return (
-            <TouchableOpacity
-              key={day.toISOString()}
-              style={[styles.miniDayCell, selected && styles.miniDayCellSelected]}
-              onPress={() => onChange(day)}
-            >
-              <Text style={[styles.miniDayText, selected && styles.miniDayTextSelected]}>{format(day, 'd')}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  );
-}
 
-/** Tiny inline time picker: hour and minute wheels (15-min increments) */
-function InlineTimePicker({
-  hour, minute, onChange, onDone,
-}: {
-  hour: number;
-  minute: number;
-  onChange: (h: number, m: number) => void;
-  onDone: () => void;
-}) {
-  const minutes = [0, 15, 30, 45];
-  return (
-    <View style={styles.pickerCard}>
-      <View style={{ flexDirection: 'row', gap: 12 }}>
+      {/* ── Month view ── */}
+      {viewMode === 'month' && (
         <View style={{ flex: 1 }}>
-          <Text style={styles.timeColLabel}>Hour</Text>
-          <ScrollView style={styles.timeCol} showsVerticalScrollIndicator={false}>
-            {Array.from({ length: 24 }, (_, h) => (
-              <TouchableOpacity
-                key={h}
-                style={[styles.timeOption, h === hour && styles.timeOptionSelected]}
-                onPress={() => onChange(h, minute)}
-              >
-                <Text style={[styles.timeOptionText, h === hour && styles.timeOptionTextSelected]}>
-                  {String(h).padStart(2, '0')} ({h % 12 === 0 ? 12 : h % 12}{h < 12 ? ' AM' : ' PM'})
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.timeColLabel}>Minute</Text>
-          <View style={styles.timeCol}>
-            {minutes.map((m) => (
-              <TouchableOpacity
-                key={m}
-                style={[styles.timeOption, m === minute && styles.timeOptionSelected]}
-                onPress={() => onChange(hour, m)}
-              >
-                <Text style={[styles.timeOptionText, m === minute && styles.timeOptionTextSelected]}>
-                  :{String(m).padStart(2, '0')}
-                </Text>
-              </TouchableOpacity>
+          <View style={styles.dayHeaders}>
+            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+              <Text key={`${d}-${i}`} style={styles.dayHeaderText}>{d}</Text>
             ))}
           </View>
+          <View style={styles.monthGrid}>
+            {Array(monthDays[0].getDay()).fill(null).map((_, i) => (
+              <View key={`empty-${i}`} style={styles.dayCell} />
+            ))}
+            {monthDays.map((day) => {
+              const dEvts = eventsForDay(events, day);
+              const selected = isSameDay(day, selectedDay);
+              const today = isToday(day);
+              return (
+                <TouchableOpacity
+                  key={day.toISOString()}
+                  style={styles.dayCell}
+                  onPress={() => setSelectedDay(day)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[
+                    styles.dayNumCircle,
+                    selected && { backgroundColor: CalendarTheme.blue },
+                    today && !selected && { backgroundColor: CalendarTheme.todayRed },
+                  ]}>
+                    <Text style={[
+                      styles.dayText,
+                      !isSameMonth(day, anchor) && { color: CalendarTheme.textMuted },
+                      (selected || today) && { color: '#fff', fontWeight: '700' },
+                    ]}>
+                      {format(day, 'd')}
+                    </Text>
+                  </View>
+                  {dEvts.slice(0, 2).map((e) => (
+                    <View key={e.id} style={[styles.monthChip, { backgroundColor: getEventColor(e) }]}>
+                      <Text style={styles.monthChipText} numberOfLines={1}>{e.summary || '·'}</Text>
+                    </View>
+                  ))}
+                  {dEvts.length > 2 && (
+                    <Text style={styles.moreText}>+{dEvts.length - 2}</Text>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          {/* Selected day events */}
+          <View style={styles.dayPanel}>
+            <Text style={styles.dayPanelTitle}>
+              {isToday(selectedDay) ? 'Today · ' : ''}{format(selectedDay, 'EEEE, MMM d')}
+            </Text>
+            {loading ? (
+              <ActivityIndicator color={CalendarTheme.blue} style={{ marginTop: 20 }} />
+            ) : dayEvents.length === 0 ? (
+              <Text style={styles.noEvents}>No events</Text>
+            ) : (
+              <FlatList
+                data={dayEvents}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <CalendarEventRow
+                    event={item}
+                    color={getEventColor(item)}
+                    onPress={() => openDetail(item)}
+                    onJoinMeet={item.hangoutLink ? () => joinGoogleMeet(item.hangoutLink!) : undefined}
+                  />
+                )}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={() => { setRefreshing(true); loadEvents(); }}
+                    tintColor={CalendarTheme.blue}
+                  />
+                }
+                contentContainerStyle={{ paddingBottom: 100 }}
+              />
+            )}
+          </View>
         </View>
-      </View>
-      <TouchableOpacity style={styles.doneBtn} onPress={onDone}>
-        <Text style={styles.doneBtnText}>Done</Text>
+      )}
+
+      {/* ── Week view ── */}
+      {viewMode === 'week' && (
+        <TimeGrid
+          days={eachDayOfInterval({ start: startOfWeek(anchor), end: endOfWeek(anchor) })}
+          events={events}
+          selectedDay={selectedDay}
+          onSelectDay={(d) => { setSelectedDay(d); setAnchor(d); }}
+          onSelectEvent={openDetail}
+        />
+      )}
+
+      {/* ── Day view ── */}
+      {viewMode === 'day' && (
+        <TimeGrid
+          days={[anchor]}
+          events={events}
+          selectedDay={anchor}
+          onSelectDay={(d) => { setSelectedDay(d); setAnchor(d); }}
+          onSelectEvent={openDetail}
+        />
+      )}
+
+      {/* ── List view ── */}
+      {viewMode === 'list' && (
+        <ListView
+          events={events}
+          loading={loading}
+          refreshing={refreshing}
+          onRefresh={() => { setRefreshing(true); loadEvents(); }}
+          onSelectEvent={openDetail}
+          onJoinMeet={joinGoogleMeet}
+        />
+      )}
+
+      {/* ── FAB ── */}
+      <TouchableOpacity
+        style={[styles.fab, { bottom: insets.bottom + 20 }]}
+        onPress={openNewEvent}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="add" size={24} color="#fff" />
+        <Text style={styles.fabText}>New event</Text>
       </TouchableOpacity>
+
+      {/* ── Sheets ── */}
+      <CalendarEventDetailSheet
+        event={detailEvent}
+        visible={!!detailEvent}
+        onClose={() => setDetailEvent(null)}
+        onEdit={openEditFromDetail}
+        onDelete={confirmDeleteFromDetail}
+        onJoinMeet={() => detailEvent?.hangoutLink && joinGoogleMeet(detailEvent.hangoutLink)}
+        onCopyMeet={() => detailEvent?.hangoutLink && copyText('Meet link', detailEvent.hangoutLink)}
+      />
+      <CalendarEventEditor
+        editor={editor}
+        saving={saving}
+        deleting={deleting}
+        attendeeSuggestions={attendeeSuggestions}
+        onClose={() => { setEditor(null); setAttendeeSuggestions([]); }}
+        onChange={setEditor}
+        onPickAttendee={(c) => {
+          if (!editor) return;
+          setEditor({ ...editor, attendeesRaw: replaceLastToken(editor.attendeesRaw, c.email) });
+          setAttendeeSuggestions([]);
+        }}
+        onAttendeesChange={(raw) => {
+          if (!editor) return;
+          setEditor({ ...editor, attendeesRaw: raw });
+          computeAttendeeSuggestions(raw);
+        }}
+        onSave={saveEvent}
+        onDelete={confirmDelete}
+        onJoinMeet={activeMeetLink ? () => joinGoogleMeet(activeMeetLink) : undefined}
+        onCopyMeet={activeMeetLink ? () => copyText('Meet link', activeMeetLink) : undefined}
+      />
+      <CalendarNotifySheet
+        visible={notifyMode === 'save'}
+        title={editor?.id ? 'Update event' : 'Send invitations?'}
+        message={editor ? `Notify ${attendeeCount(editor)} guest${attendeeCount(editor) !== 1 ? 's' : ''}.` : ''}
+        onClose={() => { setNotifyMode(null); setPendingPayload(null); }}
+        onChoose={onNotifySave}
+      />
+      <CalendarNotifySheet
+        visible={notifyMode === 'delete'}
+        title="Delete event"
+        message={editor ? `Notify ${attendeeCount(editor)} guest${attendeeCount(editor) !== 1 ? 's' : ''} about cancellation?` : ''}
+        destructive
+        onClose={() => setNotifyMode(null)}
+        onChoose={doDelete}
+      />
     </View>
   );
 }
 
-function EventRow({ event, onPress }: { event: CalendarEvent; onPress: () => void }) {
-  const start = event.start.dateTime ?? event.start.date ?? '';
-  const end = event.end.dateTime ?? event.end.date ?? '';
-  return (
-    <TouchableOpacity style={styles.eventRow} onPress={onPress} activeOpacity={0.7}>
-      <View style={styles.eventBar} />
-      <View style={styles.eventInfo}>
-        <Text style={styles.eventTitle} numberOfLines={1}>{event.summary || '(no title)'}</Text>
-        {start && (
-          <Text style={styles.eventTime}>
-            {event.start.dateTime ? format(parseISO(start), 'h:mm a') : 'All day'}
-            {event.end.dateTime ? ` – ${format(parseISO(end), 'h:mm a')}` : ''}
-          </Text>
-        )}
-        {event.location && (
-          <View style={styles.eventLocation}>
-            <Ionicons name="location-outline" size={12} color={Colors.textMuted} />
-            <Text style={styles.eventLocationText} numberOfLines={1}>{event.location}</Text>
-          </View>
-        )}
-        {event.hangoutLink && (
-          <View style={styles.eventLocation}>
-            <Ionicons name="videocam-outline" size={12} color={Colors.primary} />
-            <Text style={[styles.eventLocationText, { color: Colors.primary }]} numberOfLines={1}>Google Meet</Text>
-          </View>
-        )}
-      </View>
-      <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-    </TouchableOpacity>
-  );
-}
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  calHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: Colors.surface },
-  monthLabel: { fontSize: 16, fontWeight: '700', color: Colors.text },
-  dayHeaders: { flexDirection: 'row', backgroundColor: Colors.surface, paddingBottom: 8 },
-  dayHeaderText: { flex: 1, textAlign: 'center', fontSize: 12, fontWeight: '600', color: Colors.textSecondary },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: Colors.surface, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  dayCell: { width: `${100 / 7}%`, alignItems: 'center', paddingVertical: 6, gap: 3 },
-  dayCellSelected: { backgroundColor: Colors.primary, borderRadius: 999 },
-  dayCellToday: { borderWidth: 1.5, borderColor: Colors.primary, borderRadius: 999 },
-  dayText: { fontSize: 14, color: Colors.text },
-  dayTextSelected: { color: Colors.surface, fontWeight: '700' },
-  dayTextToday: { color: Colors.primary, fontWeight: '700' },
-  eventDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: Colors.primary },
-  eventDotSelected: { backgroundColor: Colors.surface },
-  eventsSection: { flex: 1, padding: 16 },
-  eventsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  eventsTitle: { fontSize: 14, fontWeight: '700', color: Colors.textSecondary },
-  addLink: { fontSize: 14, fontWeight: '700', color: Colors.primary },
-  noEvents: { fontSize: 13, color: Colors.textMuted, textAlign: 'center', marginTop: 16 },
-  eventRow: { flexDirection: 'row', gap: 12, alignItems: 'center', backgroundColor: Colors.surface, borderRadius: 10, padding: 12, marginBottom: 8 },
-  eventBar: { width: 4, height: 36, borderRadius: 2, backgroundColor: Colors.primary },
-  eventInfo: { flex: 1, gap: 3 },
-  eventTitle: { fontSize: 14, fontWeight: '600', color: Colors.text },
-  eventTime: { fontSize: 12, color: Colors.textSecondary },
-  eventLocation: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  eventLocationText: { fontSize: 12, color: Colors.textMuted, flex: 1 },
+  container: { flex: 1, backgroundColor: CalendarTheme.bg },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 28, gap: 12, maxHeight: '92%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary, marginTop: 4 },
-  input: { borderWidth: 1, borderColor: Colors.border, borderRadius: 10, padding: 12, fontSize: 14, color: Colors.text, backgroundColor: Colors.background },
-  inputMulti: { minHeight: 70, textAlignVertical: 'top' },
+  // Header
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 8, paddingVertical: 8,
+    backgroundColor: CalendarTheme.bg,
+    borderBottomWidth: 1, borderBottomColor: CalendarTheme.border,
+  },
+  menuBtn: { width: 40, height: 36, alignItems: 'center', justifyContent: 'center' },
+  headerCenter: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2 },
+  headerLabel: { fontSize: 16, fontWeight: '600', color: CalendarTheme.text, textAlign: 'center' },
+  todayBtn: {
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 14, borderWidth: 1.5, borderColor: CalendarTheme.blue,
+  },
+  todayBtnText: { fontSize: 12, fontWeight: '700', color: CalendarTheme.blue },
 
-  dtRow: { flexDirection: 'row', gap: 8 },
-  dtPill: {
-    flex: 1,
+  // View switcher
+  viewSwitcher: {
+    flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, gap: 6,
+    backgroundColor: CalendarTheme.bg,
+    borderBottomWidth: 1, borderBottomColor: CalendarTheme.border,
+  },
+  viewTab: {
+    flex: 1, paddingVertical: 6, borderRadius: 20,
+    alignItems: 'center', backgroundColor: CalendarTheme.bgMuted,
+  },
+  viewTabActive: { backgroundColor: CalendarTheme.blue },
+  viewTabText: { fontSize: 12, fontWeight: '600', color: CalendarTheme.textSecondary },
+  viewTabTextActive: { color: '#fff' },
+
+  // Month grid
+  dayHeaders: { flexDirection: 'row', paddingVertical: 4, backgroundColor: CalendarTheme.bg },
+  dayHeaderText: {
+    flex: 1, textAlign: 'center', fontSize: 11,
+    fontWeight: '600', color: CalendarTheme.textSecondary,
+  },
+  monthGrid: {
+    flexDirection: 'row', flexWrap: 'wrap',
+    backgroundColor: CalendarTheme.bg,
+    borderBottomWidth: 1, borderBottomColor: CalendarTheme.border,
+  },
+  dayCell: {
+    width: `${100 / 7}%`, alignItems: 'center',
+    paddingVertical: 4, paddingHorizontal: 1, minHeight: 72, gap: 1,
+  },
+  dayNumCircle: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  dayText: { fontSize: 13, color: CalendarTheme.text },
+  monthChip: { width: '90%', borderRadius: 3, paddingHorizontal: 3, paddingVertical: 1 },
+  monthChipText: { fontSize: 8.5, color: '#fff', fontWeight: '700' },
+  moreText: { fontSize: 8.5, color: CalendarTheme.textMuted, fontWeight: '600' },
+
+  // Day panel (month view bottom half)
+  dayPanel: { flex: 1, paddingHorizontal: 16, paddingTop: 10 },
+  dayPanelTitle: {
+    fontSize: 12, fontWeight: '600', color: CalendarTheme.textSecondary,
+    marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+  noEvents: { fontSize: 14, color: CalendarTheme.textMuted, textAlign: 'center', marginTop: 20 },
+
+  // TimeGrid
+  gridDayHeaderRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    backgroundColor: Colors.background,
+    backgroundColor: CalendarTheme.bg,
+    borderBottomWidth: 1, borderBottomColor: CalendarTheme.border,
+    paddingVertical: 4,
   },
-  dtPillText: { fontSize: 13, color: Colors.text, fontWeight: '500' },
+  gridDayName: { fontSize: 10, fontWeight: '600', color: CalendarTheme.textSecondary },
+  gridDayCircle: {
+    minWidth: 28, height: 28, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
+  },
+  gridDayNum: { fontSize: 13, color: CalendarTheme.text },
+  allDayStrip: {
+    flexDirection: 'row', paddingVertical: 4,
+    backgroundColor: CalendarTheme.bgMuted,
+    borderBottomWidth: 1, borderBottomColor: CalendarTheme.border, minHeight: 28,
+  },
+  allDayLabel: {
+    fontSize: 8, color: CalendarTheme.textMuted,
+    textAlign: 'center', paddingTop: 2,
+  },
+  allDayChip: { borderRadius: 3, paddingHorizontal: 3, paddingVertical: 2, marginBottom: 1 },
+  allDayChipText: { fontSize: 9, color: '#fff', fontWeight: '600' },
+  timeGutterCell: { justifyContent: 'flex-start', alignItems: 'flex-end', paddingRight: 6 },
+  timeLabel: { fontSize: 9, color: CalendarTheme.textSecondary, marginTop: -5 },
+  hourLine: {
+    position: 'absolute', left: 0, right: 0,
+    height: StyleSheet.hairlineWidth, backgroundColor: CalendarTheme.hourLine,
+  },
+  dayColumnBorder: {
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: CalendarTheme.hourLine,
+  },
+  gridEvent: {
+    position: 'absolute', left: 1, right: 1,
+    borderLeftWidth: 3, borderRadius: 3,
+    padding: 2, overflow: 'hidden',
+  },
+  gridEventTitle: { fontSize: 10, fontWeight: '700', lineHeight: 13 },
+  gridEventTime: { fontSize: 9, lineHeight: 12, opacity: 0.85 },
 
-  pickerCard: { backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border, borderRadius: 10, padding: 12, gap: 8 },
-  pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  pickerHeaderText: { fontSize: 14, fontWeight: '700', color: Colors.text },
-  miniDayHeaders: { flexDirection: 'row' },
-  miniDayHeaderText: { flex: 1, textAlign: 'center', fontSize: 10, fontWeight: '600', color: Colors.textSecondary },
-  miniGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  miniDayCell: { width: `${100 / 7}%`, alignItems: 'center', paddingVertical: 6 },
-  miniDayCellSelected: { backgroundColor: Colors.primary, borderRadius: 999 },
-  miniDayText: { fontSize: 12, color: Colors.text },
-  miniDayTextSelected: { color: Colors.surface, fontWeight: '700' },
+  // Current time indicator — two separate absolutely positioned views
+  nowLine: {
+    position: 'absolute', left: 0, right: 0,
+    height: 2, backgroundColor: CalendarTheme.todayRed, zIndex: 10,
+  },
+  nowDot: {
+    position: 'absolute', left: -3,
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: CalendarTheme.todayRed, zIndex: 11,
+  },
 
-  timeColLabel: { fontSize: 12, fontWeight: '600', color: Colors.textSecondary, marginBottom: 4, textAlign: 'center' },
-  timeCol: { maxHeight: 180 },
-  timeOption: { paddingVertical: 8, paddingHorizontal: 8, borderRadius: 6, alignItems: 'center' },
-  timeOptionSelected: { backgroundColor: Colors.primary },
-  timeOptionText: { fontSize: 13, color: Colors.text },
-  timeOptionTextSelected: { color: Colors.surface, fontWeight: '700' },
-  doneBtn: { backgroundColor: Colors.primary, borderRadius: 8, padding: 10, alignItems: 'center' },
-  doneBtnText: { color: Colors.surface, fontWeight: '700' },
+  // Schedule / list view
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  emptyText: { fontSize: 15, color: CalendarTheme.textMuted },
+  scheduleGroup: { flexDirection: 'row', gap: 12, marginBottom: 12 },
+  scheduleDateCol: { width: 40, alignItems: 'center', paddingTop: 2 },
+  schedWeekday: { fontSize: 10, fontWeight: '700', color: CalendarTheme.textSecondary },
+  schedDayCircle: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center', marginTop: 2,
+  },
+  schedDayNum: { fontSize: 16, fontWeight: '400', color: CalendarTheme.text },
 
-  suggestionBox: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    backgroundColor: Colors.surface,
-    marginTop: -6,
-    overflow: 'hidden',
+  // FAB
+  fab: {
+    position: 'absolute', right: 16,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: CalendarTheme.blue, borderRadius: 28,
+    paddingHorizontal: 20, paddingVertical: 14,
+    elevation: 4, shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4,
   },
-  suggestionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
-  },
-  suggestionAvatar: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: Colors.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  suggestionAvatarText: { fontSize: 12, fontWeight: '700', color: Colors.primary },
-  suggestionName: { fontSize: 13, color: Colors.text, fontWeight: '500' },
-  suggestionEmail: { fontSize: 11, color: Colors.textMuted, marginTop: 1 },
-
-  meetToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    backgroundColor: Colors.background,
-  },
-  meetToggleTitle: { fontSize: 14, fontWeight: '600', color: Colors.text },
-  meetToggleSub: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
-  toggleTrack: {
-    width: 38,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: Colors.border,
-    padding: 2,
-    justifyContent: 'center',
-  },
-  toggleTrackOn: { backgroundColor: Colors.primary },
-  toggleThumb: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: Colors.surface,
-  },
-  toggleThumbOn: { alignSelf: 'flex-end' },
-  meetRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 10,
-    backgroundColor: Colors.primaryLight,
-    borderRadius: 8,
-  },
-  meetRowText: { fontSize: 13, color: Colors.primary, fontWeight: '600' },
-
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  deleteBtn: { padding: 13, borderRadius: 10, borderWidth: 1, borderColor: Colors.error, alignItems: 'center', justifyContent: 'center', width: 50 },
-  cancelBtn: { flex: 1, padding: 13, borderRadius: 10, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },
-  cancelText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
-  saveBtn: { flex: 1, padding: 13, borderRadius: 10, backgroundColor: Colors.primary, alignItems: 'center' },
-  saveText: { fontSize: 15, fontWeight: '700', color: Colors.surface },
+  fabText: { color: '#fff', fontSize: 14, fontWeight: '700' },
 });

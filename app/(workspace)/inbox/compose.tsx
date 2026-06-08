@@ -1,17 +1,40 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, ScrollView, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAppInsets } from '../../../lib/safe-area';
 import * as DocumentPicker from 'expo-document-picker';
+import ComposeRichEditor, { type ComposeEditorHandle } from '../../../components/inbox/ComposeRichEditor';
 import { gmailApi } from '../../../lib/api';
-import { cacheDelete } from '../../../lib/cache';
+import { cacheDeleteInboxFolder } from '../../../lib/cache';
 import { markPendingDelete } from '../../../lib/pending-deletes';
-import { sendMailDirectly, saveDraftDirectly, readFileAsBase64, fetchAttachmentBase64Directly } from '../../../lib/gmail-send-direct';
+import { sendMailDirectly, readFileAsBase64, fetchAttachmentBase64Directly } from '../../../lib/gmail-send-direct';
+import { draftHtmlForEditor, saveComposeDraft } from '../../../lib/gmail-draft-compose';
+import { htmlToPlain, sanitizeEmailHtml } from '../../../lib/html-email';
 import { Colors } from '../../../constants/colors';
+import { Gmail } from '../../../constants/gmailTheme';
+
+function wrapEmailHtml(inner: string): string {
+  return `<div style="font-family:Roboto,Arial,sans-serif;font-size:15px;line-height:1.5;color:#202124">${inner}</div>`;
+}
+
+function isBodyEmpty(html: string): boolean {
+  // Strip zero-width / invisible characters the WebView contentEditable can
+  // inject on focus (U+200B etc). String.trim() does NOT remove these, which
+  // would otherwise make a freshly-opened, untouched editor look non-empty and
+  // trigger the discard prompt on back-navigation.
+  return stripInvisible(htmlToPlain(html)).trim().length === 0;
+}
+
+/** Remove zero-width / invisible characters that survive String.trim(). */
+function stripInvisible(s: string): string {
+  // U+200B-200D zero-width space/joiners, U+FEFF BOM, U+00A0 non-breaking space.
+  return s.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '');
+}
 
 const GMAIL_LIMIT = 25 * 1024 * 1024; // 25 MB — hard Gmail cap
 
@@ -74,18 +97,20 @@ function nextKey() { return String(++keySeq); }
 export default function ComposeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ draftId?: string }>();
-  const insets = useSafeAreaInsets();
+  const insets = useAppInsets();
   const [to, setTo] = useState('');
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
   const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
+  const [bodyHtml, setBodyHtml] = useState('');
+  const [editorKey, setEditorKey] = useState('new');
   const [showCcBcc, setShowCcBcc] = useState(false);
   const [sending, setSending] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [draftId, setDraftId] = useState<string | undefined>(params.draftId);
   const [attachments, setAttachments] = useState<PickedFile[]>([]);
+  const editorRef = useRef<ComposeEditorHandle>(null);
 
   const [allContacts, setAllContacts] = useState<Contact[]>([]);
   const [suggestions, setSuggestions] = useState<Contact[]>([]);
@@ -108,7 +133,11 @@ export default function ComposeScreen() {
         if (d.cc) { setCc(d.cc); setShowCcBcc(true); }
         if (d.bcc) { setBcc(d.bcc); setShowCcBcc(true); }
         if (d.subject) setSubject(d.subject);
-        if (d.textBody) setBody(d.textBody);
+        const loadedHtml = draftHtmlForEditor(d.textBody ?? '', d.htmlBody);
+        if (loadedHtml) {
+          setBodyHtml(loadedHtml);
+          setEditorKey(d.draftId ?? `draft-${Date.now()}`);
+        }
         setDraftId(d.draftId);
         if (d.attachments && d.attachments.length > 0) {
           setAttachments(d.attachments.map((a) => ({
@@ -119,7 +148,7 @@ export default function ComposeScreen() {
             uri: '',
             status: 'saved' as AttachmentStatus,
             attachmentId: a.attachmentId,
-            savedMessageId: a.messageId,
+            savedMessageId: a.messageId ?? d.messageId,
           })));
         }
       })
@@ -341,61 +370,63 @@ export default function ComposeScreen() {
       return;
     }
 
+    const currentBodyHtml = await resolveBodyHtml();
+    const sanitized = sanitizeEmailHtml(currentBodyHtml);
+    let htmlInner = sanitized;
+    let plainForSend = htmlToPlain(sanitized);
+
+    const driveLinks = attachments.filter((f) => f.status === 'drive' && f.driveLink);
+    if (driveLinks.length > 0) {
+      const linkBlock = driveLinks.map((f) => `${f.name}: ${f.driveLink}`).join('\n');
+      const linkHtml = driveLinks
+        .map((f) => `<div><a href="${f.driveLink}">${f.name}</a></div>`)
+        .join('');
+      plainForSend = plainForSend
+        ? `${plainForSend}\n\n--- Attachments ---\n${linkBlock}`
+        : linkBlock;
+      htmlInner = `${htmlInner}<br/><br/><b>Attachments</b><br/>${linkHtml}`;
+    }
+
+    const htmlForSend = wrapEmailHtml(htmlInner);
+
+    if (isBodyEmpty(sanitized) && attachments.length === 0 && driveLinks.length === 0) {
+      Alert.alert('Empty message', 'Write something before sending.');
+      return;
+    }
+
     setSending(true);
     try {
-      // Append Drive links to body text
-      const driveLinks = attachments.filter((f) => f.status === 'drive' && f.driveLink);
-      let finalBody = body;
-      if (driveLinks.length > 0) {
-        const linkBlock = driveLinks.map((f) => `${f.name}: ${f.driveLink}`).join('\n');
-        finalBody = finalBody
-          ? `${finalBody}\n\n--- Attachments ---\n${linkBlock}`
-          : linkBlock;
-      }
-
+      const { accessToken } = await gmailApi.getGoogleToken();
       const inlineAttachments = attachments.filter((f) => f.status === 'ready' || f.status === 'saved');
+      const resolvedAttachments = await Promise.all(
+        inlineAttachments.map(async (f) => {
+          if (f.status === 'saved' && f.attachmentId && f.savedMessageId) {
+            const base64Data = await fetchAttachmentBase64Directly(
+              accessToken,
+              f.savedMessageId,
+              f.attachmentId
+            );
+            return { filename: f.name, mimeType: f.mimeType, uri: '', base64Data };
+          }
+          return { filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data };
+        })
+      );
 
-      if (inlineAttachments.length > 0) {
-        // Send directly to Gmail API — bypasses Next.js body size limit entirely
-        const { accessToken } = await gmailApi.getGoogleToken();
-        // Resolve 'saved' attachments by fetching bytes directly from Gmail API
-        const resolvedAttachments = await Promise.all(
-          inlineAttachments.map(async (f) => {
-            if (f.status === 'saved' && f.attachmentId && f.savedMessageId) {
-              const base64Data = await fetchAttachmentBase64Directly(
-                accessToken,
-                f.savedMessageId,
-                f.attachmentId
-              );
-              return { filename: f.name, mimeType: f.mimeType, uri: '', base64Data };
-            }
-            return { filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data };
-          })
-        );
-        await sendMailDirectly({
-          accessToken,
-          to: toList.join(', '),
-          cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-          bcc: bccList.length > 0 ? bccList.join(', ') : undefined,
-          subject: subject.trim(),
-          textBody: finalBody,
-          attachments: resolvedAttachments,
-        });
-      } else {
-        // No inline attachments — plain JSON through backend
-        await gmailApi.send({
-          to: toList.join(', '),
-          cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-          bcc: bccList.length > 0 ? bccList.join(', ') : undefined,
-          subject: subject.trim(),
-          textBody: finalBody,
-        });
-      }
+      await sendMailDirectly({
+        accessToken,
+        to: toList.join(', '),
+        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+        bcc: bccList.length > 0 ? bccList.join(', ') : undefined,
+        subject: subject.trim(),
+        textBody: plainForSend,
+        htmlBody: htmlForSend,
+        attachments: resolvedAttachments,
+      });
 
       // Bust list caches so the inbox refetches on focus — the just-sent
       // email should appear in Sent (and the source draft, if any, in Drafts).
-      cacheDelete('inbox:sent:');
-      cacheDelete('inbox:drafts:');
+      cacheDeleteInboxFolder('sent');
+      cacheDeleteInboxFolder('drafts');
       Alert.alert('Sent', 'Your email was sent.', [
         { text: 'OK', onPress: () => router.back() },
       ]);
@@ -417,49 +448,46 @@ export default function ComposeScreen() {
       return false;
     }
 
-    const driveLinks = attachments.filter((f) => f.status === 'drive' && f.driveLink);
-    let draftBody = body;
-    if (driveLinks.length > 0) {
-      const linkBlock = driveLinks.map((f) => `${f.name}: ${f.driveLink}`).join('\n');
-      draftBody = draftBody ? `${draftBody}\n\n--- Attachments ---\n${linkBlock}` : linkBlock;
-    }
+    const currentBodyHtml = await resolveBodyHtml();
+    const htmlBody = sanitizeEmailHtml(currentBodyHtml);
 
     setSavingDraft(true);
     try {
-      // Save directly to Gmail API so attachments are preserved (bypasses backend body limit)
-      const { accessToken } = await gmailApi.getGoogleToken();
-
-      // Resolve 'saved' attachments: re-fetch bytes from Gmail directly using
-      // the Google access token (the backend proxy needs Supabase auth that
-      // readFileAsBase64 can't supply).
-      const allAttachments = await Promise.all(
-        attachments
-          .filter((f) => f.status === 'ready' || f.status === 'saved')
-          .map(async (f): Promise<{ filename: string; mimeType: string; uri: string; base64Data?: string }> => {
-            if (f.status === 'saved' && f.attachmentId && f.savedMessageId) {
-              const base64Data = await fetchAttachmentBase64Directly(
-                accessToken,
-                f.savedMessageId,
-                f.attachmentId
-              );
-              return { filename: f.name, mimeType: f.mimeType, uri: '', base64Data };
-            }
-            return { filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data };
-          })
-      );
-
-      const res = await saveDraftDirectly({
-        accessToken,
-        to: to.trim() || undefined,
-        cc: cc.trim() || undefined,
-        bcc: bcc.trim() || undefined,
-        subject: subject.trim(),
-        textBody: draftBody,
+      const res = await saveComposeDraft({
+        to,
+        cc,
+        bcc,
+        subject,
+        htmlBody,
         draftId,
-        attachments: allAttachments,
+        attachments,
       });
       setDraftId(res.draftId);
-      cacheDelete('inbox:drafts:');
+
+      // Gmail rotates messageId/attachmentId on each save — rehydrate like web app.
+      if (res.draftId) {
+        try {
+          const refreshed = await gmailApi.getDraft(res.draftId);
+          const loadedHtml = draftHtmlForEditor(refreshed.textBody ?? '', refreshed.htmlBody);
+          if (loadedHtml) setBodyHtml(loadedHtml);
+          if (refreshed.attachments?.length) {
+            setAttachments(refreshed.attachments.map((a) => ({
+              key: nextKey(),
+              name: a.filename,
+              mimeType: a.mimeType,
+              size: a.size,
+              uri: '',
+              status: 'saved' as AttachmentStatus,
+              attachmentId: a.attachmentId,
+              savedMessageId: a.messageId ?? refreshed.messageId,
+            })));
+          }
+        } catch {
+          /* non-fatal — draft was saved */
+        }
+      }
+
+      cacheDeleteInboxFolder('drafts');
       return true;
     } catch (e: any) {
       Alert.alert('Could not save draft', e?.message ?? 'Something went wrong.');
@@ -482,13 +510,20 @@ export default function ComposeScreen() {
       markPendingDelete(draftId);
       try { await gmailApi.deleteDraft(draftId); } catch { /* non-fatal */ }
       // Bust the drafts cache so the inbox refetches on focus
-      cacheDelete('inbox:drafts:');
+      cacheDeleteInboxFolder('drafts');
     }
     router.back();
   }
 
-  function handleDiscard() {
-    const hasContent = to || subject || body || cc || bcc || attachments.length > 0;
+  async function handleDiscard() {
+    const currentBodyHtml = await resolveBodyHtml();
+    const hasContent =
+      to.trim() ||
+      subject.trim() ||
+      cc.trim() ||
+      bcc.trim() ||
+      !isBodyEmpty(currentBodyHtml) ||
+      attachments.length > 0;
     if (!hasContent && !draftId) { router.back(); return; }
     Alert.alert(
       'Close',
@@ -502,41 +537,76 @@ export default function ComposeScreen() {
   }
 
   const hasUploading = attachments.some((f) => f.status === 'uploading' || f.status === 'preparing');
+  const onBodyChange = useCallback((html: string) => setBodyHtml(html), []);
+
+  /** WebView is source of truth — React state can lag behind the editor. */
+  const resolveBodyHtml = useCallback(async (): Promise<string> => {
+    const live = await editorRef.current?.getHtml().catch(() => '');
+    const html = (live && live.trim()) ? live : bodyHtml;
+    if (html !== bodyHtml) setBodyHtml(html);
+    return html;
+  }, [bodyHtml]);
+
+  const composeTitle = draftId && !loadingDraft ? 'Draft' : 'Compose';
 
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: Gmail.bg }} edges={['top', 'left', 'right']}>
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: Colors.background }}
+      style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={handleDiscard} disabled={savingDraft || sending || loadingDraft} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close" size={26} color={savingDraft || sending || loadingDraft ? Colors.textMuted : Colors.text} />
+          <TouchableOpacity
+            onPress={handleDiscard}
+            disabled={savingDraft || sending || loadingDraft}
+            style={styles.headerIconBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons
+              name="arrow-back"
+              size={24}
+              color={savingDraft || sending || loadingDraft ? Gmail.textMuted : Gmail.text}
+            />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{draftId && !loadingDraft ? 'Edit Draft' : 'New Message'}</Text>
+          <Text style={styles.headerTitle}>{composeTitle}</Text>
+          <TouchableOpacity
+            onPress={pickAttachment}
+            disabled={savingDraft || sending}
+            style={styles.headerIconBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="attach" size={24} color={Gmail.textSecondary} />
+            {attachments.length > 0 && (
+              <View style={styles.headerAttachBadge}>
+                <Text style={styles.headerAttachBadgeText}>{attachments.length}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={handleSend}
             disabled={sending || hasUploading}
+            style={[styles.sendBtn, (sending || hasUploading) && styles.sendBtnDisabled]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             {sending
-              ? <ActivityIndicator color={Colors.primary} size="small" />
-              : <Ionicons name="send" size={22} color={hasUploading ? Colors.textMuted : Colors.primary} />
+              ? <ActivityIndicator color="#fff" size="small" />
+              : <Ionicons name="send" size={20} color="#fff" />
             }
           </TouchableOpacity>
         </View>
 
         {loadingDraft && (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator color={Colors.primary} />
+          <View style={styles.loadingBanner}>
+            <ActivityIndicator color={Gmail.blue} size="small" />
             <Text style={styles.loadingText}>Loading draft…</Text>
           </View>
         )}
 
         <ScrollView
-          style={styles.form}
-          contentContainerStyle={{ paddingBottom: 24 }}
+          style={styles.recipientsScroll}
           keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
         >
           <View style={styles.fieldRow}>
             <Text style={styles.fieldLabel}>To</Text>
@@ -546,8 +616,8 @@ export default function ComposeScreen() {
               onChangeText={(v) => onChangeField(v, 'to', setTo)}
               onFocus={() => computeSuggestions(to, 'to')}
               onBlur={() => setTimeout(() => { setSuggestions([]); setSuggestField(null); }, 150)}
-              placeholder="recipient@example.com"
-              placeholderTextColor={Colors.textMuted}
+              placeholder="Recipients"
+              placeholderTextColor={Gmail.textMuted}
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
@@ -571,8 +641,8 @@ export default function ComposeScreen() {
                   onChangeText={(v) => onChangeField(v, 'cc', setCc)}
                   onFocus={() => computeSuggestions(cc, 'cc')}
                   onBlur={() => setTimeout(() => { setSuggestions([]); setSuggestField(null); }, 150)}
-                  placeholder="cc@example.com"
-                  placeholderTextColor={Colors.textMuted}
+                  placeholder="Cc"
+                  placeholderTextColor={Gmail.textMuted}
                   keyboardType="email-address"
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -590,8 +660,8 @@ export default function ComposeScreen() {
                   onChangeText={(v) => onChangeField(v, 'bcc', setBcc)}
                   onFocus={() => computeSuggestions(bcc, 'bcc')}
                   onBlur={() => setTimeout(() => { setSuggestions([]); setSuggestField(null); }, 150)}
-                  placeholder="bcc@example.com"
-                  placeholderTextColor={Colors.textMuted}
+                  placeholder="Bcc"
+                  placeholderTextColor={Gmail.textMuted}
                   keyboardType="email-address"
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -610,19 +680,9 @@ export default function ComposeScreen() {
               value={subject}
               onChangeText={setSubject}
               placeholder="Subject"
-              placeholderTextColor={Colors.textMuted}
+              placeholderTextColor={Gmail.textMuted}
             />
           </View>
-
-          <TextInput
-            style={styles.bodyInput}
-            value={body}
-            onChangeText={setBody}
-            placeholder="Compose email..."
-            placeholderTextColor={Colors.textMuted}
-            multiline
-            textAlignVertical="top"
-          />
 
           {attachments.length > 0 && (
             <View style={styles.attachmentList}>
@@ -633,27 +693,23 @@ export default function ComposeScreen() {
           )}
         </ScrollView>
 
-        <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
-          <TouchableOpacity
-            style={styles.toolbarBtn}
-            onPress={pickAttachment}
-            disabled={savingDraft}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="attach" size={22} color={Colors.textSecondary} />
-            <Text style={styles.toolbarBtnText}>Attach</Text>
-            {attachments.length > 0 && (
-              <View style={styles.attachBadge}>
-                <Text style={styles.attachBadgeText}>{attachments.length}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-          {savingDraft && (
-            <ActivityIndicator size="small" color={Colors.primary} style={{ marginRight: 8 }} />
-          )}
-        </View>
+        {savingDraft && (
+          <View style={styles.savingRow}>
+            <ActivityIndicator size="small" color={Gmail.blue} />
+            <Text style={styles.savingText}>Saving draft…</Text>
+          </View>
+        )}
+
+        <ComposeRichEditor
+          ref={editorRef}
+          key={editorKey}
+          initialHtml={bodyHtml}
+          onChangeHtml={onBodyChange}
+          bottomInset={insets.bottom}
+        />
       </View>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -755,53 +811,101 @@ function SuggestionList({ suggestions, onPick }: { suggestions: Contact[]; onPic
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.surface },
+  container: { flex: 1, backgroundColor: Gmail.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: Colors.surface,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    backgroundColor: Gmail.bg,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    borderBottomColor: Gmail.border,
   },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: Colors.text },
-  form: { flex: 1 },
+  headerIconBtn: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '500',
+    color: Gmail.text,
+    marginLeft: 4,
+  },
+  headerAttachBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: Gmail.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  headerAttachBadgeText: { fontSize: 9, fontWeight: '700', color: '#fff' },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Gmail.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  sendBtnDisabled: { opacity: 0.5 },
+  loadingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: Gmail.blueLight,
+  },
+  savingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    paddingBottom: 8,
+  },
+  savingText: { fontSize: 12, color: Gmail.textSecondary },
+  recipientsScroll: { flexGrow: 0, maxHeight: 220 },
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
+    borderBottomColor: Gmail.divider,
     gap: 10,
   },
   fieldLabel: {
     width: 56,
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500',
+    color: Gmail.textSecondary,
   },
   fieldInput: {
     flex: 1,
-    fontSize: 14,
-    color: Colors.text,
+    fontSize: 15,
+    color: Gmail.text,
     padding: 0,
   },
   ccBccToggle: {
     fontSize: 12,
     fontWeight: '600',
-    color: Colors.primary,
+    color: Gmail.blue,
   },
   suggestionBox: {
-    backgroundColor: Colors.surface,
+    backgroundColor: Gmail.bg,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    shadowColor: Colors.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 1,
-    shadowRadius: 4,
+    borderBottomColor: Gmail.border,
     elevation: 4,
   },
   suggestionRow: {
@@ -811,27 +915,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.borderLight,
+    borderBottomColor: Gmail.divider,
   },
   suggestionAvatar: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: Colors.primaryLight,
+    backgroundColor: Gmail.blueLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  suggestionAvatarText: { fontSize: 13, fontWeight: '700', color: Colors.primary },
+  suggestionAvatarText: { fontSize: 13, fontWeight: '700', color: Gmail.blue },
   suggestionText: { flex: 1 },
-  suggestionName: { fontSize: 13, fontWeight: '600', color: Colors.text },
-  suggestionEmail: { fontSize: 12, color: Colors.textMuted },
-  bodyInput: {
-    minHeight: 200,
-    padding: 16,
-    fontSize: 15,
-    color: Colors.text,
-    lineHeight: 22,
-  },
+  suggestionName: { fontSize: 13, fontWeight: '600', color: Gmail.text },
+  suggestionEmail: { fontSize: 12, color: Gmail.textMuted },
   attachmentList: {
     flexDirection: 'column',
     gap: 6,
@@ -866,48 +963,8 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: Colors.primary,
   },
-  toolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    backgroundColor: Colors.surface,
-    gap: 16,
-  },
-  toolbarBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  toolbarBtnText: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    fontWeight: '500',
-  },
-  attachBadge: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  attachBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.surface,
-  },
-  loadingOverlay: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 20,
-  },
   loadingText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
+    fontSize: 13,
+    color: Gmail.textSecondary,
   },
 });

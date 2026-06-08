@@ -27,7 +27,8 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -50,7 +51,13 @@
           "iCloudContainerEnvironment": "Production"
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "color": "#1a73e8"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,146 +1,234 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Alert, TextInput,
-  Modal, SafeAreaView, Animated,
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  StyleSheet,
+  RefreshControl,
+  ActivityIndicator,
+  Alert,
+  TextInput,
+  Pressable,
+  ScrollView,
+  BackHandler,
 } from 'react-native';
+import { useFocusEffect, useNavigation } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import WebView from 'react-native-webview';
-import { File, Paths } from 'expo-file-system';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
-import { supabase } from '../../../lib/supabase';
-import ScreenHeader from '../../../components/ScreenHeader';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
-import { driveApi } from '../../../lib/api';
-import { Colors } from '../../../constants/colors';
+import { driveApi, type DriveListView } from '../../../lib/api';
 import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
+import { fetchDriveFileToCache } from '../../../lib/drive-download';
+import {
+  listDriveFilesDirectly,
+  driveStarredQuery,
+  buildDriveSharedQuery,
+  driveRecentQuery,
+  driveFolderQuery,
+} from '../../../lib/drive-list-direct';
+import { sortDriveFiles, type DriveSortKey, isDriveFolder } from '../../../lib/drive-utils';
 import type { DriveFile } from '../../../lib/types';
+import { DriveTheme } from '../../../constants/driveTheme';
+import { DriveListRow } from '../../../components/drive/DriveListRow';
+import { DriveGridTile } from '../../../components/drive/DriveGridTile';
+import { DriveListSkeleton, DriveGridSkeleton } from '../../../components/drive/DriveSkeleton';
+import { DrivePreviewModal } from '../../../components/drive/DrivePreviewModal';
+import { DriveActionSheet } from '../../../components/drive/DriveActionSheet';
+import { DriveMoveSheet } from '../../../components/drive/DriveMoveSheet';
+import { copyDriveFileLink, shareDriveFileLink } from '../../../lib/drive-file-actions';
+import { DriveCreateSheet } from '../../../components/drive/DriveCreateSheet';
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
+type LayoutMode = 'list' | 'grid';
+type DriveTab = 'my-drive' | 'starred' | 'recent' | 'shared';
 
-const MIME_ICONS: Record<string, { name: any; color: string }> = {
-  'application/vnd.google-apps.folder': { name: 'folder', color: '#F59E0B' },
-  'application/pdf': { name: 'document-text', color: '#EF4444' },
-  'image/jpeg': { name: 'image', color: '#3B82F6' },
-  'image/png': { name: 'image', color: '#3B82F6' },
-  'image/gif': { name: 'image', color: '#3B82F6' },
-  'image/webp': { name: 'image', color: '#3B82F6' },
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { name: 'grid', color: '#10B981' },
-  'application/vnd.google-apps.spreadsheet': { name: 'grid', color: '#10B981' },
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { name: 'document', color: '#3B82F6' },
-  'application/vnd.google-apps.document': { name: 'document', color: '#3B82F6' },
-  'application/vnd.google-apps.presentation': { name: 'easel', color: '#F97316' },
-};
+const TABS: { key: DriveTab; label: string; view: DriveListView }[] = [
+  { key: 'my-drive', label: 'My Drive', view: 'folder' },
+  { key: 'starred', label: 'Starred', view: 'starred' },
+  { key: 'recent', label: 'Recent', view: 'recent' },
+  { key: 'shared', label: 'Shared', view: 'shared' },
+];
 
-function getIcon(mime: string) {
-  return MIME_ICONS[mime] ?? { name: 'document-outline', color: Colors.textSecondary };
+const SORT_OPTIONS: { key: DriveSortKey; label: string }[] = [
+  { key: 'modified', label: 'Last modified' },
+  { key: 'name', label: 'Name' },
+  { key: 'size', label: 'Size' },
+];
+
+function normalizeFiles(raw: unknown[]): DriveFile[] {
+  return (raw ?? []).map((f: any) => ({
+    id: f.id,
+    name: f.name,
+    mimeType: f.mimeType,
+    size: f.size,
+    modifiedTime: f.modifiedTime,
+    webViewLink: f.webViewLink ?? null,
+    starred: !!(f.starred ?? f.isStarred),
+    shared: !!(f.shared ?? f.sharedWithMe),
+    thumbnailLink: f.thumbnailLink ?? null,
+  }));
 }
 
-function formatSize(size: string | null | undefined) {
-  if (!size) return '';
-  const n = parseInt(size, 10);
-  if (Number.isNaN(n)) return '';
-  if (n > 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  if (n > 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
+type ListPage = { files: DriveFile[]; nextPageToken?: string };
+
+async function fetchDrivePage(
+  view: DriveListView,
+  tab: DriveTab,
+  folderId: string | undefined,
+  opts: { pageToken?: string; search?: string; pageSize: number }
+): Promise<ListPage> {
+  const browsingFolderInView =
+    (tab === 'starred' || tab === 'shared' || tab === 'recent') && !!folderId;
+
+  if (view === 'folder' || browsingFolderInView) {
+    const parent = folderId ?? 'root';
+    try {
+      const data = await driveApi.listFiles(parent === 'root' ? undefined : parent, {
+        pageToken: opts.pageToken,
+        search: opts.search,
+        pageSize: opts.pageSize,
+        view: 'folder',
+      });
+      return { files: normalizeFiles(data.files ?? []), nextPageToken: data.nextPageToken };
+    } catch {
+      if (parent !== 'root') {
+        const direct = await listDriveFilesDirectly({
+          q: driveFolderQuery(parent),
+          pageToken: opts.pageToken,
+          pageSize: opts.pageSize,
+          orderBy: 'folder,name',
+        });
+        return direct;
+      }
+      throw new Error('Failed to load folder');
+    }
+  }
+
+  if (view === 'starred') {
+    try {
+      const data = await driveApi.listFiles(undefined, {
+        pageToken: opts.pageToken,
+        search: opts.search,
+        pageSize: opts.pageSize,
+        view: 'starred',
+      });
+      const files = normalizeFiles(data.files ?? []);
+      if (files.length > 0 || opts.pageToken) {
+        return { files, nextPageToken: data.nextPageToken };
+      }
+    } catch {
+      /* fall through to direct API */
+    }
+    const q = opts.search
+      ? `starred = true and name contains '${opts.search.replace(/'/g, "\\'")}' and trashed = false`
+      : driveStarredQuery();
+    return listDriveFilesDirectly({
+      q,
+      pageToken: opts.pageToken,
+      pageSize: opts.pageSize,
+      orderBy: 'folder,name,modifiedTime desc',
+    });
+  }
+
+  if (view === 'shared') {
+    try {
+      return await listDriveFilesDirectly({
+        q: buildDriveSharedQuery(opts.search),
+        pageToken: opts.pageToken,
+        pageSize: opts.pageSize,
+        orderBy: 'sharedWithMeTime desc',
+        corpora: 'user',
+      });
+    } catch (directErr) {
+      try {
+        const data = await driveApi.listFiles(undefined, {
+          pageToken: opts.pageToken,
+          search: opts.search,
+          pageSize: opts.pageSize,
+          view: 'shared',
+        });
+        return {
+          files: normalizeFiles(data.files ?? []),
+          nextPageToken: data.nextPageToken,
+        };
+      } catch {
+        throw directErr;
+      }
+    }
+  }
+
+  if (view === 'recent') {
+    try {
+      const data = await driveApi.listFiles(undefined, {
+        pageToken: opts.pageToken,
+        search: opts.search,
+        pageSize: opts.pageSize,
+        view: 'recent',
+      });
+      const files = normalizeFiles(data.files ?? []);
+      if (files.length > 0 || opts.pageToken) return { files, nextPageToken: data.nextPageToken };
+    } catch {
+      /* direct */
+    }
+    return listDriveFilesDirectly({
+      q: driveRecentQuery(),
+      pageToken: opts.pageToken,
+      pageSize: opts.pageSize,
+      orderBy: 'viewedByMeTime desc',
+    });
+  }
+
+  const data = await driveApi.listFiles(undefined, { ...opts, view: 'folder' });
+  return { files: normalizeFiles(data.files ?? []), nextPageToken: data.nextPageToken };
 }
-
-// Sanitise a filename so it can be used as a cache file name
-function safeName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
-}
-
-async function getBearerToken(): Promise<string | null> {
-  const { data } = await supabase.auth.getSession();
-  return data.session?.access_token ?? null;
-}
-
-/**
- * Downloads a Drive file through the authenticated backend proxy and returns
- * a local file:// URI suitable for WebView preview or expo-sharing.
- */
-async function fetchFileToCache(fileId: string, fileName: string, mode: 'preview' | 'download'): Promise<string> {
-  const token = await getBearerToken();
-  if (!token) throw new Error('Not signed in');
-
-  const remoteUrl = `${BASE_URL}/api/drive/file/${encodeURIComponent(fileId)}?mode=${mode}`;
-  const destFile = new File(Paths.cache, `drive_${safeName(fileName)}`);
-  if (destFile.exists) destFile.delete();
-
-  const downloaded = await File.downloadFileAsync(remoteUrl, destFile, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  return downloaded.uri;
-}
-
-// ─── Skeleton shimmer ────────────────────────────────────────────────────────
-
-function SkeletonBox({ width, height, style }: { width: number | string; height: number; style?: object }) {
-  const anim = React.useRef(new Animated.Value(0)).current;
-  React.useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(anim, { toValue: 1, duration: 900, useNativeDriver: true }),
-        Animated.timing(anim, { toValue: 0, duration: 900, useNativeDriver: true }),
-      ])
-    ).start();
-  }, [anim]);
-  const opacity = anim.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0.7] });
-  return (
-    <Animated.View
-      style={[{ width: width as any, height, borderRadius: 6, backgroundColor: Colors.border, opacity }, style]}
-    />
-  );
-}
-
-function FileRowSkeleton() {
-  return (
-    <View style={styles.row}>
-      <SkeletonBox width={44} height={44} style={{ borderRadius: 10 }} />
-      <View style={{ flex: 1, gap: 8 }}>
-        <SkeletonBox width="75%" height={13} />
-        <SkeletonBox width="40%" height={11} />
-      </View>
-      <SkeletonBox width={18} height={18} style={{ borderRadius: 4 }} />
-    </View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 export default function DriveScreen() {
   const { openDrawer } = useDrawer();
+  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
+
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [folderStack, setFolderStack] = useState<{ id: string; name: string }[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [tab, setTab] = useState<DriveTab>('my-drive');
+  const [layout, setLayout] = useState<LayoutMode>('list');
+  const [sortBy, setSortBy] = useState<DriveSortKey>('modified');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(false);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>();
   const [loadingMore, setLoadingMore] = useState(false);
-  // Preview state: local file:// URI shown in the modal WebView
-  const [previewLocalUri, setPreviewLocalUri] = useState<string | null>(null);
-  const [previewName, setPreviewName] = useState('');
-  const [fileActionLoading, setFileActionLoading] = useState<string | null>(null); // fileId
+  const [fileActionLoading, setFileActionLoading] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
+  const [actionFile, setActionFile] = useState<DriveFile | null>(null);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [moveFile, setMoveFile] = useState<DriveFile | null>(null);
 
   const currentFolderId = folderStack.length > 0 ? folderStack[folderStack.length - 1].id : undefined;
+  const activeTab = TABS.find((t) => t.key === tab)!;
+  const inFolderBrowse = !debouncedSearch && (tab === 'my-drive' || folderStack.length > 0);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 400);
     return () => clearTimeout(t);
   }, [search]);
 
+  const sortedFiles = useMemo(() => sortDriveFiles(files, sortBy), [files, sortBy]);
+
   const loadFiles = useCallback(async () => {
     setError(null);
-    const cacheKey = `drive:${currentFolderId ?? 'root'}:${debouncedSearch}`;
+    const view = activeTab.view;
+    const cacheKey = `drive:v2:${view}:${tab}:${currentFolderId ?? 'root'}:${debouncedSearch}`;
 
-    type CachedPage = { files: DriveFile[]; nextPageToken?: string };
-    const cached = cacheGet<CachedPage>(cacheKey);
+    const cached = cacheGet<ListPage>(cacheKey);
     if (cached) {
       setFiles(cached.files);
       setNextPageToken(cached.nextPageToken);
@@ -154,22 +242,17 @@ export default function DriveScreen() {
     }
 
     try {
-      const data = await driveApi.listFiles(currentFolderId, {
+      const page = await fetchDrivePage(view, tab, currentFolderId, {
         search: debouncedSearch || undefined,
-        pageSize: 20,
+        pageSize: 30,
       });
-      cacheSet(cacheKey, { files: data.files ?? [], nextPageToken: data.nextPageToken });
-      // Replace with fresh first page — deduplicate in case loadMore already appended
-      setFiles((prev) => {
-        const freshIds = new Set((data.files ?? []).map((f) => f.id));
-        const extra = prev.filter((f) => !freshIds.has(f.id));
-        return [...(data.files ?? []), ...extra];
-      });
-      setNextPageToken(data.nextPageToken);
+      cacheSet(cacheKey, page);
+      setFiles(page.files);
+      setNextPageToken(page.nextPageToken);
     } catch (e: any) {
       console.error('[drive] load failed:', e?.message);
       if (!cached) {
-        setError(e?.message ?? 'Failed to load Drive files');
+        setError(e?.message ?? 'Failed to load Drive');
         setFiles([]);
         setNextPageToken(undefined);
       }
@@ -177,7 +260,7 @@ export default function DriveScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentFolderId, debouncedSearch]);
+  }, [activeTab.view, tab, currentFolderId, debouncedSearch]);
 
   useEffect(() => {
     setFiles([]);
@@ -189,153 +272,379 @@ export default function DriveScreen() {
     if (!nextPageToken || loadingMore) return;
     setLoadingMore(true);
     try {
-      const data = await driveApi.listFiles(currentFolderId, {
+      const page = await fetchDrivePage(activeTab.view, tab, currentFolderId, {
         pageToken: nextPageToken,
         search: debouncedSearch || undefined,
         pageSize: 50,
       });
       setFiles((prev) => {
-        const existingIds = new Set(prev.map((f) => f.id));
-        const fresh = (data.files ?? []).filter((f) => !existingIds.has(f.id));
-        return [...prev, ...fresh];
+        const ids = new Set(prev.map((f) => f.id));
+        return [...prev, ...page.files.filter((f) => !ids.has(f.id))];
       });
-      setNextPageToken(data.nextPageToken);
-    } catch {}
-    finally { setLoadingMore(false); }
-  }
-
-  async function handleFilePress(file: DriveFile) {
-    if (file.mimeType === 'application/vnd.google-apps.folder') {
-      setFolderStack((prev) => [...prev, { id: file.id, name: file.name }]);
-      setSearch('');
-      return;
-    }
-    setFileActionLoading(file.id);
-    try {
-      const localUri = await fetchFileToCache(file.id, file.name, 'preview');
-      setPreviewName(file.name);
-      setPreviewLocalUri(localUri);
-    } catch (e: any) {
-      Alert.alert('Preview failed', e?.message ?? 'Could not load file');
+      setNextPageToken(page.nextPageToken);
+    } catch {
+      /* ignore */
     } finally {
-      setFileActionLoading(null);
+      setLoadingMore(false);
     }
   }
 
-  async function handleDownload(file: DriveFile) {
-    setFileActionLoading(file.id);
-    try {
-      const localUri = await fetchFileToCache(file.id, file.name, 'download');
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(localUri, {
-          dialogTitle: `Save "${file.name}"`,
-          UTI: file.mimeType,
-          mimeType: file.mimeType,
-        });
-      } else {
-        Alert.alert('Saved', `File saved to app cache: ${file.name}`);
-      }
-    } catch (e: any) {
-      Alert.alert('Download failed', e?.message ?? 'Could not download file');
-    } finally {
-      setFileActionLoading(null);
-    }
+  function selectTab(next: DriveTab) {
+    setTab(next);
+    setFolderStack([]);
+    setSearch('');
+    setSortMenuOpen(false);
   }
 
-  function goBack() {
-    setFolderStack((prev) => prev.slice(0, -1));
+  function navigateToFolder(file: DriveFile) {
+    setFolderStack((prev) => [...prev, { id: file.id, name: file.name }]);
     setSearch('');
   }
 
-  async function uploadFile() {
-    const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
-    if (result.canceled) return;
-    const asset = result.assets[0];
+  function navigateToBreadcrumb(index: number) {
+    if (index < 0) {
+      setFolderStack([]);
+    } else {
+      setFolderStack((prev) => prev.slice(0, index + 1));
+    }
+    setSearch('');
+  }
+
+  function popFolderLevel() {
+    setFolderStack((prev) => (prev.length > 0 ? prev.slice(0, -1) : prev));
+    setSearch('');
+  }
+
+  /** Consume back gesture / hardware back one level (folder, sheet, preview) before leaving Drive. */
+  const goBackOneStep = useCallback(() => {
+    if (previewOpen) {
+      setPreviewOpen(false);
+      setPreviewFile(null);
+      return true;
+    }
+    if (moveFile) {
+      setMoveFile(null);
+      return true;
+    }
+    if (actionFile) {
+      setActionFile(null);
+      return true;
+    }
+    if (createMenuOpen) {
+      setCreateMenuOpen(false);
+      return true;
+    }
+    if (sortMenuOpen) {
+      setSortMenuOpen(false);
+      return true;
+    }
+    if (searchExpanded) {
+      setSearchExpanded(false);
+      if (search) setSearch('');
+      return true;
+    }
+    if (folderStack.length > 0) {
+      popFolderLevel();
+      return true;
+    }
+    return false;
+  }, [
+    previewOpen,
+    moveFile,
+    actionFile,
+    createMenuOpen,
+    sortMenuOpen,
+    searchExpanded,
+    search,
+    folderStack.length,
+  ]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => goBackOneStep());
+      return () => sub.remove();
+    }, [goBackOneStep])
+  );
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (goBackOneStep()) {
+        e.preventDefault();
+      }
+    });
+    return unsubscribe;
+  }, [navigation, goBackOneStep]);
+
+  function openFile(file: DriveFile) {
+    if (isDriveFolder(file)) {
+      navigateToFolder(file);
+      return;
+    }
+    setPreviewFile(file);
+    setPreviewOpen(true);
+  }
+
+  async function downloadFile(file: DriveFile) {
+    setFileActionLoading(file.id);
+    try {
+      const localUri = await fetchDriveFileToCache(file.id, file.name, 'download', file.mimeType);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri, {
+          dialogTitle: `Save "${file.name}"`,
+          mimeType: file.mimeType,
+        });
+      } else {
+        Alert.alert('Saved', `File saved to app cache.`);
+      }
+    } catch (e: any) {
+      Alert.alert('Download failed', e?.message ?? 'Could not download');
+    } finally {
+      setFileActionLoading(null);
+    }
+  }
+
+  async function uploadAssets(assets: { uri: string; name: string; mimeType?: string | null }[]) {
+    if (assets.length === 0) return;
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', { uri: asset.uri, name: asset.name, type: asset.mimeType ?? 'application/octet-stream' } as any);
-      if (currentFolderId) formData.append('parent', currentFolderId);
-      await driveApi.uploadFile(formData);
+      for (const asset of assets) {
+        const formData = new FormData();
+        formData.append('file', {
+          uri: asset.uri,
+          name: asset.name,
+          type: asset.mimeType ?? 'application/octet-stream',
+        } as any);
+        if (currentFolderId && tab === 'my-drive') formData.append('parent', currentFolderId);
+        await driveApi.uploadFile(formData);
+      }
       await loadFiles();
-      Alert.alert('Uploaded', `${asset.name} uploaded to Drive.`);
     } catch (e: any) {
-      Alert.alert('Error', e.message ?? 'Upload failed');
+      Alert.alert('Upload failed', e?.message ?? 'Try again');
     } finally {
       setUploading(false);
     }
   }
 
-  return (
-    <View style={styles.container}>
-      <ScreenHeader
-        title="Drive"
-        onMenuPress={openDrawer}
-        rightAction={{ icon: 'cloud-upload-outline', onPress: uploadFile }}
-      />
+  async function pickAndUploadFiles(multiple: boolean) {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: '*/*',
+      copyToCacheDirectory: true,
+      multiple,
+    });
+    if (result.canceled) return;
+    await uploadAssets(result.assets);
+  }
 
-      {/* Breadcrumb is hidden while searching — search is drive-wide,
-          matching Google Drive's UX. */}
-      {folderStack.length > 0 && !debouncedSearch && (
-        <View style={styles.breadcrumb}>
-          <TouchableOpacity onPress={goBack} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={16} color={Colors.primary} />
-            <Text style={styles.backText}>
-              {folderStack.length > 1 ? folderStack[folderStack.length - 2].name : 'My Drive'}
-            </Text>
+  async function createFolder(name: string) {
+    if (tab !== 'my-drive') {
+      Alert.alert('My Drive only', 'Switch to My Drive to create folders.');
+      return;
+    }
+    setUploading(true);
+    try {
+      await driveApi.createFolder(name, currentFolderId);
+      await loadFiles();
+    } catch (e: any) {
+      Alert.alert('Could not create folder', e?.message ?? 'Try again');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const breadcrumbItems = useMemo(() => {
+    const rootLabel =
+      tab === 'starred' ? 'Starred' : tab === 'shared' ? 'Shared' : tab === 'recent' ? 'Recent' : 'My Drive';
+    const items: { label: string; index: number }[] = [{ label: rootLabel, index: -1 }];
+    folderStack.forEach((f, i) => items.push({ label: f.name, index: i }));
+    return items;
+  }, [folderStack, tab]);
+
+  const emptySubtitle = debouncedSearch
+    ? 'Try a different search term'
+    : tab === 'starred'
+      ? 'Star files in Google Drive to see them here'
+      : tab === 'shared'
+        ? 'Files shared with you (same as Google Drive “Shared with me”)'
+        : tab === 'recent'
+          ? 'Recently modified files will show here'
+          : 'Upload files with the + button';
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      {/* Header — Gmail / Drive style */}
+      <View style={styles.header}>
+        {folderStack.length > 0 ? (
+          <TouchableOpacity
+            onPress={popFolderLevel}
+            style={styles.headerBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="arrow-back" size={24} color={DriveTheme.text} />
           </TouchableOpacity>
-          <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
-          <Text style={styles.currentFolder} numberOfLines={1}>
-            {folderStack[folderStack.length - 1].name}
-          </Text>
+        ) : (
+          <TouchableOpacity onPress={openDrawer} style={styles.headerBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="menu" size={24} color={DriveTheme.text} />
+          </TouchableOpacity>
+        )}
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {folderStack.length > 0 ? folderStack[folderStack.length - 1].name : 'Drive'}
+        </Text>
+        <TouchableOpacity
+          onPress={() => setSearchExpanded((v) => !v)}
+          style={styles.headerBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name={searchExpanded ? 'close' : 'search'} size={24} color={DriveTheme.text} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setLayout((m) => (m === 'list' ? 'grid' : 'list'))}
+          style={styles.headerBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons
+            name={layout === 'list' ? 'grid-outline' : 'list-outline'}
+            size={24}
+            color={DriveTheme.text}
+          />
+        </TouchableOpacity>
+      </View>
+
+      {searchExpanded && (
+        <View style={styles.searchPill}>
+          <Ionicons name="search" size={20} color={DriveTheme.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search in Drive"
+            placeholderTextColor={DriveTheme.textMuted}
+            returnKeyType="search"
+            autoCorrect={false}
+            autoCapitalize="none"
+            autoFocus
+          />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={20} color={DriveTheme.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
-      {/* Search-mode banner — replaces breadcrumb while a query is active */}
+      {/* Location tabs */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.tabsScroll}
+        contentContainerStyle={styles.tabsContent}
+      >
+        {TABS.map((item) => {
+          const active = tab === item.key;
+          return (
+            <TouchableOpacity
+              key={item.key}
+              style={[styles.tab, active && styles.tabActive]}
+              onPress={() => selectTab(item.key)}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.tabText, active && styles.tabTextActive]}>{item.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
       {debouncedSearch ? (
         <View style={styles.searchBanner}>
-          <Ionicons name="search" size={13} color={Colors.textSecondary} />
+          <Ionicons name="search" size={14} color={DriveTheme.textSecondary} />
           <Text style={styles.searchBannerText} numberOfLines={1}>
-            Searching all of Drive for{' '}
-            <Text style={styles.searchBannerTerm}>&ldquo;{debouncedSearch}&rdquo;</Text>
+            Results for <Text style={styles.searchTerm}>&ldquo;{debouncedSearch}&rdquo;</Text>
           </Text>
         </View>
       ) : null}
 
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={16} color={Colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search Drive (name + contents)"
-          placeholderTextColor={Colors.textMuted}
-          returnKeyType="search"
-          autoCorrect={false}
-          autoCapitalize="none"
+      {inFolderBrowse && folderStack.length > 0 && (
+        <FlatList
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          data={breadcrumbItems}
+          keyExtractor={(_, i) => `bc-${i}`}
+          style={styles.breadcrumbList}
+          contentContainerStyle={styles.breadcrumbContent}
+          renderItem={({ item, index }) => {
+            const isLast = index === breadcrumbItems.length - 1;
+            return (
+              <View style={styles.breadcrumbItem}>
+                {index > 0 && (
+                  <Ionicons name="chevron-forward" size={14} color={DriveTheme.textMuted} style={{ marginRight: 4 }} />
+                )}
+                <TouchableOpacity
+                  onPress={() => navigateToBreadcrumb(item.index)}
+                  disabled={isLast}
+                >
+                  <Text
+                    style={[styles.breadcrumbText, isLast && styles.breadcrumbTextActive]}
+                    numberOfLines={1}
+                  >
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          }}
         />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
-          </TouchableOpacity>
+      )}
+
+      {/* Sort row */}
+      <View style={styles.sortRow}>
+        <Pressable style={styles.sortBtn} onPress={() => setSortMenuOpen((v) => !v)}>
+          <Text style={styles.sortLabel}>
+            {SORT_OPTIONS.find((s) => s.key === sortBy)?.label ?? 'Sort'}
+          </Text>
+          <Ionicons name={sortMenuOpen ? 'chevron-up' : 'chevron-down'} size={16} color={DriveTheme.textSecondary} />
+        </Pressable>
+        {!loading && (
+          <Text style={styles.fileCount}>
+            {sortedFiles.length} item{sortedFiles.length === 1 ? '' : 's'}
+          </Text>
         )}
       </View>
 
+      {sortMenuOpen && (
+        <View style={styles.sortMenu}>
+          {SORT_OPTIONS.map((opt) => (
+            <TouchableOpacity
+              key={opt.key}
+              style={styles.sortOption}
+              onPress={() => {
+                setSortBy(opt.key);
+                setSortMenuOpen(false);
+              }}
+            >
+              <Text style={[styles.sortOptionText, sortBy === opt.key && styles.sortOptionActive]}>
+                {opt.label}
+              </Text>
+              {sortBy === opt.key && <Ionicons name="checkmark" size={18} color={DriveTheme.blue} />}
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       {uploading && (
         <View style={styles.uploadBanner}>
-          <ActivityIndicator size="small" color={Colors.primary} />
-          <Text style={styles.uploadText}>Uploading file...</Text>
+          <ActivityIndicator size="small" color={DriveTheme.blue} />
+          <Text style={styles.uploadText}>Uploading…</Text>
         </View>
       )}
 
       {loading ? (
-        <View style={{ flex: 1 }}>
-          {[...Array(10)].map((_, i) => <FileRowSkeleton key={i} />)}
+        <View style={layout === 'grid' ? styles.gridSkeletonWrap : undefined}>
+          {[...Array(8)].map((_, i) =>
+            layout === 'grid' ? <DriveGridSkeleton key={i} /> : <DriveListSkeleton key={i} />
+          )}
         </View>
       ) : error ? (
         <View style={styles.center}>
-          <Ionicons name="warning-outline" size={32} color={Colors.error} />
+          <Ionicons name="cloud-offline-outline" size={40} color={DriveTheme.textMuted} />
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={() => { setLoading(true); loadFiles(); }}>
             <Text style={styles.retryText}>Retry</Text>
@@ -343,211 +652,267 @@ export default function DriveScreen() {
         </View>
       ) : (
         <FlatList
-          data={files}
+          key={layout}
+          data={sortedFiles}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <FileRow
-              file={item}
-              onPress={() => handleFilePress(item)}
-              onDownload={() => handleDownload(item)}
-              actionLoading={fileActionLoading === item.id}
-            />
-          )}
+          numColumns={layout === 'grid' ? 2 : 1}
+          columnWrapperStyle={layout === 'grid' ? styles.gridRow : undefined}
+          renderItem={({ item }) =>
+            layout === 'list' ? (
+              <DriveListRow
+                file={item}
+                loading={fileActionLoading === item.id}
+                onPress={() => openFile(item)}
+                onMorePress={() => setActionFile(item)}
+              />
+            ) : (
+              <DriveGridTile
+                file={item}
+                loading={fileActionLoading === item.id}
+                onPress={() => openFile(item)}
+                onMorePress={() => setActionFile(item)}
+              />
+            )
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={() => { setRefreshing(true); loadFiles(); }}
-              tintColor={Colors.primary}
+              tintColor={DriveTheme.blue}
             />
           }
           ListEmptyComponent={
             <EmptyState
-              icon="cloud-outline"
-              title={debouncedSearch ? 'No matches' : 'No files'}
-              subtitle={debouncedSearch ? 'Try a different search' : 'This folder is empty'}
+              icon="folder-open-outline"
+              title={debouncedSearch ? 'No results' : 'This folder is empty'}
+              subtitle={emptySubtitle}
             />
           }
           onEndReached={loadMore}
-          onEndReachedThreshold={0.5}
+          onEndReachedThreshold={0.4}
           ListFooterComponent={
             loadingMore ? (
               <View style={styles.footerLoader}>
-                <ActivityIndicator color={Colors.primary} size="small" />
+                <ActivityIndicator color={DriveTheme.blue} size="small" />
               </View>
             ) : null
           }
-          contentContainerStyle={files.length === 0 ? { flex: 1 } : { paddingBottom: 16 }}
+          contentContainerStyle={[
+            sortedFiles.length === 0 && styles.listEmpty,
+            { paddingBottom: insets.bottom + 88 },
+          ]}
+          ItemSeparatorComponent={layout === 'list' ? () => <View style={styles.separator} /> : undefined}
         />
       )}
 
-      {/* Preview modal — renders local file:// URI so no auth needed */}
-      <Modal
-        visible={!!previewLocalUri}
-        animationType="slide"
-        onRequestClose={() => setPreviewLocalUri(null)}
+      {/* FAB — create menu (upload / new folder) */}
+      <TouchableOpacity
+        style={[styles.fab, { bottom: insets.bottom + 20 }]}
+        onPress={() => setCreateMenuOpen(true)}
+        activeOpacity={0.85}
+        disabled={uploading}
       >
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-          <View style={styles.previewHeader}>
-            <TouchableOpacity onPress={() => setPreviewLocalUri(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close" size={26} color="#fff" />
-            </TouchableOpacity>
-            <Text style={styles.previewTitle} numberOfLines={1}>{previewName}</Text>
-            <TouchableOpacity
-              onPress={async () => {
-                if (!previewLocalUri) return;
-                const canShare = await Sharing.isAvailableAsync();
-                if (canShare) await Sharing.shareAsync(previewLocalUri, { dialogTitle: `Save "${previewName}"` });
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="download-outline" size={22} color="#fff" />
-            </TouchableOpacity>
-          </View>
-          {previewLocalUri && (
-            <WebView
-              source={{ uri: previewLocalUri }}
-              style={{ flex: 1, backgroundColor: '#fff' }}
-              originWhitelist={['*', 'file://']}
-              allowFileAccess
-              allowUniversalAccessFromFileURLs
-              allowFileAccessFromFileURLs
-              startInLoadingState
-              renderLoading={() => (
-                <View style={[styles.center, { backgroundColor: '#fff' }]}>
-                  <ActivityIndicator color={Colors.primary} />
-                </View>
-              )}
-            />
-          )}
-        </SafeAreaView>
-      </Modal>
+        <Ionicons name="add" size={28} color={DriveTheme.fabIcon} />
+      </TouchableOpacity>
+
+      <DriveCreateSheet
+        visible={createMenuOpen}
+        onClose={() => setCreateMenuOpen(false)}
+        onUploadFiles={() => pickAndUploadFiles(false)}
+        onUploadFolder={() => pickAndUploadFiles(true)}
+        onCreateFolder={createFolder}
+      />
+
+      <DrivePreviewModal
+        visible={previewOpen}
+        file={previewFile}
+        downloading={!!previewFile && fileActionLoading === previewFile.id}
+        onClose={() => {
+          setPreviewOpen(false);
+          setPreviewFile(null);
+        }}
+        onDownload={() => previewFile && downloadFile(previewFile)}
+      />
+
+      <DriveActionSheet
+        file={actionFile}
+        visible={!!actionFile}
+        onClose={() => setActionFile(null)}
+        onOpen={() => actionFile && openFile(actionFile)}
+        onDownload={() => actionFile && downloadFile(actionFile)}
+        onCopyLink={() => actionFile && copyDriveFileLink(actionFile)}
+        onShare={() => actionFile && shareDriveFileLink(actionFile)}
+        onMove={() => {
+          if (actionFile) {
+            setMoveFile(actionFile);
+            setActionFile(null);
+          }
+        }}
+      />
+
+      <DriveMoveSheet
+        file={moveFile}
+        visible={!!moveFile}
+        onClose={() => setMoveFile(null)}
+        onMoved={() => {
+          setMoveFile(null);
+          loadFiles();
+        }}
+      />
+
     </View>
   );
 }
 
-function FileRow({
-  file, onPress, onDownload, actionLoading,
-}: {
-  file: DriveFile;
-  onPress: () => void;
-  onDownload: () => void;
-  actionLoading: boolean;
-}) {
-  const icon = getIcon(file.mimeType);
-  const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
-  return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7} disabled={actionLoading}>
-      <View style={[styles.fileIcon, { backgroundColor: icon.color + '20' }]}>
-        {actionLoading
-          ? <ActivityIndicator size="small" color={icon.color} />
-          : <Ionicons name={icon.name} size={22} color={icon.color} />
-        }
-      </View>
-      <View style={styles.rowBody}>
-        <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
-        <View style={styles.fileMeta}>
-          {!isFolder && file.size && <Text style={styles.fileSize}>{formatSize(file.size)}</Text>}
-          <Text style={styles.fileDate}>
-            {file.modifiedTime ? new Date(file.modifiedTime).toLocaleDateString() : ''}
-          </Text>
-        </View>
-      </View>
-      {isFolder ? (
-        <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-      ) : (
-        <TouchableOpacity onPress={onDownload} disabled={actionLoading} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          {actionLoading
-            ? <ActivityIndicator size="small" color={Colors.primary} />
-            : <Ionicons name="download-outline" size={18} color={Colors.primary} />
-          }
-        </TouchableOpacity>
-      )}
-    </TouchableOpacity>
-  );
-}
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  breadcrumb: {
+  container: { flex: 1, backgroundColor: DriveTheme.bg },
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    padding: 12,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+    gap: 4,
   },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { fontSize: 13, color: Colors.primary },
-  currentFolder: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.text },
+  headerBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: 22,
+    fontWeight: '400',
+    color: DriveTheme.text,
+    letterSpacing: -0.2,
+  },
+  searchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: DriveTheme.searchBg,
+    borderRadius: 28,
+  },
+  searchInput: { flex: 1, fontSize: 16, color: DriveTheme.text, padding: 0 },
+  tabsScroll: { flexGrow: 0, marginBottom: 8 },
+  tabsContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    gap: 8,
+    alignItems: 'center',
+    flexDirection: 'row',
+  },
+  tab: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: DriveTheme.bgMuted,
+    justifyContent: 'center',
+    minHeight: 40,
+  },
+  tabActive: { backgroundColor: DriveTheme.blueLight },
+  tabText: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '500',
+    color: DriveTheme.textSecondary,
+    includeFontPadding: false,
+  },
+  tabTextActive: { color: DriveTheme.blue, fontWeight: '600' },
   searchBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: Colors.primaryLight,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  searchBannerText: { fontSize: 12, color: Colors.textSecondary, flexShrink: 1 },
-  searchBannerTerm: { fontWeight: '700', color: Colors.text },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
-    margin: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    backgroundColor: Colors.surface,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  searchInput: { flex: 1, fontSize: 14, color: Colors.text },
-  uploadBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 10,
-    backgroundColor: Colors.primaryLight,
-    justifyContent: 'center',
-  },
-  uploadText: { fontSize: 13, color: Colors.primary },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
+    paddingVertical: 8,
+    backgroundColor: DriveTheme.blueLight,
   },
-  fileIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
+  searchBannerText: { fontSize: 13, color: DriveTheme.textSecondary, flex: 1 },
+  searchTerm: { fontWeight: '700', color: DriveTheme.text },
+  breadcrumbList: { maxHeight: 40 },
+  breadcrumbContent: { paddingHorizontal: 16, alignItems: 'center' },
+  breadcrumbItem: { flexDirection: 'row', alignItems: 'center', maxWidth: 160 },
+  breadcrumbText: { fontSize: 14, color: DriveTheme.blue, fontWeight: '500' },
+  breadcrumbTextActive: { color: DriveTheme.text, fontWeight: '600' },
+  sortRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: DriveTheme.divider,
   },
-  rowBody: { flex: 1, gap: 3 },
-  fileName: { fontSize: 14, fontWeight: '500', color: Colors.text },
-  fileMeta: { flexDirection: 'row', gap: 8 },
-  fileSize: { fontSize: 12, color: Colors.textMuted },
-  fileDate: { fontSize: 12, color: Colors.textMuted },
-  footerLoader: { paddingVertical: 16, alignItems: 'center' },
-  errorText: { fontSize: 14, color: Colors.error, textAlign: 'center', marginTop: 8 },
-  retryBtn: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Colors.primary, borderRadius: 8 },
-  retryText: { color: Colors.surface, fontWeight: '600', fontSize: 14 },
-  previewHeader: {
+  sortBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  sortLabel: { fontSize: 14, fontWeight: '500', color: DriveTheme.textSecondary },
+  fileCount: { fontSize: 13, color: DriveTheme.textMuted },
+  sortMenu: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: DriveTheme.border,
+    backgroundColor: DriveTheme.bg,
+    overflow: 'hidden',
+  },
+  sortOption: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#111',
+    borderBottomWidth: 1,
+    borderBottomColor: DriveTheme.divider,
   },
-  previewTitle: { flex: 1, fontSize: 15, fontWeight: '600', color: '#fff', marginHorizontal: 12 },
+  sortOptionText: { fontSize: 15, color: DriveTheme.text },
+  sortOptionActive: { color: DriveTheme.blue, fontWeight: '600' },
+  uploadBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: DriveTheme.blueLight,
+  },
+  uploadText: { fontSize: 13, color: DriveTheme.blue, fontWeight: '500' },
+  gridSkeletonWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 10,
+    alignContent: 'flex-start',
+  },
+  gridRow: { paddingHorizontal: 10 },
+  separator: { height: 1, backgroundColor: DriveTheme.divider, marginLeft: 70 },
+  listEmpty: { flex: 1 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  errorText: { fontSize: 15, color: DriveTheme.textSecondary, textAlign: 'center', marginTop: 12 },
+  retryBtn: {
+    marginTop: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    backgroundColor: DriveTheme.blue,
+    borderRadius: 24,
+  },
+  retryText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  footerLoader: { paddingVertical: 20, alignItems: 'center' },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: DriveTheme.fab,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+  },
 });

@@ -5,7 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/colors';
 
 /**
- * Deep-link landing for `placecom://auth/callback?code=…`.
+ * Deep-link landing for `thenucleus://auth/callback?code=…`.
  *
  * Most of the time the sign-in flow finishes inside
  * `WebBrowser.openAuthSessionAsync` and never opens this screen — the

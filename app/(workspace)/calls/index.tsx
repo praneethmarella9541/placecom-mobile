@@ -18,11 +18,15 @@ import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
 import { callsApi } from '../../../lib/api';
 import { useAuth } from '../../../hooks/useAuth';
+import { useWhatsAppContacts } from '../../../hooks/useWhatsAppContacts';
 import { CallsTheme } from '../../../constants/callsTheme';
 import { CallListRow } from '../../../components/calls/CallListRow';
 import { CallsDialerSheet } from '../../../components/calls/CallsDialerSheet';
+import { CallsContactsTab } from '../../../components/calls/CallsContactsTab';
 import { groupCallsByDate, normalisePhone } from '../../../lib/call-utils';
 import type { CallLog } from '../../../lib/types';
+
+type CallsTab = 'history' | 'contacts';
 
 const AGENT_PHONE_KEY = 'thenucleus:agent_phone';
 const AGENT_PHONE_KEY_LEGACY = 'placecom:agent_phone';
@@ -31,12 +35,15 @@ export default function CallsScreen() {
   const router = useRouter();
   const { openDrawer } = useDrawer();
   const { profile } = useAuth();
+  const { contacts } = useWhatsAppContacts();
   const insets = useSafeAreaInsets();
   const [calls, setCalls] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialerOpen, setDialerOpen] = useState(false);
+  const [dialerPrefill, setDialerPrefill] = useState<string | undefined>();
+  const [tab, setTab] = useState<CallsTab>('history');
   const [placing, setPlacing] = useState(false);
   const [agentPhone, setAgentPhone] = useState('');
   const [virtualNumber, setVirtualNumber] = useState(
@@ -154,6 +161,11 @@ export default function CallsScreen() {
 
   const sections = groupCallsByDate(calls);
 
+  function openDialer(prefill?: string) {
+    setDialerPrefill(prefill);
+    setDialerOpen(true);
+  }
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
@@ -164,6 +176,23 @@ export default function CallsScreen() {
         <View style={styles.headerBtn} />
       </View>
 
+      <View style={styles.tabs}>
+        {([['history', 'Call history'], ['contacts', 'Contacts']] as const).map(([key, label]) => (
+          <TouchableOpacity
+            key={key}
+            style={[styles.tab, tab === key && styles.tabActive]}
+            onPress={() => setTab(key)}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, tab === key && styles.tabTextActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {tab === 'contacts' ? (
+        <CallsContactsTab onCall={(number) => openDialer(number)} />
+      ) : (
+      <>
       {!agentPhone && !loading ? (
         <TouchableOpacity
           style={styles.setupBanner}
@@ -197,6 +226,7 @@ export default function CallsScreen() {
           renderItem={({ item }) => (
             <CallListRow
               call={item}
+              contacts={contacts}
               onPress={() => router.push(`/(workspace)/calls/${item.id}` as any)}
             />
           )}
@@ -226,11 +256,13 @@ export default function CallsScreen() {
 
       <TouchableOpacity
         style={[styles.fab, { bottom: insets.bottom + 20 }]}
-        onPress={() => setDialerOpen(true)}
+        onPress={() => openDialer()}
         activeOpacity={0.85}
       >
         <Ionicons name="call" size={26} color={CallsTheme.fabIcon} />
       </TouchableOpacity>
+      </>
+      )}
 
       <CallsDialerSheet
         visible={dialerOpen}
@@ -238,7 +270,8 @@ export default function CallsScreen() {
         virtualNumber={virtualNumber}
         agentPhoneReadOnly={telephonyFromServer}
         placing={placing}
-        onClose={() => setDialerOpen(false)}
+        initialDestination={dialerPrefill}
+        onClose={() => { setDialerOpen(false); setDialerPrefill(undefined); }}
         onSaveAgentPhone={saveAgentPhone}
         onPlaceCall={placeCall}
       />
@@ -259,6 +292,16 @@ const styles = StyleSheet.create({
   },
   headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { flex: 1, fontSize: 22, fontWeight: '400', color: CallsTheme.text, textAlign: 'center' },
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: CallsTheme.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: CallsTheme.border,
+  },
+  tab: { flex: 1, paddingVertical: 12, alignItems: 'center' },
+  tabActive: { borderBottomWidth: 3, borderBottomColor: CallsTheme.blue },
+  tabText: { fontSize: 14, fontWeight: '500', color: CallsTheme.textSecondary },
+  tabTextActive: { color: CallsTheme.blue, fontWeight: '600' },
   setupBanner: {
     flexDirection: 'row',
     alignItems: 'center',

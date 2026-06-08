@@ -92,6 +92,9 @@ export interface WhatsAppMessage {
   body: string;
   message_sid: string;
   num_media: number;
+  delivery_status?: string | null;
+  media_url?: string | null;
+  content_type?: string | null;
   created_at: string;
 }
 
@@ -155,6 +158,8 @@ export interface CalendarEvent {
   location?: string;
   htmlLink?: string;
   hangoutLink?: string;
+  colorId?: string;
+  recurrence?: string[];
 }
 
 export interface TeamMember {

@@ -43,3 +43,8 @@ export function markLocallyRead(id: string): void {
 export function isLocallyRead(id: string): boolean {
   return locallyRead.has(id);
 }
+
+export function clearPendingSessionState(): void {
+  pendingDeletes.clear();
+  locallyRead.clear();
+}

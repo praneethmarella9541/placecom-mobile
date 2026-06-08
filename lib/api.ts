@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
+export const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
 async function authHeaders(): Promise<Record<string, string>> {
   const { data } = await supabase.auth.getSession();
@@ -171,12 +171,38 @@ export const gmailApi = {
     const p = new URLSearchParams({ messageId, attachmentId, filename, mimeType });
     return `${BASE_URL}/api/gmail/attachment?${p.toString()}`;
   },
-  saveDraft: (data: { to?: string; cc?: string; bcc?: string; subject?: string; textBody?: string; draftId?: string; threadId?: string }) =>
-    post<{ draftId: string; messageId?: string; threadId?: string }>('/api/gmail/drafts', data),
+  saveDraft: (data: {
+    to?: string;
+    cc?: string;
+    bcc?: string;
+    subject?: string;
+    textBody?: string;
+    htmlBody?: string;
+    draftId?: string;
+    threadId?: string;
+    preserveAttachments?: boolean;
+    mergeExistingAttachments?: boolean;
+    attachments?: Array<{ filename: string; mimeType: string; base64Data: string }>;
+  }) => post<{ draftId: string; messageId?: string; threadId?: string }>('/api/gmail/drafts', data),
   getDraft: (draftId: string) =>
-    get<{ draftId: string; messageId?: string; threadId?: string; to: string; cc: string; bcc: string; subject: string; textBody: string; attachments?: Array<{ attachmentId: string; filename: string; mimeType: string; size: number; messageId: string }> }>(
-      '/api/gmail/drafts', { draftId }
-    ),
+    get<{
+      draftId: string;
+      messageId?: string;
+      threadId?: string;
+      to: string;
+      cc: string;
+      bcc: string;
+      subject: string;
+      textBody: string;
+      htmlBody?: string;
+      attachments?: Array<{
+        attachmentId: string;
+        filename: string;
+        mimeType: string;
+        size: number;
+        messageId: string;
+      }>;
+    }>('/api/gmail/drafts', { draftId }),
   deleteDraft: async (draftId: string) => {
     const headers = await authHeaders();
     const res = await fetch(`${BASE_URL}/api/gmail/drafts?draftId=${encodeURIComponent(draftId)}`, {
@@ -221,7 +247,7 @@ export const smsApi = {
   send: (to: string, body: string) => post('/api/sms/send', { to, body }),
 };
 
-// WhatsApp
+// WhatsApp (Exotel — same API as Placecom web)
 export const whatsappApi = {
   status: () =>
     get<{
@@ -229,14 +255,73 @@ export const whatsappApi = {
       businessLine?: string | null;
       lineError?: string | null;
       suggestedInboundWebhookUrl?: string | null;
+      defaultTemplate?: {
+        name: string;
+        languageCode: string;
+        bodyParamCount: number;
+        previewExample?: string;
+      };
+      migrationHint?: string;
     }>('/api/whatsapp/status'),
+  listContacts: () =>
+    get<{ contacts: Array<{ peer_e164: string; name: string }> }>('/api/whatsapp/contacts'),
+  saveContact: (peer_e164: string, name: string) =>
+    post('/api/whatsapp/contacts', { peer_e164, name }),
+  deleteContact: async (peer_e164: string) => {
+    const headers = await authHeaders();
+    const res = await fetchWithTimeout(`${BASE_URL}/api/whatsapp/contacts`, {
+      method: 'DELETE',
+      headers,
+      body: JSON.stringify({ peer_e164 }),
+    });
+    if (!res.ok) throw new Error(`DELETE contact failed: ${res.status}`);
+    return res.json();
+  },
   listConversations: () =>
     get<{ conversations: any[]; businessLine?: string | null; error?: string }>(
       '/api/whatsapp/conversations'
     ),
   getMessages: (peer: string) =>
     get<{ messages: any[]; businessLine?: string | null }>('/api/whatsapp/messages', { peer }),
-  send: (to: string, body: string) => post('/api/whatsapp/send', { to, text: body }),
+  session: (peer: string) =>
+    get<{
+      sessionOpen: boolean;
+      requiresTemplate: boolean;
+      template?: { name: string; bodyParamCount: number; previewExample?: string };
+    }>('/api/whatsapp/session', { peer }),
+  send: (
+    to: string,
+    opts: {
+      messageType?: string;
+      text?: string;
+      useTemplate?: boolean;
+      templateVariables?: string[];
+      mediaUrl?: string;
+      mediaCaption?: string;
+      mediaFilename?: string;
+      replyToId?: string;
+    }
+  ) => post<{ peerE164?: string; messageSid?: string }>('/api/whatsapp/send', { to, ...opts }),
+  uploadMedia: async (uri: string, name: string, mimeType: string) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    const form = new FormData();
+    form.append('file', { uri, name, type: mimeType } as unknown as Blob);
+    const res = await fetchWithTimeout(`${BASE_URL}/api/whatsapp/upload`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    }, 120000);
+    if (!res.ok) {
+      let msg = `Upload failed: ${res.status}`;
+      try {
+        const b = await res.json();
+        if (b?.error) msg = b.error;
+      } catch {}
+      throw new Error(msg);
+    }
+    return res.json() as Promise<{ url: string; kind: string; filename: string }>;
+  },
 };
 
 // Calendar
@@ -253,6 +338,15 @@ export type CalendarEventInput = {
   addMeet?: boolean;
   /** 'all' = email everyone, 'externalOnly' = only non-owned-domain, 'none' = silent. */
   sendUpdates?: CalendarSendUpdates;
+  /** Google Calendar event color ID (1–11). */
+  colorId?: string;
+  /** RRULE strings, e.g. ['RRULE:FREQ=WEEKLY']. */
+  recurrence?: string[];
+  /** Override reminders. useDefault=false + overrides=[] means no reminder. */
+  reminders?: {
+    useDefault: boolean;
+    overrides?: { method: 'popup' | 'email'; minutes: number }[];
+  };
 };
 
 export type CalendarEventResponse = {

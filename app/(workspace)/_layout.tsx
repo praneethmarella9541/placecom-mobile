@@ -9,7 +9,7 @@ import { Colors } from '../../constants/colors';
 import { useAuth } from '../../hooks/useAuth';
 import { meApi, type MeMailbox } from '../../lib/api';
 import { MailboxSessionSync } from '../../components/MailboxSessionSync';
-
+import { BrandLogo } from '../../components/BrandLogo';
 const MODULES = [
   { key: 'inbox',        label: 'Inbox',     icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false },
   { key: 'calls',        label: 'Calls',     icon: 'call-outline' as const,            path: '/(workspace)/calls',        feature: 'calls',        googleOnly: false },
@@ -18,6 +18,7 @@ const MODULES = [
   { key: 'drive',        label: 'Drive',     icon: 'cloud-outline' as const,           path: '/(workspace)/drive',        feature: 'drive',        googleOnly: false },
   { key: 'forms',        label: 'Forms',     icon: 'document-text-outline' as const,   path: '/(workspace)/forms',        feature: 'forms',        googleOnly: false },
   { key: 'broadcasting', label: 'Broadcast', icon: 'megaphone-outline' as const,       path: '/(workspace)/broadcasting', feature: 'broadcasting', googleOnly: false },
+  { key: 'whatsapp',     label: 'WhatsApp',  icon: 'logo-whatsapp' as const,           path: '/(workspace)/whatsapp',     feature: 'whatsapp',     googleOnly: false },
   // Dashboard and Team are admin-only: only visible when signed in via Google OAuth
   { key: 'dashboard',   label: 'Dashboard', icon: 'analytics-outline' as const,       path: '/(workspace)/dashboard',    feature: 'dashboard',    googleOnly: true  },
   { key: 'admin',        label: 'Team',      icon: 'shield-checkmark-outline' as const, path: '/(workspace)/admin',       feature: null,           googleOnly: true  },
@@ -60,12 +61,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   return (
     <View style={[styles.sidebar, { paddingTop: insets.top }]}>
       <View style={styles.sidebarHeader}>
-        <View style={styles.logoRow}>
-          <View style={styles.logoBox}>
-            <Ionicons name="briefcase" size={20} color={Colors.surface} />
-          </View>
-          <Text style={styles.logoText}>PlaceCom</Text>
-        </View>
+        <BrandLogo size="sm" nameColor={Colors.sidebarActiveText} />
         {(profile || user || me) && (() => {
           // Multi-source fallback for the signed-in user's name + email
           const meta = (user?.user_metadata ?? {}) as { full_name?: string; name?: string; email?: string };
@@ -195,24 +191,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.1)',
     gap: 16,
-  },
-  logoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  logoBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoText: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: Colors.surface,
   },
   userInfo: {
     flexDirection: 'row',

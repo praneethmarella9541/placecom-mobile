@@ -1,0 +1,21 @@
+/** Phone / dialer–inspired palette. */
+export const CallsTheme = {
+  green: '#188038',
+  greenLight: '#E6F4EA',
+  blue: '#1A73E8',
+  blueLight: '#E8F0FE',
+  red: '#D93025',
+  redLight: '#FCE8E6',
+  amber: '#F9AB00',
+  amberLight: '#FEF7E0',
+  gray: '#5F6368',
+  grayLight: '#F1F3F4',
+  bg: '#F6F8FC',
+  surface: '#FFFFFF',
+  text: '#202124',
+  textSecondary: '#5F6368',
+  textMuted: '#80868B',
+  border: '#E8EAED',
+  fab: '#1A73E8',
+  fabIcon: '#FFFFFF',
+};

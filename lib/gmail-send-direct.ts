@@ -41,6 +41,8 @@ export interface DirectSendOptions {
   bcc?: string;
   subject: string;
   textBody: string;
+  /** When set, used for the HTML MIME part instead of auto-escaping plain text. */
+  htmlBody?: string;
   threadId?: string;
   inReplyToMessageId?: string;
   attachments?: DirectSendAttachment[];
@@ -115,9 +117,12 @@ export async function readFileAsBase64(uri: string): Promise<string> {
 
 function buildMime(
   plainText: string,
-  attachments: Array<{ filename: string; mimeType: string; base64Data: string }>
+  attachments: Array<{ filename: string; mimeType: string; base64Data: string }>,
+  htmlBodyOverride?: string
 ): { contentType: string; body: string } {
-  const htmlBody = `<div style="font-family:sans-serif;font-size:14px;line-height:1.6">${escapeHtml(plainText)}</div>`;
+  const htmlBody =
+    htmlBodyOverride?.trim() ||
+    `<div style="font-family:sans-serif;font-size:14px;line-height:1.6">${escapeHtml(plainText)}</div>`;
 
   const altPart = [
     `--${ALT_BOUNDARY}`,
@@ -206,7 +211,7 @@ export async function sendMailDirectly(
     }))
   );
 
-  const { contentType, body: mimeBody } = buildMime(opts.textBody, builtAttachments);
+  const { contentType, body: mimeBody } = buildMime(opts.textBody, builtAttachments, opts.htmlBody);
 
   const rawLines: string[] = [
     `To: ${opts.to}`,
@@ -250,6 +255,7 @@ export interface DirectDraftOptions {
   bcc?: string;
   subject: string;
   textBody: string;
+  htmlBody?: string;
   draftId?: string; // if set, update existing draft
   attachments?: DirectSendAttachment[];
 }
@@ -267,7 +273,7 @@ export async function saveDraftDirectly(
     }))
   );
 
-  const { contentType, body: mimeBody } = buildMime(opts.textBody, builtAttachments);
+  const { contentType, body: mimeBody } = buildMime(opts.textBody, builtAttachments, opts.htmlBody);
 
   const rawLines: string[] = [
     `To: ${opts.to ?? ''}`,

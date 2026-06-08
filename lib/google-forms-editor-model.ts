@@ -1,6 +1,6 @@
 /**
  * Maps Google Forms REST `Form` / `Item` shapes to an editor model and builds batchUpdate requests.
- * Keeps editing in Placecom while syncing to the mailbox Google account via Forms API.
+ * Keeps editing in The Nucleus while syncing to the mailbox Google account via Forms API.
  */
 
 export type EmailCollectionUi =
@@ -144,7 +144,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
       itemId,
       title,
       description,
-      hint: "Image, video, and grid questions are not editable in Placecom yet.",
+      hint: "Image, video, and grid questions are not editable in The Nucleus yet.",
       rawItem: JSON.parse(JSON.stringify(item)) as LooseItem,
     };
   }
@@ -228,7 +228,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
       itemId,
       title,
       description,
-      hint: "This choice question type is not editable in Placecom yet.",
+      hint: "This choice question type is not editable in The Nucleus yet.",
       rawItem: JSON.parse(JSON.stringify(item)) as LooseItem,
     };
   }

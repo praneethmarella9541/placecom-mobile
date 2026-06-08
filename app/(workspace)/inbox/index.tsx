@@ -1,34 +1,58 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  RefreshControl, TextInput, ActivityIndicator, Alert,
+  RefreshControl, TextInput, ActivityIndicator, Alert, Pressable,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { format, isToday, isYesterday } from 'date-fns';
-import ScreenHeader from '../../../components/ScreenHeader';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
 import { useAuth } from '../../../hooks/useAuth';
 import { gmailApi, type GmailFolder, type GmailLabel, type GmailThreadListItem } from '../../../lib/api';
 import { markThreadReadDirectly } from '../../../lib/gmail-send-direct';
 import { Colors } from '../../../constants/colors';
+import { Gmail, avatarColorForName } from '../../../constants/gmailTheme';
 import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
+import { ingestCorrespondentThreads } from '../../../lib/correspondent-rank';
 import { isPendingDelete, markLocallyRead, isLocallyRead } from '../../../lib/pending-deletes';
 import { LabelChip } from '../../../components/LabelChip';
+import { labelDisplayName } from '../../../lib/gmail-labels';
+import { GmailSearchChips } from '../../../components/inbox/GmailSearchChips';
+import { folderSegmentBadge, loadMailboxLabelCounts } from '../../../lib/gmail-label-counts';
 
 const FOLDERS: { key: GmailFolder; label: string }[] = [
-  { key: 'inbox',  label: 'Inbox'  },
-  { key: 'sent',   label: 'Sent'   },
+  { key: 'inbox', label: 'Inbox' },
+  { key: 'sent', label: 'Sent' },
   { key: 'drafts', label: 'Drafts' },
 ];
+
+type CategoryKey = 'primary' | 'promotions' | 'social' | 'updates' | 'forums';
+
+const CATEGORIES: { key: CategoryKey; label: string }[] = [
+  { key: 'primary', label: 'Primary' },
+  { key: 'promotions', label: 'Promotions' },
+  { key: 'social', label: 'Social' },
+  { key: 'updates', label: 'Updates' },
+  { key: 'forums', label: 'Forums' },
+];
+
+type FilterChipItem =
+  | { kind: 'category'; key: CategoryKey; label: string }
+  | { kind: 'divider' }
+  | { kind: 'label'; id: string; name: string };
 
 const PAGE_SIZE = 15;
 
 export default function InboxScreen() {
   const router = useRouter();
   const { openDrawer } = useDrawer();
-  const { session } = useAuth();
+  const { session, user } = useAuth();
+  const userId = user?.id ?? '';
+  const insets = useSafeAreaInsets();
+  const searchRef = useRef<TextInput>(null);
+  const searchBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [folder, setFolder] = useState<GmailFolder>('inbox');
   const [threads, setThreads] = useState<GmailThreadListItem[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
@@ -36,7 +60,14 @@ export default function InboxScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [chipMenuOpen, setChipMenuOpen] = useState(false);
+  const chipMenuOpenRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    chipMenuOpenRef.current = chipMenuOpen;
+  }, [chipMenuOpen]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -45,8 +76,6 @@ export default function InboxScreen() {
   const [allLabels, setAllLabels] = useState<GmailLabel[]>([]);
   const [filterLabelId, setFilterLabelId] = useState<string | null>(null);
 
-  // Inbox category sub-tabs (Primary / Promotions / Social / Updates / Forums).
-  type CategoryKey = 'primary' | 'promotions' | 'social' | 'updates' | 'forums';
   const CATEGORY_LABEL: Record<CategoryKey, string> = {
     primary: 'CATEGORY_PERSONAL',
     promotions: 'CATEGORY_PROMOTIONS',
@@ -74,19 +103,31 @@ export default function InboxScreen() {
       .catch(() => { /* non-fatal — chips will be empty */ });
   }, []);
 
-  // Fetch counts whenever the label list changes.
+  const refreshLabelCounts = useCallback(async () => {
+    if (!session) return;
+    try {
+      const counts = await loadMailboxLabelCounts({
+        getGoogleToken: () => gmailApi.getGoogleToken(),
+        folderCounts: (ids) => gmailApi.folderCounts(ids),
+        extraLabelIds: allLabels.filter((l) => l.type === 'user').map((l) => l.id),
+      });
+      setLabelCounts(counts);
+    } catch (e: unknown) {
+      console.warn('[inbox] label counts failed:', (e as Error)?.message);
+    }
+  }, [session, allLabels]);
+
   useEffect(() => {
-    if (allLabels.length === 0) return;
-    const ids = [
-      'INBOX', 'SENT', 'DRAFT', 'STARRED',
-      'CATEGORY_PERSONAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL',
-      'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
-      ...allLabels.filter((l) => l.type === 'user').map((l) => l.id),
-    ];
-    gmailApi.folderCounts(ids)
-      .then((r) => setLabelCounts(r.counts ?? {}))
-      .catch(() => { /* non-fatal */ });
-  }, [allLabels]);
+    void refreshLabelCounts();
+  }, [refreshLabelCounts]);
+
+  // Poll while this screen is focused so badges stay aligned with Gmail.
+  useFocusEffect(
+    useCallback(() => {
+      const timer = setInterval(() => void refreshLabelCounts(), 45_000);
+      return () => clearInterval(timer);
+    }, [refreshLabelCounts])
+  );
 
   // Clear selection when the visible list changes underneath us.
   useEffect(() => { setSelection(new Set()); }, [folder, debouncedSearch, effectiveLabelId]);
@@ -146,6 +187,54 @@ export default function InboxScreen() {
     return m;
   }, [allLabels]);
 
+  const userLabels = React.useMemo(
+    () => allLabels.filter((l) => l.type === 'user'),
+    [allLabels]
+  );
+
+  const filterChipItems = React.useMemo((): FilterChipItem[] => {
+    if (folder === 'drafts') return [];
+    const items: FilterChipItem[] = [];
+    if (folder === 'inbox') {
+      for (const c of CATEGORIES) {
+        items.push({ kind: 'category', key: c.key, label: c.label });
+      }
+    }
+    if (userLabels.length > 0) {
+      if (items.length > 0) items.push({ kind: 'divider' });
+      for (const l of userLabels) {
+        items.push({ kind: 'label', id: l.id, name: labelDisplayName(l) });
+      }
+    }
+    return items;
+  }, [folder, userLabels]);
+
+  const activeFilterName = React.useMemo(() => {
+    if (filterLabelId) return labelsById.get(filterLabelId)?.name ?? 'Label';
+    if (folder === 'inbox') {
+      return CATEGORIES.find((c) => c.key === category)?.label ?? 'Primary';
+    }
+    return null;
+  }, [filterLabelId, folder, category, labelsById]);
+
+  function selectFolder(next: GmailFolder) {
+    setFolder(next);
+    if (next === 'drafts') setFilterLabelId(null);
+  }
+
+  function selectCategory(key: CategoryKey) {
+    setFilterLabelId(null);
+    setCategory(key);
+  }
+
+  function selectLabel(id: string) {
+    setFilterLabelId((cur) => (cur === id ? null : id));
+  }
+
+  function clearLabelFilter() {
+    setFilterLabelId(null);
+  }
+
   // Debounce search input → only hit backend after 400ms of stillness
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -163,9 +252,15 @@ export default function InboxScreen() {
       .map((t) => (isLocallyRead(t.id) ? { ...t, unread: false } : t));
   }, []);
 
+  const inboxCacheKey = useCallback(
+    () => `inbox:${userId}:${folder}:${debouncedSearch}:${effectiveLabelId ?? ''}`,
+    [userId, folder, debouncedSearch, effectiveLabelId]
+  );
+
   const loadFirstPage = useCallback(async (force = false) => {
+    if (!userId) return;
     setError(null);
-    const cacheKey = `inbox:${folder}:${debouncedSearch}:${effectiveLabelId ?? ''}`;
+    const cacheKey = inboxCacheKey();
 
     type CachedPage = { threads: GmailThreadListItem[]; nextPageToken?: string };
     const cached = cacheGet<CachedPage>(cacheKey);
@@ -204,7 +299,9 @@ export default function InboxScreen() {
       const threads = applyLocalOverlays(unique);
       cacheSet(cacheKey, { threads, nextPageToken: data.nextPageToken });
       setThreads(threads);
+      ingestCorrespondentThreads(threads, folder);
       setNextPageToken(data.nextPageToken);
+      void refreshLabelCounts();
     } catch (e: any) {
       console.error('[inbox] load failed:', e?.message);
       if (!cached) {
@@ -216,7 +313,7 @@ export default function InboxScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [folder, debouncedSearch, applyLocalOverlays, effectiveLabelId]);
+  }, [userId, inboxCacheKey, applyLocalOverlays, refreshLabelCounts]);
 
   const loadMore = useCallback(async () => {
     if (!nextPageToken || loadingMore) return;
@@ -234,8 +331,9 @@ export default function InboxScreen() {
         const deduped = incoming.filter((t) => !seen.has(t.id));
         const merged = [...prev, ...deduped];
         // Keep the cache in sync so back-nav doesn't lose later pages
-        const cacheKey = `inbox:${folder}:${debouncedSearch}:${effectiveLabelId ?? ''}`;
+        const cacheKey = inboxCacheKey();
         cacheSet(cacheKey, { threads: merged, nextPageToken: data.nextPageToken });
+        ingestCorrespondentThreads(merged, folder);
         return merged;
       });
       setNextPageToken(data.nextPageToken);
@@ -244,19 +342,19 @@ export default function InboxScreen() {
     } finally {
       setLoadingMore(false);
     }
-  }, [folder, nextPageToken, loadingMore, debouncedSearch, applyLocalOverlays, effectiveLabelId]);
+  }, [inboxCacheKey, nextPageToken, loadingMore, applyLocalOverlays]);
 
   // Wait for the Supabase session to be restored from SecureStore before
   // firing the first API call. Without this guard the call races the session
   // restore on cold-start and the server receives an unauthenticated request,
   // returning "Not signed in" even though the user is logged in.
   useEffect(() => {
-    if (!session) return;
+    if (!session || !userId) return;
     setLoading(true);
     setThreads([]);
     setNextPageToken(undefined);
-    loadFirstPage();
-  }, [session, loadFirstPage]);
+    loadFirstPage(true);
+  }, [session, userId, loadFirstPage]);
 
   // On back-navigation: by default, just re-apply local overlays so the
   // scroll position and loaded pages are preserved. Only do a full refetch
@@ -269,21 +367,23 @@ export default function InboxScreen() {
         firstFocusRef.current = false;
         return;
       }
-      const cacheKey = `inbox:${folder}:${debouncedSearch}:${effectiveLabelId ?? ''}`;
+      const cacheKey = inboxCacheKey();
       const cached = cacheGet(cacheKey);
       if (!cached) {
         loadFirstPage(true);
       } else {
         setThreads((prev) => applyLocalOverlays(prev));
       }
-    }, [folder, debouncedSearch, loadFirstPage, applyLocalOverlays])
+      void refreshLabelCounts();
+    }, [inboxCacheKey, loadFirstPage, applyLocalOverlays, refreshLabelCounts])
   );
 
   // Prefetch thread detail on press-in (fires ~100ms before onPress on native).
   // Stores the resolved data in the session cache so the detail screen reads
   // it immediately instead of waiting for a fresh network round-trip.
   function prefetchThread(threadId: string) {
-    const key = `thread:${threadId}`;
+    if (!userId) return;
+    const key = `thread:${userId}:${threadId}`;
     if (cacheGet(key)) return; // already cached this session
     gmailApi.getThread(threadId)
       .then((data) => cacheSet(key, data))
@@ -296,165 +396,208 @@ export default function InboxScreen() {
       router.push(`/(workspace)/inbox/compose?draftId=${encodeURIComponent(thread.draftId)}` as any);
       return;
     }
-    // Mark locally-read for the session — applyLocalOverlays uses this set
-    // on every cache hit and every fresh fetch, so the row never re-bolds
-    // even if Gmail's UNREAD label hasn't propagated yet.
+    prefetchThread(thread.id);
     markLocallyRead(thread.id);
-    // Optimistic flip in current state
     setThreads((prev) => prev.map((t) => (t.id === thread.id ? { ...t, unread: false } : t)));
-    // Fire mark-read directly to Gmail — no need to wait for the thread
-    // detail screen to mount before telling Gmail.
-    gmailApi.getGoogleToken()
-      .then(({ accessToken }) => markThreadReadDirectly(accessToken, thread.id))
-      .catch((e) => console.warn('[inbox] mark-read failed:', e?.message));
-    router.push(`/(workspace)/inbox/${thread.id}` as any);
+    void refreshLabelCounts();
+    router.push({
+      pathname: '/(workspace)/inbox/[id]',
+      params: {
+        id: thread.id,
+        previewSubject: thread.subject ?? '',
+        previewFrom: thread.from ?? '',
+      },
+    } as any);
+    // Mark read in Gmail after navigation — don't block opening the thread.
+    setTimeout(() => {
+      gmailApi.getGoogleToken()
+        .then(({ accessToken }) => markThreadReadDirectly(accessToken, thread.id))
+        .catch((e) => console.warn('[inbox] mark-read failed:', e?.message));
+    }, 0);
   }
+
+  const headerTitle = 'Inbox';
+  const inSearchMode =
+    searchFocused || chipMenuOpen || search.length > 0 || debouncedSearch.length > 0;
+  const showFilterChips = !inSearchMode && filterChipItems.length > 0;
 
   return (
     <View style={styles.container}>
-      <ScreenHeader
-        title="Inbox"
-        onMenuPress={openDrawer}
-        rightAction={{
-          icon: 'create-outline',
-          onPress: () => router.push('/(workspace)/inbox/compose' as any),
+      {/* Gmail-style app bar */}
+      <View style={[styles.gmailHeader, { paddingTop: insets.top + 4 }]}>
+        <TouchableOpacity onPress={openDrawer} style={styles.headerIconBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="menu" size={24} color={Gmail.text} />
+        </TouchableOpacity>
+        <Text style={styles.gmailHeaderTitle}>{headerTitle}</Text>
+      </View>
+
+      <Pressable style={styles.searchPill} onPress={() => searchRef.current?.focus()}>
+        <Ionicons name="search" size={20} color={Gmail.textSecondary} />
+        <TextInput
+          ref={searchRef}
+          style={styles.searchInput}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search in mail"
+          placeholderTextColor={Gmail.textMuted}
+          returnKeyType="search"
+          onFocus={() => {
+            if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
+            setSearchFocused(true);
+          }}
+          onBlur={() => {
+            searchBlurTimer.current = setTimeout(() => {
+              if (!chipMenuOpenRef.current) setSearchFocused(false);
+            }, 250);
+          }}
+        />
+        {search.length > 0 && (
+          <TouchableOpacity
+            onPress={() => {
+              setSearch('');
+              searchRef.current?.focus();
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="close-circle" size={20} color={Gmail.textMuted} />
+          </TouchableOpacity>
+        )}
+      </Pressable>
+
+      <GmailSearchChips
+        visible={inSearchMode}
+        search={search}
+        onChangeSearch={setSearch}
+        userLabels={allLabels}
+        folder={folder}
+        threads={threads}
+        inputRef={searchRef}
+        onChipMenuOpenChange={(open) => {
+          chipMenuOpenRef.current = open;
+          setChipMenuOpen(open);
+        }}
+        onMenuSearchFocus={() => {
+          if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
+        }}
+        onDismissKeyboard={() => {
+          if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
+          setSearchFocused(false);
+          setChipMenuOpen(false);
         }}
       />
 
-      <View style={styles.folderBar}>
-        {FOLDERS.map((f) => {
-          const cid = f.key === 'inbox' ? 'INBOX' : f.key === 'sent' ? 'SENT' : 'DRAFT';
-          const c = labelCounts[cid];
-          const badge = f.key === 'inbox'
-            ? (c?.unread && c.unread > 0 ? c.unread : null)
-            : (c?.total && c.total > 0 ? c.total : null);
-          return (
-            <TouchableOpacity
-              key={f.key}
-              style={[styles.folderTab, folder === f.key && styles.folderTabActive]}
-              onPress={() => setFolder(f.key)}
-            >
-              <Text style={[styles.folderTabText, folder === f.key && styles.folderTabTextActive]}>
-                {f.label}
+      {/* Mailbox + category filters (hidden while searching, like Gmail) */}
+      <View style={styles.filterPanel}>
+        <View style={styles.mailboxSegment}>
+          {FOLDERS.map((f) => {
+            const badge = folderSegmentBadge(f.key, labelCounts);
+            const active = folder === f.key;
+            return (
+              <TouchableOpacity
+                key={f.key}
+                style={[styles.segment, active && styles.segmentActive]}
+                onPress={() => selectFolder(f.key)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
+                  {f.label}
+                </Text>
                 {badge !== null && (
-                  <Text style={styles.folderTabBadge}>  {badge > 999 ? `${Math.floor(badge / 1000)}k` : badge}</Text>
+                  <View style={[styles.segmentBadge, active && styles.segmentBadgeActive]}>
+                    <Text style={[styles.segmentBadgeText, active && styles.segmentBadgeTextActive]}>
+                      {badge}
+                    </Text>
+                  </View>
                 )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {showFilterChips && (
+          <>
+            <View style={styles.filterContextRow}>
+              <Text style={styles.filterContextText} numberOfLines={1}>
+                {folder === 'inbox' ? 'Inbox' : 'Sent'}
+                {activeFilterName ? (
+                  <Text style={styles.filterContextDim}> · {activeFilterName}</Text>
+                ) : null}
               </Text>
-            </TouchableOpacity>
-          );
-        })}
+              {filterLabelId ? (
+                <TouchableOpacity onPress={clearLabelFilter} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={styles.clearFilterText}>Clear label</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <FlatList
+              data={filterChipItems}
+              keyExtractor={(item, i) =>
+                item.kind === 'divider' ? 'div' : item.kind === 'category' ? item.key : `label-${item.id}-${i}`
+              }
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterChipsContent}
+              renderItem={({ item }) => {
+                if (item.kind === 'divider') {
+                  return <View style={styles.chipDivider} />;
+                }
+                if (item.kind === 'category') {
+                  const active = !filterLabelId && category === item.key;
+                  return (
+                    <TouchableOpacity
+                      onPress={() => selectCategory(item.key)}
+                      style={[styles.filterChip, active && styles.filterChipActive]}
+                    >
+                      <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }
+                const unread = labelCounts[item.id]?.unread ?? 0;
+                const active = filterLabelId === item.id;
+                return (
+                  <TouchableOpacity
+                    onPress={() => selectLabel(item.id)}
+                    style={[styles.filterChip, styles.filterChipLabel, active && styles.filterChipActive]}
+                  >
+                    <Ionicons
+                      name="pricetag"
+                      size={12}
+                      color={active ? Gmail.blue : Gmail.textMuted}
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    {unread > 0 && (
+                      <Text style={[styles.filterChipCount, active && styles.filterChipCountActive]}>
+                        {unread}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </>
+        )}
       </View>
 
-      {/* Category sub-tabs — only on Inbox and only when no user-label filter is set */}
-      {folder === 'inbox' && !filterLabelId && (
-        <View style={styles.categoryRow}>
-          <FlatList
-            data={[
-              { key: 'primary' as CategoryKey, label: 'Primary', countId: 'CATEGORY_PERSONAL' },
-              { key: 'promotions' as CategoryKey, label: 'Promotions', countId: 'CATEGORY_PROMOTIONS' },
-              { key: 'social' as CategoryKey, label: 'Social', countId: 'CATEGORY_SOCIAL' },
-              { key: 'updates' as CategoryKey, label: 'Updates', countId: 'CATEGORY_UPDATES' },
-              { key: 'forums' as CategoryKey, label: 'Forums', countId: 'CATEGORY_FORUMS' },
-            ]}
-            keyExtractor={(t) => t.key}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }}
-            renderItem={({ item: t }) => {
-              const unread = labelCounts[t.countId]?.unread ?? 0;
-              const active = category === t.key;
-              return (
-                <TouchableOpacity
-                  onPress={() => setCategory(t.key)}
-                  style={[styles.catChip, active && styles.catChipActive]}
-                >
-                  <Text style={[styles.catChipText, active && styles.catChipTextActive]}>{t.label}</Text>
-                  {unread > 0 && (
-                    <Text style={[styles.catChipBadge, active && { color: Colors.primary }]}>
-                      {unread > 99 ? '99+' : unread}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              );
-            }}
-          />
-        </View>
-      )}
-
-      {/* Selection action bar — replaces the search bar when we're in selection mode */}
+      {/* Selection action bar — Gmail-style top bar when selecting */}
       {selection.size > 0 && (
         <View style={styles.selectionBar}>
           <TouchableOpacity onPress={() => setSelection(new Set())} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-            <Ionicons name="close" size={20} color={Colors.text} />
+            <Ionicons name="close" size={22} color={Gmail.text} />
           </TouchableOpacity>
           <Text style={styles.selectionText}>{selection.size} selected</Text>
           <View style={styles.selectionActions}>
-            {/* Star */}
             <SelectionActionBtn icon="star-outline" onPress={() => bulkAction('star')} />
-            {/* Single read/unread toggle — if all selected are read, offer "mark unread"; otherwise offer "mark read" */}
             {Array.from(selection).every((id) => !threads.find((t) => t.id === id)?.unread) ? (
               <SelectionActionBtn icon="mail-unread-outline" onPress={() => bulkAction('markUnread')} />
             ) : (
               <SelectionActionBtn icon="mail-open-outline" onPress={() => bulkAction('markRead')} />
             )}
           </View>
-        </View>
-      )}
-
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={16} color={Colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search emails..."
-          placeholderTextColor={Colors.textMuted}
-          returnKeyType="search"
-        />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {/* Label filter chips — only user labels, only for inbox/sent (not drafts) */}
-      {folder !== 'drafts' && allLabels.some((l) => l.type === 'user') && (
-        <View style={styles.labelFilterBar}>
-          <TouchableOpacity
-            onPress={() => setFilterLabelId(null)}
-            style={[styles.labelFilterChip, filterLabelId === null && styles.labelFilterChipActive]}
-          >
-            <Text style={[styles.labelFilterChipText, filterLabelId === null && styles.labelFilterChipTextActive]}>
-              All
-            </Text>
-          </TouchableOpacity>
-          <FlatList
-            data={allLabels.filter((l) => l.type === 'user')}
-            keyExtractor={(l) => l.id}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 6 }}
-            renderItem={({ item: l }) => {
-              const unread = labelCounts[l.id]?.unread ?? 0;
-              const active = filterLabelId === l.id;
-              return (
-                <TouchableOpacity
-                  onPress={() => setFilterLabelId(active ? null : l.id)}
-                  style={[styles.labelFilterChip, active && styles.labelFilterChipActive]}
-                >
-                  <Text style={[styles.labelFilterChipText, active && styles.labelFilterChipTextActive]} numberOfLines={1}>
-                    {l.name}
-                  </Text>
-                  {unread > 0 && (
-                    <View style={styles.labelFilterChipBadge}>
-                      <Text style={styles.labelFilterChipBadgeText}>{unread > 99 ? '99+' : unread}</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            }}
-          />
         </View>
       )}
 
@@ -479,7 +622,9 @@ export default function InboxScreen() {
               selected={selection.has(item.id)}
               selectionMode={selection.size > 0}
               rowBusy={rowBusy.has(item.id)}
-              onPressIn={() => { if (selection.size === 0 && folder !== 'drafts') prefetchThread(item.id); }}
+              onPressIn={() => {
+                if (selection.size === 0 && folder !== 'drafts') prefetchThread(item.id);
+              }}
               onPress={() => {
                 if (selection.size > 0) toggleSelect(item.id);
                 else openThread(item);
@@ -511,9 +656,18 @@ export default function InboxScreen() {
               </View>
             ) : null
           }
-          contentContainerStyle={threads.length === 0 ? { flex: 1 } : undefined}
+          contentContainerStyle={threads.length === 0 ? { flex: 1 } : { paddingBottom: 88 }}
         />
       )}
+
+      {/* Gmail-style compose FAB */}
+      <TouchableOpacity
+        style={[styles.fab, { bottom: insets.bottom + 20 }]}
+        onPress={() => router.push('/(workspace)/inbox/compose' as any)}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="create-outline" size={26} color={Gmail.fabIcon} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -589,27 +743,25 @@ function ThreadRow({
   const { name: fromName } = parseFromHeader(thread.from);
   const date = formatDate(thread.date);
   const initial = avatarInitial(fromName);
+  const avatarBg = avatarColorForName(fromName);
   const isUnread = Boolean(thread.unread);
   const isStarred = Boolean(thread.starred);
+  const subject = thread.subject || '(no subject)';
+  const previewLine = thread.snippet ? `${subject} — ${thread.snippet}` : subject;
   const chips = (thread.labelIds ?? [])
     .map((id) => labelsById.get(id))
     .filter((l): l is GmailLabel => !!l && l.type === 'user')
-    .slice(0, 3);
+    .slice(0, 2);
+
   return (
     <TouchableOpacity
-      style={[
-        styles.threadRow,
-        isUnread && styles.threadRowUnread,
-        selected && styles.threadRowSelected,
-      ]}
+      style={[styles.threadRow, selected && styles.threadRowSelected]}
       onPressIn={onPressIn}
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={300}
-      activeOpacity={0.7}
+      activeOpacity={0.65}
     >
-      {/* Avatar / selection checkmark — in selection mode the avatar
-          becomes a tick when selected. Tap the avatar to toggle. */}
       <TouchableOpacity
         onPress={onLongPress}
         activeOpacity={0.7}
@@ -617,40 +769,33 @@ function ThreadRow({
       >
         {selected ? (
           <View style={[styles.avatar, styles.avatarSelected]}>
-            <Ionicons name="checkmark" size={18} color={Colors.surface} />
+            <Ionicons name="checkmark" size={20} color="#fff" />
           </View>
         ) : (
-          <View style={[styles.avatar, isUnread && styles.avatarUnread]}>
-            <Text style={[styles.avatarText, isUnread && styles.avatarTextUnread]}>{initial}</Text>
+          <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
+            <Text style={styles.avatarText}>{initial}</Text>
           </View>
         )}
       </TouchableOpacity>
 
       <View style={styles.threadBody}>
         <View style={styles.threadTopRow}>
-          <View style={styles.fromRow}>
-            {isUnread ? <View style={styles.unreadDot} /> : null}
-            <Text style={[styles.threadFrom, isUnread && styles.threadFromUnread]} numberOfLines={1}>
-              {fromName}
-            </Text>
-          </View>
-          {/* Right cluster: paperclip + date */}
+          <Text style={[styles.threadFrom, isUnread && styles.textBold]} numberOfLines={1}>
+            {fromName}
+          </Text>
           <View style={styles.rightCluster}>
             {thread.hasAttachments && (
-              <Ionicons
-                name="attach"
-                size={12}
-                color={isUnread ? Colors.text : Colors.textMuted}
-                style={{ transform: [{ rotate: '45deg' }] }}
-              />
+              <Ionicons name="attach" size={14} color={Gmail.textMuted} style={{ transform: [{ rotate: '45deg' }] }} />
             )}
-            <Text style={[styles.threadDate, isUnread && styles.threadDateUnread]}>{date}</Text>
+            <Text style={[styles.threadDate, isUnread && styles.textBold]}>{date}</Text>
           </View>
         </View>
-        <Text style={[styles.threadSubject, isUnread && styles.threadSubjectUnread]} numberOfLines={1}>
-          {thread.subject || '(no subject)'}
+        <Text
+          style={[styles.threadPreview, isUnread && styles.textBold]}
+          numberOfLines={2}
+        >
+          {previewLine}
         </Text>
-        <Text style={styles.threadSnippet} numberOfLines={1}>{thread.snippet}</Text>
         {chips.length > 0 && (
           <View style={styles.threadChipsRow}>
             {chips.map((l) => (
@@ -660,18 +805,17 @@ function ThreadRow({
         )}
       </View>
 
-      {/* Star — tap-to-toggle. Hidden in selection mode to avoid accidental taps. */}
       {!selectionMode && (
         <TouchableOpacity
-          onPress={(e) => { e.stopPropagation(); onToggleStar(!isStarred); }}
+          onPress={() => onToggleStar(!isStarred)}
           disabled={rowBusy}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           style={styles.starBtn}
         >
           <Ionicons
             name={isStarred ? 'star' : 'star-outline'}
-            size={18}
-            color={isStarred ? '#F59E0B' : Colors.textMuted}
+            size={20}
+            color={isStarred ? Gmail.star : Gmail.textMuted}
           />
         </TouchableOpacity>
       )}
@@ -680,152 +824,198 @@ function ThreadRow({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 8 },
-  folderBar: {
-    flexDirection: 'row',
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: 16,
-    gap: 4,
-  },
-  folderTab: { paddingHorizontal: 12, paddingVertical: 12 },
-  folderTabActive: { borderBottomWidth: 2, borderBottomColor: Colors.primary },
-  folderTabText: { fontSize: 13, fontWeight: '500', color: Colors.textSecondary },
-  folderTabTextActive: { color: Colors.primary, fontWeight: '700' },
-  searchBar: {
+  container: { flex: 1, backgroundColor: Gmail.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 8, backgroundColor: Gmail.bg },
+  gmailHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    margin: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    backgroundColor: Colors.surface,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    paddingHorizontal: 4,
+    paddingBottom: 4,
+    backgroundColor: Gmail.bg,
   },
-  searchInput: { flex: 1, fontSize: 14, color: Colors.text },
+  gmailHeaderTitle: {
+    flex: 1,
+    fontSize: 22,
+    fontWeight: '400',
+    color: Gmail.text,
+    marginLeft: 4,
+  },
+  headerIconBtn: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: Gmail.searchBg,
+    borderRadius: 28,
+  },
+  searchInput: { flex: 1, fontSize: 16, color: Gmail.text, padding: 0 },
+  filterPanel: {
+    backgroundColor: Gmail.bg,
+    borderBottomWidth: 1,
+    borderBottomColor: Gmail.border,
+    paddingBottom: 10,
+  },
+  mailboxSegment: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 10,
+    padding: 4,
+    backgroundColor: Gmail.bgMuted,
+    borderRadius: 12,
+    gap: 4,
+  },
+  segment: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  segmentActive: {
+    backgroundColor: Gmail.bg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  segmentText: { fontSize: 14, fontWeight: '500', color: Gmail.textSecondary },
+  segmentTextActive: { color: Gmail.text, fontWeight: '600' },
+  segmentBadge: {
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    backgroundColor: Gmail.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentBadgeActive: { backgroundColor: Gmail.red },
+  segmentBadgeText: { fontSize: 11, fontWeight: '700', color: Gmail.textSecondary },
+  segmentBadgeTextActive: { color: '#fff' },
+  filterContextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    gap: 8,
+  },
+  filterContextText: { flex: 1, fontSize: 13, fontWeight: '600', color: Gmail.text },
+  filterContextDim: { fontWeight: '500', color: Gmail.textSecondary },
+  clearFilterText: { fontSize: 13, fontWeight: '600', color: Gmail.blue },
+  filterChipsContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+    alignItems: 'center',
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Gmail.border,
+    backgroundColor: Gmail.bg,
+    maxWidth: 160,
+  },
+  filterChipLabel: {
+    backgroundColor: Gmail.bgMuted,
+  },
+  filterChipActive: {
+    borderColor: Gmail.blue,
+    backgroundColor: Gmail.blueLight,
+  },
+  filterChipText: { fontSize: 13, fontWeight: '500', color: Gmail.textSecondary },
+  filterChipTextActive: { color: Gmail.blue, fontWeight: '600' },
+  filterChipCount: { fontSize: 11, fontWeight: '700', color: Gmail.textMuted, marginLeft: 6 },
+  filterChipCountActive: { color: Gmail.blue },
+  chipDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: Gmail.border,
+    marginHorizontal: 4,
+  },
   threadRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: Gmail.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Gmail.divider,
+  },
+  threadRowSelected: { backgroundColor: Gmail.blueLight },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  avatarSelected: { backgroundColor: Gmail.blue },
+  avatarText: { fontSize: 17, fontWeight: '500', color: '#fff' },
+  threadBody: { flex: 1, gap: 4, minWidth: 0 },
+  threadTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  threadFrom: { fontSize: 15, color: Gmail.text, flex: 1, fontWeight: '400' },
+  threadDate: { fontSize: 13, color: Gmail.textSecondary, fontWeight: '400' },
+  threadPreview: { fontSize: 14, lineHeight: 20, color: Gmail.textSecondary, fontWeight: '400' },
+  textBold: { fontWeight: '700', color: Gmail.text },
+  threadChipsRow: { flexDirection: 'row', gap: 4, flexWrap: 'wrap', marginTop: 2 },
+  footerLoader: { paddingVertical: 16, alignItems: 'center' },
+  selectionBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: Colors.surface,
+    backgroundColor: Gmail.blueLight,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
+    borderBottomColor: Gmail.border,
   },
-  threadRowUnread: {
-    // Subtle tint so unread rows stand out without screaming.
-    backgroundColor: '#F5F3FF',
-  },
-  avatar: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: Colors.primaryLight,
+  selectionText: { fontSize: 16, fontWeight: '500', color: Gmail.text, flex: 1 },
+  selectionActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  selectionActionBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarUnread: {
-    backgroundColor: Colors.primary,
-  },
-  avatarText: { fontSize: 16, fontWeight: '700', color: Colors.primary },
-  avatarTextUnread: { color: Colors.surface },
-  threadBody: { flex: 1, gap: 3 },
-  threadTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  fromRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
-  unreadDot: {
-    width: 8, height: 8, borderRadius: 4,
-    backgroundColor: Colors.primary,
-  },
-  threadFrom: { fontSize: 14, color: Colors.text, flex: 1, fontWeight: '500' },
-  threadFromUnread: { color: Colors.text, fontWeight: '800' },
-  threadDate: { fontSize: 12, color: Colors.textMuted, fontWeight: '500' },
-  threadDateUnread: { color: Colors.text, fontWeight: '700' },
-  threadSubject: { fontSize: 13, color: Colors.text, fontWeight: '400' },
-  threadSubjectUnread: { fontWeight: '700' },
-  threadSnippet: { fontSize: 12, color: Colors.textMuted },
-  threadChipsRow: { flexDirection: 'row', gap: 4, flexWrap: 'wrap', marginTop: 4 },
-  labelFilterBar: {
-    flexDirection: 'row',
+  rightCluster: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  starBtn: { paddingTop: 4, paddingLeft: 4 },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: Gmail.fab,
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-    backgroundColor: Colors.background,
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
   },
-  labelFilterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
-  },
-  labelFilterChipActive: {
-    backgroundColor: Colors.primaryLight,
-    borderColor: Colors.primary,
-  },
-  labelFilterChipText: { fontSize: 11, fontWeight: '600', color: Colors.textSecondary },
-  labelFilterChipTextActive: { color: Colors.primary },
-  footerLoader: { paddingVertical: 16, alignItems: 'center' },
-
-  // Folder + category + selection bits (Inc5)
-  folderTabBadge: { fontSize: 11, fontWeight: '600', color: Colors.textMuted, marginLeft: 4 },
-  categoryRow: {
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingVertical: 8,
-  },
-  catChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: Colors.background,
-  },
-  catChipActive: { backgroundColor: Colors.primaryLight },
-  catChipText: { fontSize: 12, fontWeight: '600', color: Colors.textMuted },
-  catChipTextActive: { color: Colors.primary, fontWeight: '700' },
-  catChipBadge: { fontSize: 10, fontWeight: '700', color: Colors.textMuted },
-
-  labelFilterChipBadge: {
-    backgroundColor: Colors.primary,
-    borderRadius: 999,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    marginLeft: 4,
-  },
-  labelFilterChipBadgeText: { fontSize: 9, fontWeight: '700', color: Colors.surface },
-
-  selectionBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: Colors.primaryLight,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  selectionText: { fontSize: 14, fontWeight: '700', color: Colors.text, flex: 1 },
-  selectionActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  selectionActionBtn: {
-    width: 32, height: 32, borderRadius: 16,
-    alignItems: 'center', justifyContent: 'center',
-  },
-
-  threadRowSelected: { backgroundColor: Colors.primaryLight },
-  avatarSelected: { backgroundColor: Colors.primary },
-  rightCluster: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  starBtn: { padding: 4, marginLeft: 4 },
   errorText: { fontSize: 14, color: Colors.error, textAlign: 'center' },
-  retryBtn: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Colors.primary, borderRadius: 8 },
-  retryText: { color: Colors.surface, fontWeight: '600', fontSize: 14 },
+  retryBtn: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Gmail.blue, borderRadius: 20 },
+  retryText: { color: '#fff', fontWeight: '600', fontSize: 14 },
 });

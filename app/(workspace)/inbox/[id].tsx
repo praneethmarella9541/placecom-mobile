@@ -2,23 +2,34 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Linking,
-  useWindowDimensions, Modal, SafeAreaView,
+  useWindowDimensions, Modal,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { format } from 'date-fns';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAppInsets } from '../../../lib/safe-area';
 import WebView from 'react-native-webview';
 import * as DocumentPicker from 'expo-document-picker';
-import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../../lib/supabase';
 import { gmailApi, type GmailLabel, type GmailMessage } from '../../../lib/api';
 import { sendMailDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
-import { cacheDelete, cacheGet, cacheSet } from '../../../lib/cache';
+import { cacheDeleteInboxFolder, cacheGet, cacheSet } from '../../../lib/cache';
+import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
+import { Gmail, avatarColorForName } from '../../../constants/gmailTheme';
 import { LabelChip } from '../../../components/LabelChip';
 import { LabelPickerModal } from '../../../components/LabelPickerModal';
+import { wrapEmailHtmlBody, wrapPlainTextAsEmailDocument, looksLikeHtml } from '../../../lib/html-email';
+import { getAttachmentUri } from '../../../lib/gmail-attachments';
+import { buildAttachmentPreviewContent } from '../../../lib/attachment-preview';
+import { shareCachedAttachment } from '../../../lib/share-attachment';
+import {
+  AttachmentViewerModal,
+  type AttachmentViewerState,
+} from '../../../components/inbox/AttachmentViewerModal';
+import { MessageAttachmentPreviews } from '../../../components/inbox/MessageAttachmentPreviews';
 
 const GMAIL_LIMIT = 25 * 1024 * 1024;
 
@@ -61,9 +72,15 @@ let keySeq = 0;
 function nextKey() { return String(++keySeq); }
 
 export default function ThreadDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, previewSubject, previewFrom } = useLocalSearchParams<{
+    id: string;
+    previewSubject?: string;
+    previewFrom?: string;
+  }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const userId = user?.id ?? '';
+  const insets = useAppInsets();
   const [messages, setMessages] = useState<GmailMessage[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +100,26 @@ export default function ThreadDetailScreen() {
   const [threadLabelIds, setThreadLabelIds] = useState<string[]>([]);
   const [labelBusy, setLabelBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  function applyExpandedForMessages(msgs: GmailMessage[]) {
+    const keys = msgs.map((m, i) => m.id ?? String(i));
+    if (keys.length <= 4) {
+      setExpandedIds(new Set(keys));
+    } else {
+      setExpandedIds(new Set([keys[keys.length - 1]!]));
+    }
+  }
+
+  function toggleMessageExpanded(key: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  const [starred, setStarred] = useState(false);
   const labelsById = useMemo(() => {
     const m = new Map<string, GmailLabel>();
     for (const l of allLabels) m.set(l.id, l);
@@ -90,22 +127,29 @@ export default function ThreadDetailScreen() {
   }, [allLabels]);
 
   useEffect(() => {
-    if (!id) return;
-    const cacheKey = `thread:${id}`;
+    if (!id || !userId) return;
+    const cacheKey = `thread:${userId}:${id}`;
 
     // Use prefetched data immediately if available — the inbox screen fires
     // the fetch on press-in, so by the time this screen mounts it's often done.
     const cached = cacheGet<{ messages: GmailMessage[]; labelIds?: string[] }>(cacheKey);
     if (cached) {
       setMessages(cached.messages ?? []);
-      setThreadLabelIds(cached.labelIds ?? []);
+      const lids = cached.labelIds ?? [];
+      setThreadLabelIds(lids);
+      setStarred(lids.includes('STARRED'));
+      applyExpandedForMessages(cached.messages ?? []);
       setLoading(false);
       // Revalidate in the background so subsequent opens are fresh.
       gmailApi.getThread(id)
         .then((data) => {
           cacheSet(cacheKey, data);
-          setMessages(data.messages ?? []);
-          setThreadLabelIds(data.labelIds ?? []);
+          const msgs = data.messages ?? [];
+          setMessages(msgs);
+          applyExpandedForMessages(msgs);
+          const lids = data.labelIds ?? [];
+          setThreadLabelIds(lids);
+          setStarred(lids.includes('STARRED'));
         })
         .catch(() => { /* non-fatal — cached data is shown */ });
       return;
@@ -116,15 +160,19 @@ export default function ThreadDetailScreen() {
     gmailApi.getThread(id)
       .then((data) => {
         cacheSet(cacheKey, data);
-        setMessages(data.messages ?? []);
-        setThreadLabelIds(data.labelIds ?? []);
+        const msgs = data.messages ?? [];
+        setMessages(msgs);
+        applyExpandedForMessages(msgs);
+        const lids = data.labelIds ?? [];
+        setThreadLabelIds(lids);
+        setStarred(lids.includes('STARRED'));
       })
       .catch((e) => {
         console.error('[thread] load failed:', e?.message);
         setError(e?.message ?? 'Failed to load thread');
       })
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, userId]);
 
   // Labels list — load once. Cached server-side so this is cheap.
   useEffect(() => {
@@ -150,6 +198,21 @@ export default function ThreadDetailScreen() {
     }
   }
 
+  async function toggleStar() {
+    if (!id) return;
+    const next = !starred;
+    setStarred(next);
+    try {
+      await gmailApi.modifyThreadLabels(id, next ? { add: ['STARRED'] } : { remove: ['STARRED'] });
+      setThreadLabelIds((cur) =>
+        next ? Array.from(new Set([...cur, 'STARRED'])) : cur.filter((x) => x !== 'STARRED')
+      );
+    } catch (e: any) {
+      setStarred(!next);
+      Alert.alert('Could not update star', e?.message ?? 'Try again.');
+    }
+  }
+
   async function createAndApplyLabel(name: string) {
     try {
       const r = await gmailApi.createLabel(name);
@@ -162,7 +225,11 @@ export default function ThreadDetailScreen() {
 
   const lastMessage = messages?.[messages.length - 1];
   const firstMessage = messages?.[0];
-  const subject = firstMessage?.subject ?? '';
+  const subject =
+    firstMessage?.subject ||
+    (typeof previewSubject === 'string' ? previewSubject : '') ||
+    '';
+  const hasMessages = Boolean(messages && messages.length > 0);
 
   function openReply(mode: ReplyMode) {
     if (!lastMessage) return;
@@ -374,7 +441,7 @@ export default function ThreadDetailScreen() {
       }
 
       // Bust Sent cache so it refetches on focus and shows the new message.
-      cacheDelete('inbox:sent:');
+      cacheDeleteInboxFolder('sent');
       Alert.alert('Sent', 'Message sent successfully.');
       setReplyMode(null);
       setReplyBody('');
@@ -387,23 +454,15 @@ export default function ThreadDetailScreen() {
     }
   }
 
-  if (loading) {
+  if (error && !hasMessages) {
     return (
-      <View style={[styles.center, { paddingTop: insets.top }]}>
-        <ActivityIndicator color={Colors.primary} />
-      </View>
-    );
-  }
-
-  if (error || !messages) {
-    return (
-      <View style={[styles.center, { paddingTop: insets.top }]}>
+      <SafeAreaView style={[styles.center, { flex: 1 }]} edges={['top', 'bottom', 'left', 'right']}>
         <Ionicons name="warning-outline" size={32} color={Colors.error} />
         <Text style={styles.errorText}>{error ?? 'Thread not found'}</Text>
         <TouchableOpacity style={styles.backLink} onPress={() => router.back()}>
           <Text style={styles.backLinkText}>Go back</Text>
         </TouchableOpacity>
-      </View>
+      </SafeAreaView>
     );
   }
 
@@ -414,21 +473,30 @@ export default function ThreadDetailScreen() {
       style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={[styles.container, { paddingTop: insets.top }]}>
-        {/* Header */}
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+        {/* Gmail-style toolbar */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="arrow-back" size={24} color={Colors.text} />
+          <TouchableOpacity onPress={() => router.back()} style={styles.headerIconBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="arrow-back" size={24} color={Gmail.text} />
           </TouchableOpacity>
-          <Text style={styles.subject} numberOfLines={2}>{subject || '(No Subject)'}</Text>
-          <TouchableOpacity
-            onPress={() => setPickerOpen(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            disabled={labelBusy}
-          >
-            <Ionicons name="pricetag-outline" size={22} color={labelBusy ? Colors.textMuted : Colors.primary} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity onPress={() => void toggleStar()} style={styles.headerIconBtn}>
+              <Ionicons name={starred ? 'star' : 'star-outline'} size={22} color={starred ? Gmail.star : Gmail.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setPickerOpen(true)}
+              style={styles.headerIconBtn}
+              disabled={labelBusy}
+              accessibilityLabel="Labels"
+            >
+              <Ionicons name="pricetag-outline" size={22} color={Gmail.textSecondary} />
+            </TouchableOpacity>
+          </View>
         </View>
+        <Text style={styles.subjectLine} numberOfLines={3}>{subject || '(No subject)'}</Text>
+        {typeof previewFrom === 'string' && previewFrom.length > 0 && !hasMessages && loading && (
+          <Text style={styles.previewFrom} numberOfLines={1}>{parseAddress(previewFrom).name}</Text>
+        )}
 
         {/* Label chips for this thread */}
         {threadLabelIds.length > 0 && (
@@ -448,19 +516,46 @@ export default function ThreadDetailScreen() {
         )}
 
         {/* Thread messages */}
-        <ScrollView style={styles.messages} contentContainerStyle={{ padding: 12, gap: 12 }}>
-          {messages.map((msg, idx) => (
-            <MessageBubble key={msg.id ?? idx} msg={msg} />
-          ))}
+        <ScrollView style={styles.messages} contentContainerStyle={{ paddingBottom: 12 }}>
+          {loading && !hasMessages ? (
+            <View style={styles.threadLoading}>
+              <ActivityIndicator color={Gmail.blue} size="large" />
+              <Text style={styles.threadLoadingText}>Loading conversation…</Text>
+            </View>
+          ) : (
+            (messages ?? []).map((msg, idx) => {
+              const msgKey = msg.id ?? String(idx);
+              return (
+                <MessageBubble
+                  key={msgKey}
+                  msg={msg}
+                  expanded={expandedIds.has(msgKey)}
+                  onToggle={() => toggleMessageExpanded(msgKey)}
+                />
+              );
+            })
+          )}
         </ScrollView>
 
-        {/* Bottom action bar */}
-        <View style={[styles.actionBar, { paddingBottom: insets.bottom + 6 }]}>
-          <ActionBtn icon="arrow-undo-outline" label="Reply" onPress={() => openReply('reply')} />
-          <ActionBtn icon="arrow-redo-outline" label="Reply All" onPress={() => openReply('replyAll')} />
-          <ActionBtn icon="share-outline" label="Forward" onPress={() => openReply('forward')} />
+        {/* Gmail-style reply bar */}
+        <View style={[styles.actionBar, { paddingBottom: insets.bottom + 8 }]}>
+          <TouchableOpacity
+            style={styles.replyPill}
+            onPress={() => openReply('reply')}
+            activeOpacity={0.7}
+            disabled={!lastMessage}
+          >
+            <Ionicons name="arrow-undo-outline" size={18} color={Gmail.textSecondary} />
+            <Text style={styles.replyPillText}>Reply</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.replyIconBtn} onPress={() => openReply('replyAll')}>
+            <Ionicons name="arrow-redo-outline" size={22} color={Gmail.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.replyIconBtn} onPress={() => openReply('forward')}>
+            <Ionicons name="share-outline" size={22} color={Gmail.textSecondary} />
+          </TouchableOpacity>
         </View>
-      </View>
+      </SafeAreaView>
 
       {/* Compose modal */}
       <Modal
@@ -468,7 +563,7 @@ export default function ThreadDetailScreen() {
         animationType="slide"
         onRequestClose={closeReply}
       >
-        <SafeAreaView style={{ flex: 1, backgroundColor: Colors.surface }}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: Colors.surface }} edges={['top', 'bottom', 'left', 'right']}>
           {/* Modal header */}
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={closeReply} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -588,15 +683,6 @@ export default function ThreadDetailScreen() {
   );
 }
 
-function ActionBtn({ icon, label, onPress }: { icon: any; label: string; onPress: () => void }) {
-  return (
-    <TouchableOpacity style={styles.actionBtn} onPress={onPress} activeOpacity={0.7}>
-      <Ionicons name={icon} size={20} color={Colors.primary} />
-      <Text style={styles.actionBtnLabel}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
 function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => void }) {
   const isPreparing = file.status === 'preparing';
   const isDrive = file.status === 'drive';
@@ -643,319 +729,422 @@ function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => 
 
 // ─── Message rendering ────────────────────────────────────────────────────────
 
-const WEBVIEW_WRAPPER = `<!DOCTYPE html><html><head>
-<meta name="viewport" content="initial-scale=1"/>
-<style>
-  * { box-sizing: border-box; }
-  body { margin:0; padding:0; font-family:-apple-system,system-ui,sans-serif; font-size:14px; line-height:1.5; color:#111827; background:#fff; }
-  img { height:auto !important; }
-  a { color:#3B82F6; }
-  pre, code { white-space:pre-wrap; }
-</style></head><body>__BODY__</body></html>`;
+type MessageBodyContent =
+  | { mode: 'html'; document: string }
+  | { mode: 'plain'; text: string };
 
-function buildHtml(html: string, plain: string): string {
-  if (html && html.trim().length > 0) {
-    const content = html
-      .replace(/<html[^>]*>/i, '').replace(/<\/html>/i, '')
-      .replace(/<head[\s\S]*?<\/head>/i, '')
-      .replace(/<body[^>]*>/i, '').replace(/<\/body>/i, '');
-    return WEBVIEW_WRAPPER.replace('__BODY__', content);
+function getMessageBody(msg: GmailMessage): MessageBodyContent {
+  const html = (msg.bodyHtml ?? '').trim();
+  const body = (msg.body ?? '').trim();
+  if (html) return { mode: 'html', document: wrapEmailHtmlBody(html) };
+  if (body && looksLikeHtml(body)) return { mode: 'html', document: wrapEmailHtmlBody(body) };
+  if (body) return { mode: 'plain', text: body };
+  return { mode: 'plain', text: '(No message body)' };
+}
+
+const SIZE_REPORT_JS = `
+(function() {
+  var lastH = 0;
+  function contentHeight() {
+    var root = document.getElementById('email-root');
+    if (!root) {
+      return Math.max(document.body.scrollHeight || 0, 80);
+    }
+    var rootTop = root.getBoundingClientRect().top;
+    var maxBottom = rootTop;
+    var nodes = root.querySelectorAll(
+      'p,div,span,table,img,tr,td,li,blockquote,pre,h1,h2,h3,h4,a,ul,ol'
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      var r = el.getBoundingClientRect();
+      if (r.height < 1 && r.width < 1) continue;
+      if (r.bottom > maxBottom) maxBottom = r.bottom;
+    }
+    var h = Math.ceil(maxBottom - rootTop);
+    if (h < 1) h = root.scrollHeight || 80;
+    return h + 6;
   }
-  const escaped = (plain || '(no body)')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br/>');
-  return WEBVIEW_WRAPPER.replace('__BODY__', escaped);
+  function report() {
+    var h = contentHeight();
+    if (h < 40) h = 40;
+    if (Math.abs(h - lastH) < 2) return;
+    lastH = h;
+    var w = document.body.scrollWidth || document.documentElement.scrollWidth || 0;
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'size', height: h, width: w }));
+    }
+  }
+  report();
+  setTimeout(report, 50);
+  setTimeout(report, 250);
+  setTimeout(report, 700);
+  if (document.getElementById('email-root')) {
+    new MutationObserver(report).observe(document.getElementById('email-root'), {
+      childList: true, subtree: true, attributes: true
+    });
+  }
+  window.addEventListener('load', report);
+})();
+true;
+`;
+
+/** Max on-screen body height; taller mail scrolls inside the WebView so attachments stay reachable. */
+const MAX_EMAIL_BODY_VIEW_HEIGHT = 640;
+
+function plainSnippet(msg: GmailMessage): string {
+  const raw = (msg.bodyHtml || msg.body || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (raw) return raw.slice(0, 140);
+  return '(No message body)';
 }
 
-async function fetchAttachmentToCache(
-  messageId: string,
-  attachmentId: string,
-  filename: string,
-  mimeType: string
-): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  if (!token) throw new Error('Not signed in');
-
-  const url = gmailApi.attachmentUrl(messageId, attachmentId, filename, mimeType);
-  const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
-  const dest = new File(Paths.cache, `gmail_att_${safe}`);
-  if (dest.exists) dest.delete();
-
-  const downloaded = await File.downloadFileAsync(url, dest, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return downloaded.uri;
-}
-
-function isPreviewable(mimeType: string): boolean {
-  return (
-    mimeType.startsWith('image/') ||
-    mimeType === 'application/pdf' ||
-    mimeType.startsWith('text/')
-  );
-}
-
-interface AttachmentPreviewState {
-  localUri: string;
-  filename: string;
-  mimeType: string;
-}
-
-function AttachmentPreviewModal({
-  preview,
-  onClose,
-  onDownload,
-  downloading,
+function MessageBubble({
+  msg,
+  expanded,
+  onToggle,
 }: {
-  preview: AttachmentPreviewState;
-  onClose: () => void;
-  onDownload: () => void;
-  downloading: boolean;
+  msg: GmailMessage;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
-  const canPreview = isPreviewable(preview.mimeType);
-  return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#111' }}>
-        <View style={previewStyles.header}>
-          <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close" size={26} color="#fff" />
-          </TouchableOpacity>
-          <Text style={previewStyles.title} numberOfLines={1}>{preview.filename}</Text>
-          <TouchableOpacity
-            onPress={onDownload}
-            disabled={downloading}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            {downloading
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Ionicons name="share-outline" size={24} color="#fff" />
-            }
-          </TouchableOpacity>
-        </View>
-
-        {canPreview ? (
-          <WebView
-            source={{ uri: preview.localUri }}
-            style={{ flex: 1, backgroundColor: '#fff' }}
-            originWhitelist={['*', 'file://']}
-            allowFileAccess
-            allowUniversalAccessFromFileURLs
-            allowFileAccessFromFileURLs
-            startInLoadingState
-            renderLoading={() => (
-              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' }}>
-                <ActivityIndicator color={Colors.primary} />
-              </View>
-            )}
-          />
-        ) : (
-          <View style={previewStyles.noPreview}>
-            <Ionicons name="document-outline" size={64} color="#888" />
-            <Text style={previewStyles.noPreviewText}>{preview.filename}</Text>
-            <Text style={previewStyles.noPreviewSub}>No preview available for this file type</Text>
-            <TouchableOpacity
-              style={previewStyles.downloadBtn}
-              onPress={onDownload}
-              disabled={downloading}
-            >
-              {downloading
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={previewStyles.downloadBtnText}>Save / Share</Text>
-              }
-            </TouchableOpacity>
-          </View>
-        )}
-      </SafeAreaView>
-    </Modal>
-  );
-}
-
-const previewStyles = StyleSheet.create({
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#111',
-  },
-  title: { flex: 1, fontSize: 15, fontWeight: '600', color: '#fff', marginHorizontal: 12 },
-  noPreview: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#1a1a1a', padding: 32 },
-  noPreviewText: { fontSize: 16, fontWeight: '600', color: '#fff', textAlign: 'center' },
-  noPreviewSub: { fontSize: 13, color: '#888', textAlign: 'center' },
-  downloadBtn: {
-    marginTop: 8, paddingHorizontal: 28, paddingVertical: 12,
-    backgroundColor: Colors.primary, borderRadius: 10,
-  },
-  downloadBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-});
-
-function MessageBubble({ msg }: { msg: GmailMessage }) {
   const { width: screenWidth } = useWindowDimensions();
-  const [webViewHeight, setWebViewHeight] = useState(120);
-  const [contentWidth, setContentWidth] = useState(screenWidth - 56);
-  const [loadingId, setLoadingId] = useState<string | null>(null);
-  const [preview, setPreview] = useState<AttachmentPreviewState | null>(null);
+  const bodyContent = useMemo(() => getMessageBody(msg), [msg.id, msg.body, msg.bodyHtml]);
+  const webViewWidth = screenWidth - 32;
+  const [bodyContentHeight, setBodyContentHeight] = useState(200);
+  const [bodyLoading, setBodyLoading] = useState(true);
+  const webViewDisplayHeight = Math.min(
+    Math.max(bodyContentHeight, 80),
+    MAX_EMAIL_BODY_VIEW_HEIGHT
+  );
+  const bodyScrollsInside = bodyContentHeight > MAX_EMAIL_BODY_VIEW_HEIGHT;
+  const hasAttachments = (msg.attachments?.length ?? 0) > 0;
+  const [viewer, setViewer] = useState<AttachmentViewerState | null>(null);
   const [sharing, setSharing] = useState(false);
+  const [busyAttachmentId, setBusyAttachmentId] = useState<string | null>(null);
+  const [lastAtt, setLastAtt] = useState<GmailMessage['attachments'][number] | null>(null);
   const fromAddr = parseAddress(msg.from);
   const toAddr = parseAddress(msg.to);
+  const displayName = fromAddr.name || fromAddr.email || '(unknown)';
+  const initial = (displayName.replace(/[^\p{L}\p{N}]/gu, '').charAt(0) || '?').toUpperCase();
+  const avatarBg = avatarColorForName(displayName);
   const date = msg.date && !Number.isNaN(new Date(msg.date).getTime())
-    ? format(new Date(msg.date), 'MMM d, yyyy h:mm a') : '';
-  const html = buildHtml(msg.bodyHtml, msg.body);
+    ? format(new Date(msg.date), 'MMM d, yyyy, h:mm a') : '';
+  const snippet = plainSnippet(msg);
+  const htmlSource =
+    bodyContent.mode === 'html' ? bodyContent.document : wrapPlainTextAsEmailDocument(bodyContent.text);
 
-  const injectedJs = `(function(){function s(){var h=document.body.scrollHeight,w=document.body.scrollWidth;window.ReactNativeWebView.postMessage(JSON.stringify({type:'size',height:h,width:w}));}s();new MutationObserver(s).observe(document.body,{childList:true,subtree:true,attributes:true});window.addEventListener('load',s);})();true;`;
+  useEffect(() => {
+    if (!expanded) return;
+    setBodyContentHeight(200);
+    setBodyLoading(true);
+  }, [expanded, msg.id, htmlSource]);
 
   function onMessage(e: any) {
     try {
       const data = JSON.parse(e.nativeEvent.data);
-      if (data.type === 'size') {
-        if (data.height > 0) setWebViewHeight(data.height + 16);
-        if (data.width > 0) setContentWidth(Math.max(data.width, screenWidth - 56));
+      if (data.type === 'size' && data.height > 0) {
+        setBodyContentHeight(Math.max(data.height, 80));
+        setBodyLoading(false);
       }
     } catch {}
   }
 
-  async function handleAttachmentPress(att: GmailMessage['attachments'][number]) {
-    setLoadingId(att.attachmentId);
+  function onWebViewLoadEnd() {
+    setBodyLoading(false);
+    setBodyContentHeight((h) => (h < 100 ? 240 : h));
+  }
+
+  async function openAttachmentPreview(att: GmailMessage['attachments'][number]) {
+    setLastAtt(att);
+    setBusyAttachmentId(att.attachmentId);
+    setViewer({
+      phase: 'loading',
+      filename: att.filename,
+      statusText: 'Loading attachment…',
+    });
     try {
-      const localUri = await fetchAttachmentToCache(msg.id, att.attachmentId, att.filename, att.mimeType);
-      setPreview({ localUri, filename: att.filename, mimeType: att.mimeType });
-    } catch (e: any) {
-      Alert.alert('Failed to load', e?.message ?? 'Could not load attachment');
+      const uri = await getAttachmentUri(msg.id, att.attachmentId, att.filename, att.mimeType);
+      const content = await buildAttachmentPreviewContent(uri, att.filename, att.mimeType);
+      setViewer({
+        phase: 'ready',
+        filename: att.filename,
+        mimeType: att.mimeType,
+        shareUri: uri,
+        content,
+      });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'Could not load attachment';
+      setViewer({
+        phase: 'error',
+        filename: att.filename,
+        message,
+      });
     } finally {
-      setLoadingId(null);
+      setBusyAttachmentId(null);
     }
   }
 
-  async function handleShare() {
-    if (!preview) return;
+  async function downloadAttachment(att: GmailMessage['attachments'][number]) {
+    setLastAtt(att);
+    setBusyAttachmentId(att.attachmentId);
+    setViewer({
+      phase: 'loading',
+      filename: att.filename,
+      statusText: 'Preparing download…',
+    });
+    try {
+      const uri = await getAttachmentUri(msg.id, att.attachmentId, att.filename, att.mimeType);
+      setViewer(null);
+      await shareCachedAttachment(uri, att.filename, att.mimeType);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'Could not download attachment';
+      setViewer({
+        phase: 'error',
+        filename: att.filename,
+        message,
+      });
+    } finally {
+      setBusyAttachmentId(null);
+    }
+  }
+
+  function closeViewer() {
+    setViewer(null);
+    setBusyAttachmentId(null);
+  }
+
+  async function handleViewerDownload() {
+    if (viewer?.phase !== 'ready') return;
     setSharing(true);
     try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(preview.localUri, {
-          dialogTitle: preview.filename,
-          mimeType: preview.mimeType,
-          UTI: preview.mimeType,
-        });
-      } else {
-        Alert.alert('Saved', `File saved to cache: ${preview.filename}`);
-      }
-    } catch (e: any) {
-      Alert.alert('Share failed', e?.message ?? 'Could not share file');
+      await shareCachedAttachment(viewer.shareUri, viewer.filename, viewer.mimeType);
+    } catch (e: unknown) {
+      Alert.alert(
+        'Download failed',
+        e instanceof Error ? e.message : 'Could not share file'
+      );
     } finally {
       setSharing(false);
     }
   }
 
-  const isWide = contentWidth > screenWidth - 56;
-
   return (
-    <View style={styles.messageBubble}>
-      <View style={styles.msgHeader}>
-        <View style={styles.msgFromBlock}>
-          <Text style={styles.msgFromName} numberOfLines={1}>{fromAddr.name || fromAddr.email || '(unknown)'}</Text>
-          <Text style={styles.msgFromEmail} numberOfLines={1}>{fromAddr.email}</Text>
+    <View style={styles.messageCard}>
+      <TouchableOpacity style={styles.msgCollapsedHeader} onPress={onToggle} activeOpacity={0.7}>
+        <View style={[styles.msgAvatar, { backgroundColor: avatarBg }]}>
+          <Text style={styles.msgAvatarText}>{initial}</Text>
         </View>
-        <Text style={styles.msgDate}>{date}</Text>
-      </View>
-      <Text style={styles.msgTo} numberOfLines={1}>To: {toAddr.name || toAddr.email}</Text>
-
-      <ScrollView
-        horizontal
-        scrollEnabled={isWide}
-        showsHorizontalScrollIndicator={isWide}
-        scrollIndicatorInsets={{ bottom: 0 }}
-        style={{ marginHorizontal: -14 }}
-        contentContainerStyle={{ paddingHorizontal: 14 }}
-      >
-        <WebView
-          style={{ height: webViewHeight, width: contentWidth }}
-          originWhitelist={['*']}
-          source={{ html }}
-          scrollEnabled={false}
-          injectedJavaScript={injectedJs}
-          onMessage={onMessage}
-          onShouldStartLoadWithRequest={(req) => {
-            if (req.url !== 'about:blank' && !req.url.startsWith('data:')) {
-              Linking.openURL(req.url).catch(() => {});
-              return false;
-            }
-            return true;
-          }}
-          showsVerticalScrollIndicator={false}
-          javaScriptEnabled
+        <View style={styles.msgHeaderText}>
+          <View style={styles.msgHeaderTop}>
+            <Text style={styles.msgFromName} numberOfLines={1}>{displayName}</Text>
+            <Text style={styles.msgDate}>{date}</Text>
+          </View>
+          {!expanded && (
+            <>
+              <Text style={styles.msgSnippet} numberOfLines={2}>{snippet}</Text>
+              {hasAttachments ? (
+                <View style={styles.attachHint}>
+                  <Ionicons name="attach" size={14} color={Gmail.textMuted} />
+                  <Text style={styles.attachHintText}>
+                    {msg.attachments!.length} attachment{msg.attachments!.length === 1 ? '' : 's'}
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          )}
+          {expanded && (
+            <Text style={styles.msgTo} numberOfLines={1}>to {toAddr.name || toAddr.email}</Text>
+          )}
+        </View>
+        <Ionicons
+          name={expanded ? 'chevron-up' : 'chevron-down'}
+          size={20}
+          color={Gmail.textMuted}
         />
-      </ScrollView>
+      </TouchableOpacity>
 
-      {msg.attachments?.length > 0 && (
-        <View style={styles.attachmentsRow}>
-          {msg.attachments.map((att) => {
-            const isLoading = loadingId === att.attachmentId;
-            return (
-              <TouchableOpacity
-                key={att.attachmentId}
-                style={styles.attChip}
-                onPress={() => handleAttachmentPress(att)}
-                disabled={!!loadingId}
-                activeOpacity={0.7}
-              >
-                {isLoading
-                  ? <ActivityIndicator size="small" color={Colors.primary} style={{ width: 14, height: 14 }} />
-                  : <Ionicons name="eye-outline" size={14} color={Colors.primary} />
-                }
-                <Text style={styles.attChipName} numberOfLines={1}>{att.filename}</Text>
-                {att.size > 0 && <Text style={styles.attChipSize}>{formatBytes(att.size)}</Text>}
-              </TouchableOpacity>
-            );
-          })}
+      {expanded && (
+        <View style={styles.msgExpandedBody}>
+          {hasAttachments ? (
+            <MessageAttachmentPreviews
+              messageId={msg.id}
+              attachments={msg.attachments!}
+              onPreview={(att) => void openAttachmentPreview(att)}
+              onDownload={(att) => void downloadAttachment(att)}
+              busyAttachmentId={busyAttachmentId}
+              placement="above"
+            />
+          ) : null}
+
+          {bodyContent.mode === 'plain' && !looksLikeHtml(bodyContent.text) ? (
+            <Text style={styles.plainBody} selectable>
+              {bodyContent.text}
+            </Text>
+          ) : (
+            <View style={[styles.msgWebViewWrap, { width: webViewWidth }]}>
+              {bodyLoading && (
+                <View style={styles.bodyLoading}>
+                  <ActivityIndicator color={Gmail.blue} size="small" />
+                </View>
+              )}
+              {bodyScrollsInside ? (
+                <Text style={styles.bodyScrollHint}>Scroll message for more</Text>
+              ) : null}
+              <WebView
+                key={`${msg.id}-${expanded ? 'open' : 'closed'}`}
+                style={{
+                  width: webViewWidth,
+                  height: webViewDisplayHeight,
+                  opacity: bodyLoading ? 0.01 : 1,
+                }}
+                originWhitelist={['*']}
+                source={{ html: htmlSource, baseUrl: 'about:blank' }}
+                scrollEnabled={bodyScrollsInside}
+                nestedScrollEnabled={bodyScrollsInside}
+                injectedJavaScript={SIZE_REPORT_JS}
+                injectedJavaScriptBeforeContentLoaded={SIZE_REPORT_JS}
+                onMessage={onMessage}
+                onLoadEnd={onWebViewLoadEnd}
+                onShouldStartLoadWithRequest={(req) => {
+                  const url = req.url ?? '';
+                  if (
+                    url === 'about:blank' ||
+                    url.startsWith('data:') ||
+                    url.startsWith('blob:')
+                  ) {
+                    return true;
+                  }
+                  Linking.openURL(url).catch(() => {});
+                  return false;
+                }}
+                showsVerticalScrollIndicator={bodyScrollsInside}
+                javaScriptEnabled
+                domStorageEnabled
+                mixedContentMode="always"
+                androidLayerType="hardware"
+              />
+            </View>
+          )}
         </View>
       )}
 
-      {preview && (
-        <AttachmentPreviewModal
-          preview={preview}
-          onClose={() => setPreview(null)}
-          onDownload={handleShare}
-          downloading={sharing}
-        />
-      )}
+      <AttachmentViewerModal
+        state={viewer}
+        sharing={sharing}
+        onClose={closeViewer}
+        onDownload={() => void handleViewerDownload()}
+        onRetry={
+          lastAtt
+            ? () => {
+                if (viewer?.phase === 'error') void openAttachmentPreview(lastAtt);
+              }
+            : undefined
+        }
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background, padding: 24, gap: 8 },
+  container: { flex: 1, backgroundColor: Gmail.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Gmail.bg, padding: 24, gap: 8 },
   header: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    padding: 16, backgroundColor: Colors.surface,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    backgroundColor: Gmail.bg,
   },
-  subject: { flex: 1, fontSize: 15, fontWeight: '700', color: Colors.text },
+  headerIconBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerActions: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center' },
+  subjectLine: {
+    fontSize: 22,
+    fontWeight: '400',
+    color: Gmail.text,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: Gmail.bg,
+    borderBottomWidth: 1,
+    borderBottomColor: Gmail.border,
+  },
+  previewFrom: {
+    fontSize: 14,
+    color: Gmail.textSecondary,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    backgroundColor: Gmail.bg,
+  },
+  threadLoading: {
+    paddingVertical: 48,
+    alignItems: 'center',
+    gap: 12,
+  },
+  threadLoadingText: { fontSize: 14, color: Gmail.textSecondary },
+  plainBody: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: Gmail.text,
+  },
+  bodyLoading: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 24,
+    alignItems: 'center',
+    zIndex: 1,
+  },
   threadLabelsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
     paddingHorizontal: 16,
     paddingVertical: 8,
-    backgroundColor: Colors.surface,
+    backgroundColor: Gmail.bg,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    borderBottomColor: Gmail.border,
   },
-  messages: { flex: 1 },
+  messages: { flex: 1, backgroundColor: Gmail.bgMuted },
 
-  // Action bar
   actionBar: {
     flexDirection: 'row',
-    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: Gmail.bg,
     borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: 8,
-    paddingHorizontal: 8,
+    borderTopColor: Gmail.border,
+    paddingTop: 10,
+    paddingHorizontal: 16,
   },
-  actionBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 8, gap: 4,
+  replyPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: Gmail.border,
+    backgroundColor: Gmail.bg,
   },
-  actionBtnLabel: { fontSize: 11, fontWeight: '600', color: Colors.primary },
+  replyPillText: { fontSize: 15, color: Gmail.textSecondary, fontWeight: '500' },
+  replyIconBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   // Modal compose
   modalHeader: {
@@ -1000,28 +1189,56 @@ const styles = StyleSheet.create({
   },
   attachBadgeText: { fontSize: 10, fontWeight: '700', color: Colors.surface },
 
-  // Message bubble
-  messageBubble: {
-    backgroundColor: Colors.surface, borderRadius: 12,
-    padding: 14, gap: 6,
-    shadowColor: Colors.shadow, shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 1, shadowRadius: 4, elevation: 2,
+  messageCard: {
+    backgroundColor: Gmail.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Gmail.divider,
   },
-  msgHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
-  msgFromBlock: { flex: 1 },
-  msgFromName: { fontSize: 14, fontWeight: '700', color: Colors.text },
-  msgFromEmail: { fontSize: 12, color: Colors.textMuted },
-  msgDate: { fontSize: 11, color: Colors.textMuted, textAlign: 'right' },
-  msgTo: { fontSize: 12, color: Colors.textSecondary },
-  attachmentsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
-  attChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 4,
-    backgroundColor: Colors.primaryLight, borderRadius: 999,
+  msgCollapsedHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
-  attChipName: { fontSize: 12, color: Colors.primary, maxWidth: 140 },
-  attChipSize: { fontSize: 11, color: Colors.primary, opacity: 0.7 },
+  msgAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  msgAvatarText: { fontSize: 17, fontWeight: '500', color: '#fff' },
+  msgHeaderText: { flex: 1, gap: 4, minWidth: 0 },
+  msgHeaderTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  msgFromName: { fontSize: 15, fontWeight: '600', color: Gmail.text, flex: 1 },
+  msgDate: { fontSize: 12, color: Gmail.textSecondary },
+  msgSnippet: { fontSize: 14, lineHeight: 20, color: Gmail.textSecondary },
+  attachHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  attachHintText: { fontSize: 12, color: Gmail.textMuted, fontWeight: '500' },
+  msgTo: { fontSize: 13, color: Gmail.textMuted },
+  msgWebViewWrap: {
+    minHeight: 80,
+    marginTop: 4,
+  },
+  bodyScrollHint: {
+    fontSize: 11,
+    color: Gmail.textMuted,
+    marginBottom: 4,
+  },
+  msgExpandedBody: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Gmail.divider,
+  },
   errorText: { fontSize: 14, color: Colors.error, textAlign: 'center' },
-  backLink: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Colors.primary, borderRadius: 8 },
-  backLinkText: { color: Colors.surface, fontWeight: '600', fontSize: 14 },
+  backLink: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Gmail.blue, borderRadius: 20 },
+  backLinkText: { color: '#fff', fontWeight: '600', fontSize: 14 },
 });

@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { Profile } from '../lib/types';
+import { resetAppSessionCaches } from '../lib/session-reset';
 
 interface AuthCtx {
   session: Session | null;
@@ -30,19 +31,31 @@ export function useAuthState(): AuthCtx {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const lastUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
+      const nextUser = data.session?.user ?? null;
+      lastUserIdRef.current = nextUser?.id ?? null;
       setSession(data.session);
-      setUser(data.session?.user ?? null);
-      if (data.session?.user) fetchProfile(data.session.user.id);
+      setUser(nextUser);
+      if (nextUser) fetchProfile(nextUser.id);
       else setLoading(false);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUser = session?.user ?? null;
+      const nextUserId = nextUser?.id ?? null;
+      const prevUserId = lastUserIdRef.current;
+
+      if (!nextUserId || (prevUserId && prevUserId !== nextUserId)) {
+        void resetAppSessionCaches(prevUserId ?? undefined);
+      }
+
+      lastUserIdRef.current = nextUserId;
       setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) fetchProfile(session.user.id);
+      setUser(nextUser);
+      if (nextUser) fetchProfile(nextUser.id);
       else {
         setProfile(null);
         setLoading(false);
@@ -59,6 +72,8 @@ export function useAuthState(): AuthCtx {
   }
 
   async function signOut() {
+    const userId = user?.id;
+    await resetAppSessionCaches(userId);
     await supabase.auth.signOut();
   }
 

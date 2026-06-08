@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/colors';
-import { labelDisplayName } from './LabelChip';
+import { filterSearchableLabels, labelDisplayName } from '../lib/gmail-labels';
 import type { GmailLabel } from '../lib/api';
 
 /**
@@ -35,9 +35,9 @@ export function LabelPickerModal({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const surfaced = allLabels.filter((l) => l.surfaced);
-    if (!q) return surfaced;
-    return surfaced.filter((l) => labelDisplayName(l).toLowerCase().includes(q));
+    const pickable = filterSearchableLabels(allLabels);
+    if (!q) return pickable;
+    return pickable.filter((l) => labelDisplayName(l).toLowerCase().includes(q));
   }, [allLabels, query]);
 
   const showCreate =
@@ -86,7 +86,12 @@ export function LabelPickerModal({
             />
           </View>
 
-          <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            style={styles.list}
+            keyboardShouldPersistTaps="handled"
+            automaticallyAdjustKeyboardInsets
+            keyboardDismissMode="on-drag"
+          >
             {filtered.length === 0 ? (
               <Text style={styles.empty}>No matching labels.</Text>
             ) : (

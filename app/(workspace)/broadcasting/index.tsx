@@ -94,7 +94,7 @@ export default function BroadcastingScreen() {
     if (overLimit) {
       Alert.alert(
         'Attachments too large',
-        `Total ${(totalAttachBytes / 1024 / 1024).toFixed(1)} MB exceeds the 3 MB broadcast limit. Remove some files or use the Inbox compose screen for large attachments.`
+        `Total ${(totalAttachBytes / 1024 / 1024).toFixed(1)} MB exceeds the 3 MB broadcast limit. Remove some files or use the Mail compose screen for large attachments.`
       );
       return;
     }

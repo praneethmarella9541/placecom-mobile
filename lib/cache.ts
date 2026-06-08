@@ -31,3 +31,24 @@ export function cacheIsStale(key: string, ttlMs = DEFAULT_TTL_MS): boolean {
 export function cacheDelete(key: string): void {
   store.delete(key);
 }
+
+export function cacheDeleteByPrefix(prefix: string): void {
+  for (const key of store.keys()) {
+    if (key.startsWith(prefix)) store.delete(key);
+  }
+}
+
+/** Drop every in-memory entry (e.g. on sign-out or account switch). */
+export function cacheClearAll(): void {
+  store.clear();
+}
+
+/** Invalidate Gmail list caches for a folder across search/label variants. */
+export function cacheDeleteInboxFolder(folder: string): void {
+  const needle = `:${folder}:`;
+  for (const key of store.keys()) {
+    if (key.includes(needle) || key.startsWith(`inbox:${folder}:`)) {
+      store.delete(key);
+    }
+  }
+}

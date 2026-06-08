@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert, Switch, Modal, Pressable, Share,
+  ActivityIndicator, Alert, Switch, Modal, Pressable,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors } from '../../../../constants/colors';
+import { FormsTheme } from '../../../../constants/formsTheme';
 import { formsApi } from '../../../../lib/api';
+import { copyFormLink, shareFormLink } from '../../../../lib/forms-actions';
 import {
   defaultChoiceBlock,
   defaultQuestionBlock,
@@ -72,6 +73,7 @@ export default function FormEditScreen() {
   const [responderUri, setResponderUri] = useState<string | null>(null);
   const [emailOpen, setEmailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [tab, setTab] = useState<'questions' | 'settings'>('questions');
 
   const load = useCallback(async () => {
     if (!formId) return;
@@ -145,13 +147,13 @@ export default function FormEditScreen() {
 
   async function shareResponderLink() {
     if (!responderUri) return;
-    try { await Share.share({ message: responderUri }); } catch {}
+    await shareFormLink(responderUri, editor.title?.trim() || 'Form');
   }
 
   if (loading) {
     return (
       <View style={[styles.center, { paddingTop: insets.top }]}>
-        <ActivityIndicator color={Colors.primary} />
+        <ActivityIndicator color={FormsTheme.purple} />
       </View>
     );
   }
@@ -162,10 +164,9 @@ export default function FormEditScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn}>
-          <Ionicons name="arrow-back" size={24} color={Colors.text} />
+          <Ionicons name="arrow-back" size={24} color={FormsTheme.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerLabel}>Form Builder</Text>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {editor.title?.trim() || 'Untitled form'}
           </Text>
@@ -176,14 +177,29 @@ export default function FormEditScreen() {
           style={[styles.saveBtn, saving && { opacity: 0.6 }]}
         >
           {saving
-            ? <ActivityIndicator color={Colors.surface} size="small" />
+            ? <ActivityIndicator color={FormsTheme.fabIcon} size="small" />
             : <Text style={styles.saveBtnText}>Save</Text>}
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.tabs}>
+        <TouchableOpacity
+          style={[styles.tab, tab === 'questions' && styles.tabActive]}
+          onPress={() => setTab('questions')}
+        >
+          <Text style={[styles.tabText, tab === 'questions' && styles.tabTextActive]}>Questions</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, tab === 'settings' && styles.tabActive]}
+          onPress={() => setTab('settings')}
+        >
+          <Text style={[styles.tabText, tab === 'settings' && styles.tabTextActive]}>Settings</Text>
         </TouchableOpacity>
       </View>
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ padding: 14, gap: 12, paddingBottom: 120 }}
+        contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 120 }}
         keyboardShouldPersistTaps="handled"
       >
         {error ? (
@@ -192,92 +208,99 @@ export default function FormEditScreen() {
           </View>
         ) : null}
 
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Form title</Text>
-          <TextInput
-            style={[styles.input, styles.inputBig]}
-            value={editor.title}
-            onChangeText={(t) => setEditor((s) => ({ ...s, title: t }))}
-            placeholder="Untitled form"
-            placeholderTextColor={Colors.textMuted}
-          />
-          <Text style={styles.fieldLabel}>Description</Text>
-          <TextInput
-            style={[styles.input, styles.inputMulti]}
-            value={editor.description}
-            onChangeText={(t) => setEditor((s) => ({ ...s, description: t }))}
-            placeholder="Shown under the title"
-            placeholderTextColor={Colors.textMuted}
-            multiline
-          />
-
-          <View style={styles.divider} />
-
-          <View style={styles.switchRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fieldLabel}>Quiz mode</Text>
-              <Text style={styles.fieldHint}>Mark questions correct/incorrect</Text>
+        {tab === 'questions' ? (
+          <>
+            <View style={styles.titleCard}>
+              <View style={styles.titleCardBand} />
+              <TextInput
+                style={styles.titleCardInput}
+                value={editor.title}
+                onChangeText={(t) => setEditor((s) => ({ ...s, title: t }))}
+                placeholder="Untitled form"
+                placeholderTextColor={FormsTheme.textMuted}
+              />
+              <TextInput
+                style={styles.titleCardDesc}
+                value={editor.description}
+                onChangeText={(t) => setEditor((s) => ({ ...s, description: t }))}
+                placeholder="Form description"
+                placeholderTextColor={FormsTheme.textMuted}
+                multiline
+              />
             </View>
-            <Switch
-              value={editor.isQuiz}
-              onValueChange={(v) => setEditor((s) => ({ ...s, isQuiz: v }))}
-              trackColor={{ false: Colors.border, true: Colors.primary }}
-              thumbColor={Colors.surface}
-            />
-          </View>
 
-          <View style={styles.divider} />
-
-          <Text style={styles.fieldLabel}>Email collection</Text>
-          <TouchableOpacity style={styles.select} onPress={() => setEmailOpen(true)}>
-            <Text style={styles.selectText}>{emailLabel}</Text>
-            <Ionicons name="chevron-down" size={18} color={Colors.textMuted} />
-          </TouchableOpacity>
-
-          {responderUri ? (
-            <>
-              <View style={styles.divider} />
-              <Text style={styles.fieldLabel}>Share link</Text>
-              <View style={styles.linkRow}>
-                <Text style={styles.linkText} numberOfLines={1}>{responderUri}</Text>
+            {editor.blocks.length === 0 ? (
+              <View style={styles.emptyHint}>
+                <Text style={styles.emptyHintText}>Tap + to add your first question</Text>
               </View>
-              <View style={styles.linkActions}>
-                <TouchableOpacity style={styles.smallBtn} onPress={shareResponderLink}>
-                  <Ionicons name="share-outline" size={14} color={Colors.primary} />
-                  <Text style={styles.smallBtnText}>Share link</Text>
-                </TouchableOpacity>
+            ) : null}
+
+            {editor.blocks.map((block, i) => (
+              <BlockCard
+                key={block.key}
+                block={block}
+                index={i}
+                total={editor.blocks.length}
+                onChange={(patch) => updateBlock(i, patch)}
+                onRemove={() => removeBlock(i)}
+                onMove={(dir) => moveBlock(i, dir)}
+              />
+            ))}
+          </>
+        ) : (
+          <View style={styles.card}>
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldLabel}>Make this a quiz</Text>
+                <Text style={styles.fieldHint}>Assign point values and review answers</Text>
               </View>
-            </>
-          ) : null}
-        </View>
+              <Switch
+                value={editor.isQuiz}
+                onValueChange={(v) => setEditor((s) => ({ ...s, isQuiz: v }))}
+                trackColor={{ false: FormsTheme.border, true: FormsTheme.purple }}
+                thumbColor={FormsTheme.surface}
+              />
+            </View>
 
-        <View style={styles.sectionHeader}>
-          <Ionicons name="list-outline" size={16} color={Colors.primary} />
-          <Text style={styles.sectionTitle}>Questions &amp; content</Text>
-        </View>
+            <View style={styles.divider} />
 
-        {editor.blocks.length === 0 ? (
-          <View style={styles.emptyHint}>
-            <Text style={styles.emptyHintText}>No blocks yet. Tap the + button to add one.</Text>
+            <Text style={styles.fieldLabel}>Collect email addresses</Text>
+            <TouchableOpacity style={styles.select} onPress={() => setEmailOpen(true)}>
+              <Text style={styles.selectText}>{emailLabel}</Text>
+              <Ionicons name="chevron-down" size={18} color={FormsTheme.textMuted} />
+            </TouchableOpacity>
+
+            {responderUri ? (
+              <>
+                <View style={styles.divider} />
+                <Text style={styles.fieldLabel}>Responder link</Text>
+                <View style={styles.linkRow}>
+                  <Text style={styles.linkText} numberOfLines={2}>{responderUri}</Text>
+                </View>
+                <View style={styles.linkActions}>
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    onPress={() => copyFormLink(responderUri)}
+                  >
+                    <Ionicons name="copy-outline" size={14} color={FormsTheme.purple} />
+                    <Text style={styles.smallBtnText}>Copy link</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.smallBtn} onPress={shareResponderLink}>
+                    <Ionicons name="share-outline" size={14} color={FormsTheme.purple} />
+                    <Text style={styles.smallBtnText}>Share</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : null}
           </View>
-        ) : null}
-
-        {editor.blocks.map((block, i) => (
-          <BlockCard
-            key={block.key}
-            block={block}
-            index={i}
-            total={editor.blocks.length}
-            onChange={(patch) => updateBlock(i, patch)}
-            onRemove={() => removeBlock(i)}
-            onMove={(dir) => moveBlock(i, dir)}
-          />
-        ))}
+        )}
       </ScrollView>
 
-      <TouchableOpacity style={styles.fab} onPress={() => setAddOpen(true)} activeOpacity={0.85}>
-        <Ionicons name="add" size={28} color={Colors.surface} />
-      </TouchableOpacity>
+      {tab === 'questions' ? (
+        <TouchableOpacity style={styles.fab} onPress={() => setAddOpen(true)} activeOpacity={0.85}>
+          <Ionicons name="add" size={28} color={FormsTheme.fabIcon} />
+        </TouchableOpacity>
+      ) : null}
 
       {/* Email-collection picker */}
       <Modal visible={emailOpen} transparent animationType="fade" onRequestClose={() => setEmailOpen(false)}>
@@ -295,10 +318,10 @@ export default function FormEditScreen() {
                     setEmailOpen(false);
                   }}
                 >
-                  <Text style={[styles.modalRowText, selected && { color: Colors.primary, fontWeight: '700' }]}>
+                  <Text style={[styles.modalRowText, selected && { color: FormsTheme.purple, fontWeight: '700' }]}>
                     {opt.label}
                   </Text>
-                  {selected ? <Ionicons name="checkmark" size={18} color={Colors.primary} /> : null}
+                  {selected ? <Ionicons name="checkmark" size={18} color={FormsTheme.purple} /> : null}
                 </TouchableOpacity>
               );
             })}
@@ -314,7 +337,7 @@ export default function FormEditScreen() {
             <View style={styles.addGrid}>
               {ADD_OPTIONS.map((opt) => (
                 <TouchableOpacity key={opt.label} style={styles.addItem} onPress={() => addBlock(opt.build)}>
-                  <Ionicons name={opt.icon} size={18} color={Colors.primary} />
+                  <Ionicons name={opt.icon} size={18} color={FormsTheme.purple} />
                   <Text style={styles.addItemText}>{opt.label}</Text>
                 </TouchableOpacity>
               ))}
@@ -338,8 +361,13 @@ function BlockCard({
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
 }) {
+  const accentColor =
+    block.kind === 'section' || block.kind === 'text_block'
+      ? FormsTheme.sectionAccent
+      : FormsTheme.cardAccent;
+
   return (
-    <View style={styles.blockCard}>
+    <View style={[styles.blockCard, { borderLeftColor: accentColor }]}>
       <View style={styles.blockHeader}>
         <View style={styles.kindBadge}>
           <Text style={styles.kindBadgeText}>{blockLabel(block.kind)}</Text>
@@ -350,17 +378,17 @@ function BlockCard({
           onPress={() => onMove(-1)}
           disabled={index === 0}
         >
-          <Ionicons name="arrow-up" size={16} color={index === 0 ? Colors.textMuted : Colors.text} />
+          <Ionicons name="arrow-up" size={16} color={index === 0 ? FormsTheme.textMuted : FormsTheme.text} />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.iconBtnSmall}
           onPress={() => onMove(1)}
           disabled={index === total - 1}
         >
-          <Ionicons name="arrow-down" size={16} color={index === total - 1 ? Colors.textMuted : Colors.text} />
+          <Ionicons name="arrow-down" size={16} color={index === total - 1 ? FormsTheme.textMuted : FormsTheme.text} />
         </TouchableOpacity>
         <TouchableOpacity style={styles.iconBtnSmall} onPress={onRemove}>
-          <Ionicons name="trash-outline" size={16} color={Colors.error} />
+          <Ionicons name="trash-outline" size={16} color="#D93025" />
         </TouchableOpacity>
       </View>
 
@@ -374,7 +402,7 @@ function BlockCard({
         value={block.title}
         onChangeText={(t) => onChange({ title: t } as Partial<EditorBlock>)}
         placeholder={block.kind === 'section' ? 'Section title' : 'Question title'}
-        placeholderTextColor={Colors.textMuted}
+        placeholderTextColor={FormsTheme.textMuted}
       />
       <Text style={styles.fieldLabelSmall}>Help text</Text>
       <TextInput
@@ -382,7 +410,7 @@ function BlockCard({
         value={block.description}
         onChangeText={(t) => onChange({ description: t } as Partial<EditorBlock>)}
         placeholder="Optional description"
-        placeholderTextColor={Colors.textMuted}
+        placeholderTextColor={FormsTheme.textMuted}
         multiline
       />
 
@@ -393,8 +421,8 @@ function BlockCard({
           <Switch
             value={'required' in block ? Boolean(block.required) : false}
             onValueChange={(v) => onChange({ required: v } as Partial<EditorBlock>)}
-            trackColor={{ false: Colors.border, true: Colors.primary }}
-            thumbColor={Colors.surface}
+            trackColor={{ false: FormsTheme.border, true: FormsTheme.purple }}
+            thumbColor={FormsTheme.surface}
           />
         </View>
       ) : null}
@@ -459,7 +487,7 @@ function ChoiceOptionsEditor({
               onChange({ choiceOptions: next } as Partial<EditorBlock>);
             }}
             placeholder={`Option ${j + 1}`}
-            placeholderTextColor={Colors.textMuted}
+            placeholderTextColor={FormsTheme.textMuted}
           />
           <TouchableOpacity
             style={styles.optionRemove}
@@ -468,7 +496,7 @@ function ChoiceOptionsEditor({
               onChange({ choiceOptions: next } as Partial<EditorBlock>);
             }}
           >
-            <Ionicons name="close" size={16} color={Colors.error} />
+            <Ionicons name="close" size={16} color="#D93025" />
           </TouchableOpacity>
         </View>
       ))}
@@ -476,7 +504,7 @@ function ChoiceOptionsEditor({
         style={styles.addOption}
         onPress={() => onChange({ choiceOptions: [...opts, `Option ${opts.length + 1}`] } as Partial<EditorBlock>)}
       >
-        <Ionicons name="add" size={16} color={Colors.primary} />
+        <Ionicons name="add" size={16} color={FormsTheme.purple} />
         <Text style={styles.addOptionText}>Add option</Text>
       </TouchableOpacity>
       <View style={[styles.switchRow, { marginTop: 6 }]}>
@@ -484,8 +512,8 @@ function ChoiceOptionsEditor({
         <Switch
           value={Boolean(block.shuffle)}
           onValueChange={(v) => onChange({ shuffle: v } as Partial<EditorBlock>)}
-          trackColor={{ false: Colors.border, true: Colors.primary }}
-          thumbColor={Colors.surface}
+          trackColor={{ false: FormsTheme.border, true: FormsTheme.purple }}
+          thumbColor={FormsTheme.surface}
         />
       </View>
     </View>
@@ -529,7 +557,7 @@ function LinearScaleEditor({
             value={block.scaleLowLabel || ''}
             onChangeText={(t) => onChange({ scaleLowLabel: t } as Partial<EditorBlock>)}
             placeholder="e.g. Poor"
-            placeholderTextColor={Colors.textMuted}
+            placeholderTextColor={FormsTheme.textMuted}
           />
         </View>
         <View style={{ flex: 1 }}>
@@ -539,7 +567,7 @@ function LinearScaleEditor({
             value={block.scaleHighLabel || ''}
             onChangeText={(t) => onChange({ scaleHighLabel: t } as Partial<EditorBlock>)}
             placeholder="e.g. Excellent"
-            placeholderTextColor={Colors.textMuted}
+            placeholderTextColor={FormsTheme.textMuted}
           />
         </View>
       </View>
@@ -554,8 +582,8 @@ function ToggleField({ label, value, onChange }: { label: string; value: boolean
       <Switch
         value={value}
         onValueChange={onChange}
-        trackColor={{ false: Colors.border, true: Colors.primary }}
-        thumbColor={Colors.surface}
+        trackColor={{ false: FormsTheme.border, true: FormsTheme.purple }}
+        thumbColor={FormsTheme.surface}
       />
     </View>
   );
@@ -564,109 +592,167 @@ function ToggleField({ label, value, onChange }: { label: string; value: boolean
 /* -------- styles -------- */
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background },
+  container: { flex: 1, backgroundColor: FormsTheme.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: FormsTheme.bg },
   scroll: { flex: 1 },
 
   header: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: FormsTheme.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: FormsTheme.border,
   },
   iconBtn: { padding: 6 },
   iconBtnSmall: { padding: 6, marginLeft: 2 },
-  headerLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, color: Colors.textMuted, textTransform: 'uppercase' },
-  headerTitle: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  headerTitle: { fontSize: 18, fontWeight: '400', color: FormsTheme.text },
   saveBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 18, paddingVertical: 9,
-    borderRadius: 8, minWidth: 64, alignItems: 'center',
+    backgroundColor: FormsTheme.purple,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 4,
+    minWidth: 64,
+    alignItems: 'center',
   },
-  saveBtnText: { color: Colors.surface, fontWeight: '700', fontSize: 13 },
+  saveBtnText: { color: FormsTheme.fabIcon, fontWeight: '600', fontSize: 14 },
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: FormsTheme.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: FormsTheme.border,
+  },
+  tab: { flex: 1, paddingVertical: 12, alignItems: 'center' },
+  tabActive: { borderBottomWidth: 3, borderBottomColor: FormsTheme.purple },
+  tabText: { fontSize: 14, fontWeight: '500', color: FormsTheme.textSecondary },
+  tabTextActive: { color: FormsTheme.purple, fontWeight: '600' },
+  titleCard: {
+    backgroundColor: FormsTheme.surface,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
+  },
+  titleCardBand: { height: 10, backgroundColor: FormsTheme.headerBand },
+  titleCardInput: {
+    fontSize: 24,
+    fontWeight: '400',
+    color: FormsTheme.text,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  titleCardDesc: {
+    fontSize: 14,
+    color: FormsTheme.text,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    minHeight: 48,
+    textAlignVertical: 'top',
+  },
 
   card: {
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
+    backgroundColor: FormsTheme.surface,
+    borderRadius: 8,
     padding: 14,
     gap: 8,
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
   },
-  divider: { height: 1, backgroundColor: Colors.borderLight, marginVertical: 6 },
+  divider: { height: 1, backgroundColor: FormsTheme.divider, marginVertical: 6 },
 
-  fieldLabel: { fontSize: 12, fontWeight: '700', color: Colors.text },
-  fieldLabelSmall: { fontSize: 11, fontWeight: '600', color: Colors.textSecondary, marginTop: 6, marginBottom: 4 },
-  fieldHint: { fontSize: 12, color: Colors.textSecondary },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: FormsTheme.text },
+  fieldLabelSmall: { fontSize: 11, fontWeight: '600', color: FormsTheme.textSecondary, marginTop: 6, marginBottom: 4 },
+  fieldHint: { fontSize: 12, color: FormsTheme.textSecondary },
 
   input: {
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 8,
-    paddingHorizontal: 12, paddingVertical: 10,
-    fontSize: 14, color: Colors.text, backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
+    borderRadius: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: FormsTheme.text,
+    backgroundColor: FormsTheme.surface,
   },
-  inputBig: { fontSize: 15, fontWeight: '600' },
   inputMulti: { minHeight: 64, textAlignVertical: 'top' },
 
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 4 },
 
   select: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 8,
+    borderWidth: 1, borderColor: FormsTheme.border, borderRadius: 8,
     paddingHorizontal: 12, paddingVertical: 11,
-    backgroundColor: Colors.surface,
+    backgroundColor: FormsTheme.surface,
   },
-  selectText: { fontSize: 14, color: Colors.text },
+  selectText: { fontSize: 14, color: FormsTheme.text },
 
   linkRow: {
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 8,
-    padding: 10, backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
+    borderRadius: 4,
+    padding: 10,
+    backgroundColor: FormsTheme.bg,
   },
-  linkText: { fontSize: 12, color: Colors.textSecondary, fontFamily: 'Menlo' },
+  linkText: { fontSize: 12, color: FormsTheme.textSecondary, fontFamily: 'Menlo' },
   linkActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
   smallBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 7,
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 6,
+    borderWidth: 1, borderColor: FormsTheme.border, borderRadius: 6,
   },
-  smallBtnText: { fontSize: 12, fontWeight: '600', color: Colors.primary },
+  smallBtnText: { fontSize: 12, fontWeight: '600', color: FormsTheme.purple },
 
-  sectionHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, marginTop: 8,
-  },
-  sectionTitle: { fontSize: 14, fontWeight: '700', color: Colors.text },
   emptyHint: {
-    padding: 18, borderRadius: 12, backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed',
+    padding: 18, borderRadius: 12, backgroundColor: FormsTheme.surface,
+    borderWidth: 1, borderColor: FormsTheme.border, borderStyle: 'dashed',
     alignItems: 'center',
   },
-  emptyHintText: { fontSize: 13, color: Colors.textMuted },
+  emptyHintText: { fontSize: 13, color: FormsTheme.textMuted },
 
   blockCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
+    backgroundColor: FormsTheme.surface,
+    borderRadius: 8,
     padding: 12,
     gap: 6,
-    borderWidth: 1, borderColor: Colors.borderLight,
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
+    borderLeftWidth: 6,
   },
   blockHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   kindBadge: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999,
+    backgroundColor: FormsTheme.purpleLight,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
   },
-  kindBadgeText: { fontSize: 10, fontWeight: '700', color: Colors.primary, textTransform: 'uppercase', letterSpacing: 0.6 },
-  hintText: { fontSize: 12, color: Colors.textSecondary, lineHeight: 17, marginVertical: 4 },
+  kindBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: FormsTheme.purple,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  hintText: { fontSize: 12, color: FormsTheme.textSecondary, lineHeight: 17, marginVertical: 4 },
 
   optionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   optionRemove: { padding: 8 },
   addOption: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6 },
-  addOptionText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  addOptionText: { fontSize: 13, fontWeight: '600', color: FormsTheme.purple },
 
   gridRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
   toggleRow: { flexDirection: 'column', gap: 0 },
 
   fab: {
     position: 'absolute',
-    right: 18, bottom: 24,
-    width: 56, height: 56, borderRadius: 28,
-    backgroundColor: Colors.primary,
+    right: 18,
+    bottom: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: FormsTheme.fab,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25, shadowRadius: 10, elevation: 6,
@@ -674,30 +760,30 @@ const styles = StyleSheet.create({
 
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalSheet: {
-    backgroundColor: Colors.surface,
+    backgroundColor: FormsTheme.surface,
     borderTopLeftRadius: 20, borderTopRightRadius: 20,
     padding: 18, paddingBottom: 30, gap: 6,
   },
-  modalTitle: { fontSize: 15, fontWeight: '700', color: Colors.text, marginBottom: 8 },
+  modalTitle: { fontSize: 15, fontWeight: '700', color: FormsTheme.text, marginBottom: 8 },
   modalRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.borderLight,
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: FormsTheme.divider,
   },
-  modalRowText: { fontSize: 14, color: Colors.text },
+  modalRowText: { fontSize: 14, color: FormsTheme.text },
 
   addGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   addItem: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 12, paddingVertical: 10,
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 10,
-    backgroundColor: Colors.background,
+    borderWidth: 1, borderColor: FormsTheme.border, borderRadius: 10,
+    backgroundColor: FormsTheme.bg,
     minWidth: '47%',
   },
-  addItemText: { fontSize: 13, fontWeight: '600', color: Colors.text },
+  addItemText: { fontSize: 13, fontWeight: '600', color: FormsTheme.text },
 
   errorBox: {
     backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FEE2E2',
     padding: 10, borderRadius: 8,
   },
-  errorText: { fontSize: 12, color: Colors.error },
+  errorText: { fontSize: 12, color: '#D93025' },
 });

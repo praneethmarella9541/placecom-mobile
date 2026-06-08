@@ -1,0 +1,22 @@
+/** Google Drive–inspired palette (aligned with Gmail module). */
+export const DriveTheme = {
+  blue: '#1A73E8',
+  blueLight: '#E8F0FE',
+  green: '#188038',
+  yellow: '#F9AB00',
+  red: '#D93025',
+  orange: '#E37400',
+  purple: '#9334E6',
+  bg: '#FFFFFF',
+  bgMuted: '#F6F8FC',
+  searchBg: '#EAF1FB',
+  text: '#202124',
+  textSecondary: '#5F6368',
+  textMuted: '#80868B',
+  border: '#E8EAED',
+  divider: '#F1F3F4',
+  fab: '#1A73E8',
+  fabIcon: '#FFFFFF',
+  folder: '#F9AB00',
+  sheet: '#FFFFFF',
+};

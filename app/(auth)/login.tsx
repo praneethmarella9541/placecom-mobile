@@ -9,13 +9,15 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
-import { makeRedirectUri } from 'expo-auth-session';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
+import { getMobileOAuthRedirect } from '../../lib/auth-redirect';
 import { Colors } from '../../constants/colors';
+import { BrandLogo } from '../../components/BrandLogo';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -51,20 +53,10 @@ export default function LoginScreen() {
   async function handleGoogleSignIn() {
     setGoogleLoading(true);
     try {
-      // PKCE flow: Supabase will redirect to <redirectTo>?code=… after the
-      // Google round-trip. The deep link `placecom://auth/callback` MUST be
-      // in Supabase Dashboard → Authentication → URL Configuration →
-      // Redirect URLs, otherwise Supabase falls back to the Site URL (the
-      // web app) and the user ends up there instead of back in the app.
-      // Force the native scheme. `makeRedirectUri` otherwise returns an
-      // exp://<lan-ip>:8081 URL when running inside Expo Go — which is
-      // unstable (changes every time the LAN IP changes) and not what
-      // we want for our custom dev/standalone build.
-      const redirectTo = makeRedirectUri({
-        scheme: 'placecom',
-        path: 'auth/callback',
-        native: 'placecom://auth/callback',
-      });
+      // HTTPS /auth/mobile-callback — add to Supabase Redirect URLs (with www if used).
+      // Custom thenucleus:// schemes are flaky in Android in-app browser; /auth/callback
+      // on the website logs users into the web app instead.
+      const redirectTo = getMobileOAuthRedirect();
       console.log('[OAuth] redirectTo =', redirectTo);
       setOauthRedirect(redirectTo);
 
@@ -87,6 +79,14 @@ export default function LoginScreen() {
       const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
       if (result.type !== 'success' || !result.url) {
         return; // user cancelled or the browser didn't return a URL
+      }
+
+      if (!result.url.includes('/auth/mobile-callback') && /\/auth\/callback|\/inbox/i.test(result.url)) {
+        throw new Error(
+          'Google sign-in opened the website inbox instead of the app. In Supabase → Redirect URLs add:\n\n' +
+            `${redirectTo}\n\n` +
+            'Deploy placecom (needs /auth/mobile-callback), rebuild the APK, then try again.'
+        );
       }
 
       // PKCE: returned URL has ?code=…
@@ -117,15 +117,20 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={[styles.container, { paddingTop: insets.top }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <View style={styles.content}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 },
+        ]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.logoSection}>
-          <View style={styles.logoIcon}>
-            <Ionicons name="briefcase" size={32} color={Colors.surface} />
-          </View>
-          <Text style={styles.appName}>PlaceCom</Text>
+          <BrandLogo size="lg" layout="column" nameColor={Colors.surface} />
           <Text style={styles.tagline}>Placement & Communication CRM</Text>
         </View>
 
@@ -199,25 +204,21 @@ export default function LoginScreen() {
             </Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
-  content: { flex: 1, justifyContent: 'center', padding: 24, gap: 32 },
-  logoSection: { alignItems: 'center', gap: 8 },
-  logoIcon: {
-    width: 72,
-    height: 72,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    alignItems: 'center',
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
+    paddingHorizontal: 24,
+    gap: 28,
   },
-  appName: { fontSize: 28, fontWeight: '800', color: Colors.surface },
-  tagline: { fontSize: 14, color: 'rgba(255,255,255,0.8)' },
+  logoSection: { alignItems: 'center', gap: 10 },
+  tagline: { fontSize: 14, color: 'rgba(255,255,255,0.85)', textAlign: 'center' },
   card: {
     backgroundColor: Colors.surface,
     borderRadius: 20,

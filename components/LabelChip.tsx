@@ -3,20 +3,10 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/colors';
 import type { GmailLabel } from '../lib/api';
-
-const SYSTEM_DISPLAY: Record<string, string> = {
-  IMPORTANT: 'Important',
-  STARRED: 'Starred',
-  CATEGORY_PERSONAL: 'Personal',
-  CATEGORY_SOCIAL: 'Social',
-  CATEGORY_PROMOTIONS: 'Promotions',
-  CATEGORY_UPDATES: 'Updates',
-  CATEGORY_FORUMS: 'Forums',
-};
+import { labelDisplayName as formatLabelDisplayName } from '../lib/gmail-labels';
 
 export function labelDisplayName(label: GmailLabel): string {
-  if (label.type === 'user') return label.name;
-  return SYSTEM_DISPLAY[label.id] ?? label.name;
+  return formatLabelDisplayName(label);
 }
 
 /** Deterministic pastel hue from the label id. */
