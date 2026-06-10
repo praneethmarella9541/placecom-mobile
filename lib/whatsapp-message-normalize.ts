@@ -1,9 +1,10 @@
 import type { WhatsAppMessage } from './whatsapp-types';
+import { synthesizeWhatsAppMediaUrl } from './whatsapp-media';
 import { normalizeWhatsAppDeliveryStatus } from './whatsapp-tick-level';
 
 /** Fill gaps from API/DB so media and emoji-only messages render reliably. */
 export function normalizeWhatsAppMessage(row: WhatsAppMessage): WhatsAppMessage {
-  const mediaUrl = row.media_url?.trim() || null;
+  const mediaUrl = synthesizeWhatsAppMediaUrl(row) ?? (row.media_url?.trim() || null);
   // Preserve internal whitespace/newlines; only strip leading/trailing on edges.
   let body = row.body?.replace(/^\s+|\s+$/g, '') ?? '';
 

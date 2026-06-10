@@ -1,6 +1,24 @@
 import { BASE_URL } from './api';
 import type { WhatsAppMessage } from './whatsapp-types';
 
+const MEDIA_PLACEHOLDER_RE = /^\[(Image|Video|Audio|Voice|Document|Sticker)\]/i;
+
+function messageNeedsMedia(row: WhatsAppMessage): boolean {
+  if ((row.num_media ?? 0) > 0) return true;
+  if (MEDIA_PLACEHOLDER_RE.test((row.body ?? '').trim())) return true;
+  const ct = (row.content_type ?? '').toLowerCase();
+  return ['image', 'video', 'audio', 'document', 'sticker'].includes(ct);
+}
+
+/** When DB/cache has no media_url, load via authenticated Exotel proxy. */
+export function synthesizeWhatsAppMediaUrl(message: WhatsAppMessage): string | null {
+  const stored = message.media_url?.trim();
+  if (stored) return stored;
+  const sid = message.message_sid?.trim();
+  if (!sid || !messageNeedsMedia(message)) return null;
+  return `/api/whatsapp/media?msgSid=${encodeURIComponent(sid)}`;
+}
+
 /**
  * Resolve a stored media URL into something <Image>/<Audio> can actually load.
  *
