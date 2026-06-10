@@ -13,16 +13,33 @@ async function authHeaders(): Promise<Record<string, string>> {
 }
 
 function fetchWithTimeout(input: string, init: RequestInit, ms = 30000): Promise<Response> {
+  const outerSignal = init.signal;
+  if (outerSignal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
-  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+  const onAbort = () => controller.abort();
+  outerSignal?.addEventListener('abort', onAbort);
+  return fetch(input, { ...init, signal: controller.signal, cache: 'no-store' })
+    .finally(() => {
+      clearTimeout(timer);
+      outerSignal?.removeEventListener('abort', onAbort);
+    });
 }
 
-async function get<T>(path: string, params?: Record<string, string>): Promise<T> {
+async function get<T>(
+  path: string,
+  params?: Record<string, string>,
+  opts?: { signal?: AbortSignal }
+): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   console.log('[api] GET', url.toString());
-  const res = await fetchWithTimeout(url.toString(), { headers: await authHeaders() });
+  const res = await fetchWithTimeout(url.toString(), {
+    headers: await authHeaders(),
+    signal: opts?.signal,
+  });
   if (!res.ok) {
     let msg = `GET ${path} failed: ${res.status}`;
     try { const b = await res.json(); if (b?.error) msg = b.error; } catch {}
@@ -59,7 +76,13 @@ async function del<T>(path: string): Promise<T> {
 }
 
 // Gmail
-export type GmailFolder = 'inbox' | 'sent' | 'drafts';
+export type GmailFolder =
+  | 'inbox'
+  | 'sent'
+  | 'drafts'
+  | 'trash'
+  | 'spam'
+  | 'allmail';
 
 export interface GmailThreadListItem {
   id: string;
@@ -122,7 +145,13 @@ export interface GmailSendBody {
 export const gmailApi = {
   listThreads: (
     folder: GmailFolder = 'inbox',
-    opts?: { pageToken?: string; search?: string; maxResults?: number; labelId?: string }
+    opts?: {
+      pageToken?: string;
+      search?: string;
+      maxResults?: number;
+      labelId?: string;
+      signal?: AbortSignal;
+    }
   ) => {
     const params: Record<string, string> = { folder };
     if (opts?.pageToken) params.pageToken = opts.pageToken;
@@ -131,11 +160,32 @@ export const gmailApi = {
     if (opts?.labelId) params.labelId = opts.labelId;
     return get<{ folder: GmailFolder; threads: GmailThreadListItem[]; nextPageToken?: string }>(
       '/api/gmail/threads',
-      params
+      params,
+      { signal: opts?.signal }
     );
   },
-  getThread: (id: string) =>
-    get<{ threadId: string; messages: GmailMessage[]; labelIds?: string[] }>(`/api/gmail/threads/${id}`),
+  getThread: (id: string, opts?: { prefetch?: boolean; signal?: AbortSignal }) => {
+    const params: Record<string, string> = {};
+    if (opts?.prefetch) params.prefetch = '1';
+    const qs = Object.keys(params).length
+      ? `?${new URLSearchParams(params).toString()}`
+      : '';
+    return get<{ threadId: string; messages: GmailMessage[]; labelIds?: string[] }>(
+      `/api/gmail/threads/${id}${qs}`,
+      undefined,
+      { signal: opts?.signal }
+    );
+  },
+  /** Bootstrap or poll Gmail history for live refresh. */
+  getHistory: (since?: string, opts?: { signal?: AbortSignal }) => {
+    const params: Record<string, string> = {};
+    if (since) params.since = since;
+    return get<{
+      historyId?: string;
+      hasChanges?: boolean;
+      expired?: boolean;
+    }>('/api/gmail/history', Object.keys(params).length ? params : undefined, { signal: opts?.signal });
+  },
   listLabels: () => get<{ labels: GmailLabel[] }>('/api/gmail/labels'),
   createLabel: (name: string) =>
     post<{ label: GmailLabel }>('/api/gmail/labels', { name }),
@@ -183,6 +233,8 @@ export const gmailApi = {
     preserveAttachments?: boolean;
     mergeExistingAttachments?: boolean;
     attachments?: Array<{ filename: string; mimeType: string; base64Data: string }>;
+    /** IDs from /api/gmail/drafts/attachment-chunk for 3–25 MB staged files. */
+    stagedUploadIds?: string[];
   }) => post<{ draftId: string; messageId?: string; threadId?: string }>('/api/gmail/drafts', data),
   getDraft: (draftId: string) =>
     get<{
@@ -413,7 +465,13 @@ export type DriveListView = 'folder' | 'starred' | 'recent' | 'shared';
 export const driveApi = {
   listFiles: (
     parentId?: string,
-    opts?: { pageToken?: string; search?: string; pageSize?: number; view?: DriveListView }
+    opts?: {
+      pageToken?: string;
+      search?: string;
+      pageSize?: number;
+      view?: DriveListView;
+      signal?: AbortSignal;
+    }
   ) => {
     const params: Record<string, string> = {};
     if (opts?.view && opts.view !== 'folder') {
@@ -424,7 +482,9 @@ export const driveApi = {
     if (opts?.pageToken) params.pageToken = opts.pageToken;
     if (opts?.search) params.search = opts.search;
     if (opts?.pageSize) params.pageSize = String(opts.pageSize);
-    return get<{ files: any[]; nextPageToken?: string }>('/api/drive/files', params);
+    return get<{ files: any[]; nextPageToken?: string }>('/api/drive/files', params, {
+      signal: opts?.signal,
+    });
   },
   uploadFile: async (formData: FormData) => {
     const { data } = await supabase.auth.getSession();

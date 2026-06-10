@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert, ScrollView, KeyboardAvoidingView, Platform,
+  ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useMailView } from '../_layout';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppInsets } from '../../../lib/safe-area';
@@ -12,9 +13,22 @@ import ComposeRichEditor, { type ComposeEditorHandle } from '../../../components
 import { gmailApi } from '../../../lib/api';
 import { cacheDeleteInboxFolder } from '../../../lib/cache';
 import { markPendingDelete } from '../../../lib/pending-deletes';
-import { sendMailDirectly, readFileAsBase64, fetchAttachmentBase64Directly } from '../../../lib/gmail-send-direct';
-import { draftHtmlForEditor, saveComposeDraft } from '../../../lib/gmail-draft-compose';
+import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
+import { uploadStagedAttachment } from '../../../lib/gmail-staged-attachment';
+import { queueComposeMailSend } from '../../../lib/mail-outbox';
+import {
+  createComposeDraftSaver,
+  type ComposeDraftSnapshot,
+  type DraftSaveResult,
+  type DraftSaveStatus,
+} from '../../../lib/compose-draft-save';
+import { draftAttachmentsToFiles, draftHtmlForEditor, extractDriveLinksFromHtml, stripDriveLinksFromHtml } from '../../../lib/gmail-draft-compose';
 import { htmlToPlain, sanitizeEmailHtml } from '../../../lib/html-email';
+import {
+  isValidEmailAddress,
+  normalizeRecipientField,
+  parseRecipients,
+} from '../../../lib/recipient-utils';
 import { Colors } from '../../../constants/colors';
 import { Gmail } from '../../../constants/gmailTheme';
 
@@ -36,15 +50,8 @@ function stripInvisible(s: string): string {
   return s.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '');
 }
 
-const GMAIL_LIMIT = 25 * 1024 * 1024; // 25 MB — hard Gmail cap
-
-function isValidEmail(v: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
-}
-
-function parseRecipients(raw: string): string[] {
-  return raw.split(/[,;\n]/).map((s) => s.trim()).filter(Boolean);
-}
+const GMAIL_LIMIT        = 25 * 1024 * 1024; // 25 MB — hard Gmail cap
+const INLINE_LIMIT       =  3 * 1024 * 1024; // 3 MB — max for inline base64 JSON
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '';
@@ -69,9 +76,13 @@ interface Contact {
   displayName?: string;
 }
 
-// 'preparing' = reading file as base64 in background after pick
+// 'preparing' = reading file as base64 in background after pick (≤3 MB)
+// 'ready'     = base64 read, ready to send inline
+// 'staged'    = 3–25 MB chunked upload complete; use stagedUploadId on save
+// 'uploading' = Drive upload in progress (>25 MB)
+// 'drive'     = Drive upload done; link embedded in body
 // 'saved'     = already stored in Gmail draft (loaded on re-open), no local data
-type AttachmentStatus = 'preparing' | 'ready' | 'uploading' | 'drive' | 'saved' | 'error';
+type AttachmentStatus = 'preparing' | 'ready' | 'staged' | 'uploading' | 'drive' | 'saved' | 'error';
 
 interface PickedFile {
   key: string;
@@ -80,10 +91,12 @@ interface PickedFile {
   size: number;
   uri: string;
   status: AttachmentStatus;
-  base64Data?: string; // pre-read on pick so send is instant
+  base64Data?: string; // pre-read on pick so send is instant (≤3 MB only)
   progress?: number;
   driveLink?: string;
   errorMsg?: string;
+  // For 3–25 MB staged uploads
+  stagedUploadId?: string;
   // For attachments already saved in a Gmail draft
   attachmentId?: string;
   savedMessageId?: string;
@@ -98,6 +111,7 @@ export default function ComposeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ draftId?: string }>();
   const insets = useAppInsets();
+  const { bumpDraftCount } = useMailView();
   const [to, setTo] = useState('');
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
@@ -105,12 +119,92 @@ export default function ComposeScreen() {
   const [bodyHtml, setBodyHtml] = useState('');
   const [editorKey, setEditorKey] = useState('new');
   const [showCcBcc, setShowCcBcc] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>('idle');
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [draftId, setDraftId] = useState<string | undefined>(params.draftId);
   const [attachments, setAttachments] = useState<PickedFile[]>([]);
   const editorRef = useRef<ComposeEditorHandle>(null);
+  const bodyHtmlRef = useRef('');
+  const loadingDraftRef = useRef(false);
+  // True once a draft has been persisted this session (for count bump guard).
+  const draftCreatedRef = useRef(!!params.draftId);
+  const composeStateRef = useRef({
+    to: '',
+    cc: '',
+    bcc: '',
+    subject: '',
+    bodyHtml: '',
+    draftId: params.draftId as string | undefined,
+    attachments: [] as PickedFile[],
+  });
+
+  const syncAttachmentsFromDraft = useCallback(async (savedDraftId: string) => {
+    try {
+      const refreshed = await gmailApi.getDraft(savedDraftId);
+      const driveFiles = composeStateRef.current.attachments.filter((f) => f.status === 'drive');
+      const savedFiles = draftAttachmentsToFiles(
+        (refreshed.attachments ?? []).map((a) => ({
+          ...a,
+          messageId: a.messageId ?? refreshed.messageId ?? '',
+        })),
+        refreshed.messageId,
+        nextKey
+      );
+      const merged = [...savedFiles, ...driveFiles];
+      setAttachments(merged);
+      composeStateRef.current.attachments = merged;
+    } catch {
+      /* non-fatal */
+    }
+  }, []);
+
+  const onDraftSavedRef = useRef<
+    (result: DraftSaveResult, snapshot: ComposeDraftSnapshot) => Promise<void>
+  >(async () => {});
+
+  const draftSaverRef = useRef(
+    createComposeDraftSaver(2000, (result, snapshot) => {
+      void onDraftSavedRef.current(result, snapshot);
+    })
+  );
+
+  onDraftSavedRef.current = async (result, snapshot) => {
+    setDraftId(result.draftId);
+    composeStateRef.current.draftId = result.draftId;
+
+    // First-ever save for this compose session → draft count +1.
+    if (!draftCreatedRef.current) {
+      draftCreatedRef.current = true;
+      bumpDraftCount(+1);
+    }
+
+    if (result.hadAttachmentPayload || snapshot.attachments.length > 0) {
+      await syncAttachmentsFromDraft(result.draftId);
+    }
+
+    draftSaverRef.current.markSaved({
+      ...snapshot,
+      draftId: result.draftId,
+      attachments: composeStateRef.current.attachments,
+      htmlBody: snapshot.htmlBody,
+    });
+  };
+
+  useEffect(() => {
+    return draftSaverRef.current.subscribe(setDraftSaveStatus);
+  }, []);
+
+  // Auto-reset save status: "Saved" → idle after 2.5s, "Save failed" → idle after 5s.
+  useEffect(() => {
+    if (draftSaveStatus === 'saved') {
+      const t = setTimeout(() => setDraftSaveStatus('idle'), 2500);
+      return () => clearTimeout(t);
+    }
+    if (draftSaveStatus === 'error') {
+      const t = setTimeout(() => setDraftSaveStatus('idle'), 5000);
+      return () => clearTimeout(t);
+    }
+  }, [draftSaveStatus]);
 
   const [allContacts, setAllContacts] = useState<Contact[]>([]);
   const [suggestions, setSuggestions] = useState<Contact[]>([]);
@@ -123,24 +217,45 @@ export default function ComposeScreen() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    composeStateRef.current = {
+      to,
+      cc,
+      bcc,
+      subject,
+      bodyHtml,
+      draftId,
+      attachments,
+    };
+  }, [to, cc, bcc, subject, bodyHtml, draftId, attachments]);
+
+  useEffect(() => {
+    if (draftId) draftSaverRef.current.setKnownDraftId(draftId);
+  }, [draftId]);
+
+  useEffect(() => {
+    loadingDraftRef.current = loadingDraft;
+  }, [loadingDraft]);
+
   // If opened from Drafts folder, fetch and pre-fill draft content
   useEffect(() => {
     if (!params.draftId) return;
     setLoadingDraft(true);
+    loadingDraftRef.current = true;
     gmailApi.getDraft(params.draftId)
       .then((d) => {
-        if (d.to) setTo(d.to);
-        if (d.cc) { setCc(d.cc); setShowCcBcc(true); }
-        if (d.bcc) { setBcc(d.bcc); setShowCcBcc(true); }
-        if (d.subject) setSubject(d.subject);
-        const loadedHtml = draftHtmlForEditor(d.textBody ?? '', d.htmlBody);
-        if (loadedHtml) {
-          setBodyHtml(loadedHtml);
-          setEditorKey(d.draftId ?? `draft-${Date.now()}`);
-        }
-        setDraftId(d.draftId);
-        if (d.attachments && d.attachments.length > 0) {
-          setAttachments(d.attachments.map((a) => ({
+        const loadedTo = d.to ? normalizeRecipientField(d.to) : '';
+        const loadedCc = d.cc ? normalizeRecipientField(d.cc) : '';
+        const loadedBcc = d.bcc ? normalizeRecipientField(d.bcc) : '';
+        const loadedSubject = d.subject ?? '';
+        // Strip the drive-links footer before loading into the editor so we
+        // don't duplicate it when saving again (chips will re-add it on save).
+        const rawHtml = d.htmlBody ? stripDriveLinksFromHtml(d.htmlBody) : undefined;
+        const loadedHtml = draftHtmlForEditor(d.textBody ?? '', rawHtml);
+
+        // Restore MIME attachments (saved on the Gmail draft).
+        const savedAttachments: PickedFile[] =
+          d.attachments?.map((a) => ({
             key: nextKey(),
             name: a.filename,
             mimeType: a.mimeType,
@@ -149,11 +264,53 @@ export default function ComposeScreen() {
             status: 'saved' as AttachmentStatus,
             attachmentId: a.attachmentId,
             savedMessageId: a.messageId ?? d.messageId,
-          })));
+          })) ?? [];
+
+        // Restore Drive file chips that were embedded as links in the HTML body.
+        const driveAttachments: PickedFile[] = extractDriveLinksFromHtml(d.htmlBody ?? '').map((f) => ({
+          ...f,
+          key: nextKey(),
+          status: 'drive' as AttachmentStatus,
+        }));
+
+        const loadedAttachments = [...savedAttachments, ...driveAttachments];
+
+        if (loadedTo) setTo(loadedTo);
+        if (loadedCc) { setCc(loadedCc); setShowCcBcc(true); }
+        if (loadedBcc) { setBcc(loadedBcc); setShowCcBcc(true); }
+        if (loadedSubject) setSubject(loadedSubject);
+        bodyHtmlRef.current = loadedHtml;
+        if (loadedHtml) {
+          setBodyHtml(loadedHtml);
+          setEditorKey(d.draftId ?? `draft-${Date.now()}`);
         }
+        setDraftId(d.draftId);
+        setAttachments(loadedAttachments);
+        draftSaverRef.current.setKnownDraftId(d.draftId);
+        composeStateRef.current = {
+          to: loadedTo,
+          cc: loadedCc,
+          bcc: loadedBcc,
+          subject: loadedSubject,
+          bodyHtml: loadedHtml,
+          draftId: d.draftId,
+          attachments: loadedAttachments,
+        };
+        draftSaverRef.current.markSaved({
+          to: loadedTo,
+          cc: loadedCc,
+          bcc: loadedBcc,
+          subject: loadedSubject,
+          htmlBody: loadedHtml,
+          draftId: d.draftId,
+          attachments: loadedAttachments,
+        });
       })
       .catch((e) => Alert.alert('Could not load draft', e?.message ?? 'Something went wrong.'))
-      .finally(() => setLoadingDraft(false));
+      .finally(() => {
+        setLoadingDraft(false);
+        loadingDraftRef.current = false;
+      });
   }, [params.draftId]);
 
   function computeSuggestions(raw: string, field: SuggestField) {
@@ -178,14 +335,21 @@ export default function ComposeScreen() {
   }
 
   function pickSuggestion(contact: Contact, field: SuggestField) {
-    const label = contact.displayName
-      ? `${contact.displayName} <${contact.email}>`
-      : contact.email;
-    if (field === 'to') setTo((v) => replaceLastToken(v, label));
-    else if (field === 'cc') setCc((v) => replaceLastToken(v, label));
-    else if (field === 'bcc') setBcc((v) => replaceLastToken(v, label));
+    const chosen = contact.email.trim();
+    if (field === 'to') setTo((v) => replaceLastToken(v, chosen));
+    else if (field === 'cc') setCc((v) => replaceLastToken(v, chosen));
+    else if (field === 'bcc') setBcc((v) => replaceLastToken(v, chosen));
     setSuggestions([]);
     setSuggestField(null);
+  }
+
+  function blurRecipientField(field: SuggestField, raw: string, setter: (v: string) => void) {
+    setTimeout(() => {
+      setSuggestions([]);
+      setSuggestField(null);
+      const normalized = normalizeRecipientField(raw);
+      if (normalized !== raw.trim()) setter(normalized);
+    }, 150);
   }
 
   async function uploadToDrive(file: PickedFile) {
@@ -269,6 +433,26 @@ export default function ComposeScreen() {
     }
   }
 
+  async function uploadStaged(file: PickedFile) {
+    const key = file.key;
+    const setStatus = (patch: Partial<PickedFile>) =>
+      setAttachments((prev) => prev.map((f) => f.key === key ? { ...f, ...patch } : f));
+
+    try {
+      setStatus({ status: 'uploading', progress: 0 });
+      const uploadId = await uploadStagedAttachment(
+        { uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size },
+        ({ bytesUploaded, totalBytes }) => {
+          setStatus({ progress: Math.round((bytesUploaded / totalBytes) * 100) });
+        }
+      );
+      setStatus({ status: 'staged', progress: 100, stagedUploadId: uploadId });
+    } catch (e: any) {
+      setStatus({ status: 'error', errorMsg: e?.message ?? 'Upload failed' });
+      Alert.alert('Upload failed', e?.message ?? 'Could not upload attachment.');
+    }
+  }
+
   async function pickAttachment() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -289,6 +473,7 @@ export default function ComposeScreen() {
         };
 
         if (size > GMAIL_LIMIT) {
+          // Tier 3: >25 MB → Drive link in body
           const captured = file;
           Alert.alert(
             'File too large to attach',
@@ -304,8 +489,13 @@ export default function ComposeScreen() {
               },
             ]
           );
+        } else if (size > INLINE_LIMIT) {
+          // Tier 2: 3–25 MB → chunked staging via /api/gmail/drafts/attachment-chunk
+          const captured = { ...file, status: 'uploading' as AttachmentStatus, progress: 0 };
+          setAttachments((prev) => [...prev, captured]);
+          void uploadStaged(captured);
         } else {
-          // Add immediately as 'preparing', read base64 in background so send is instant
+          // Tier 1: ≤3 MB → base64 in memory, inline in draft JSON
           const key = file.key;
           setAttachments((prev) => [...prev, { ...file, status: 'preparing' }]);
           readFileAsBase64(file.uri)
@@ -338,7 +528,13 @@ export default function ComposeScreen() {
     }
     const uploading = attachments.find((f) => f.status === 'uploading');
     if (uploading) {
-      Alert.alert('Please wait', 'A file is still uploading to Google Drive.');
+      const isStaged = (uploading.size ?? 0) > INLINE_LIMIT && uploading.size <= GMAIL_LIMIT;
+      Alert.alert(
+        'Please wait',
+        isStaged
+          ? `"${uploading.name}" is still uploading (${uploading.progress ?? 0}%).`
+          : 'A file is still uploading to Google Drive.'
+      );
       return;
     }
     const failed = attachments.find((f) => f.status === 'error');
@@ -352,26 +548,25 @@ export default function ComposeScreen() {
       Alert.alert('Missing recipient', 'Enter at least one email address in "To".');
       return;
     }
-    const invalid = toList.find((e) => !isValidEmail(e));
+    const invalid = toList.find((e) => !isValidEmailAddress(e));
     if (invalid) {
       Alert.alert('Invalid email', `"${invalid}" is not a valid email address.`);
       return;
     }
     const ccList = parseRecipients(cc);
-    const ccInvalid = ccList.find((e) => !isValidEmail(e));
+    const ccInvalid = ccList.find((e) => !isValidEmailAddress(e));
     if (ccInvalid) {
       Alert.alert('Invalid email', `Cc "${ccInvalid}" is not valid.`);
       return;
     }
     const bccList = parseRecipients(bcc);
-    const bccInvalid = bccList.find((e) => !isValidEmail(e));
+    const bccInvalid = bccList.find((e) => !isValidEmailAddress(e));
     if (bccInvalid) {
       Alert.alert('Invalid email', `Bcc "${bccInvalid}" is not valid.`);
       return;
     }
 
-    const currentBodyHtml = await resolveBodyHtml();
-    const sanitized = sanitizeEmailHtml(currentBodyHtml);
+    const sanitized = await captureBodyHtmlFast();
     let htmlInner = sanitized;
     let plainForSend = htmlToPlain(sanitized);
 
@@ -394,135 +589,245 @@ export default function ComposeScreen() {
       return;
     }
 
-    setSending(true);
-    try {
-      const { accessToken } = await gmailApi.getGoogleToken();
-      const inlineAttachments = attachments.filter((f) => f.status === 'ready' || f.status === 'saved');
-      const resolvedAttachments = await Promise.all(
-        inlineAttachments.map(async (f) => {
-          if (f.status === 'saved' && f.attachmentId && f.savedMessageId) {
-            const base64Data = await fetchAttachmentBase64Directly(
-              accessToken,
-              f.savedMessageId,
-              f.attachmentId
-            );
-            return { filename: f.name, mimeType: f.mimeType, uri: '', base64Data };
-          }
-          return { filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data };
-        })
-      );
+    const inlineAttachments = attachments.filter((f) => f.status === 'ready' || f.status === 'saved');
+    const outboxDraftId = draftId ?? draftSaverRef.current.getKnownDraftId();
 
-      await sendMailDirectly({
-        accessToken,
-        to: toList.join(', '),
-        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-        bcc: bccList.length > 0 ? bccList.join(', ') : undefined,
-        subject: subject.trim(),
-        textBody: plainForSend,
-        htmlBody: htmlForSend,
-        attachments: resolvedAttachments,
-      });
-
-      // Bust list caches so the inbox refetches on focus — the just-sent
-      // email should appear in Sent (and the source draft, if any, in Drafts).
-      cacheDeleteInboxFolder('sent');
-      cacheDeleteInboxFolder('drafts');
-      Alert.alert('Sent', 'Your email was sent.', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
-    } catch (e: any) {
-      console.error('[compose] send failed:', e?.message);
-      Alert.alert('Failed to send', e?.message ?? 'Something went wrong.');
-    } finally {
-      setSending(false);
-    }
+    draftSaverRef.current.cancelPending();
+    queueComposeMailSend({
+      to: toList.join(', '),
+      cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+      bcc: bccList.length > 0 ? bccList.join(', ') : undefined,
+      subject: subject.trim(),
+      textBody: plainForSend,
+      htmlBody: htmlForSend,
+      draftId: outboxDraftId,
+      attachments: inlineAttachments.map((f) => ({
+        filename: f.name,
+        mimeType: f.mimeType,
+        uri: f.uri,
+        base64Data: f.base64Data,
+        attachmentId: f.attachmentId,
+        savedMessageId: f.savedMessageId,
+        status: f.status,
+      })),
+    });
+    router.back();
   }
 
-  async function saveDraft() {
-    // Block if any attachment is still being read into base64 — saving now
-    // would silently drop it. (Mirrors Gmail web: the Save button is disabled
-    // while attachments are still being processed.)
-    const preparing = attachments.find((f) => f.status === 'preparing');
-    if (preparing) {
-      Alert.alert('Please wait', `"${preparing.name}" is still being prepared.`);
-      return false;
+  const queueDraftSaveWithHtml = useCallback((html: string) => {
+    const s = composeStateRef.current;
+    const hasContent = Boolean(
+      s.to.trim() ||
+        s.cc.trim() ||
+        s.bcc.trim() ||
+        s.subject.trim() ||
+        !isBodyEmpty(html) ||
+        s.attachments.length > 0 ||
+        s.draftId
+    );
+    if (loadingDraftRef.current || !hasContent) return;
+    // Block auto-save while any attachment is still reading (preparing) or uploading (staged Tier 2).
+    if (s.attachments.some((f) => f.status === 'preparing' || f.status === 'uploading')) return;
+
+    const sanitized = sanitizeEmailHtml(html);
+    draftSaverRef.current.queueSave(() =>
+      Promise.resolve({
+        to: s.to,
+        cc: s.cc,
+        bcc: s.bcc,
+        subject: s.subject,
+        htmlBody: sanitized,
+        draftId: s.draftId ?? draftSaverRef.current.getKnownDraftId(),
+        attachments: s.attachments,
+      })
+    );
+  }, []);
+
+  const onBodyChange = useCallback(
+    (html: string) => {
+      bodyHtmlRef.current = html;
+      composeStateRef.current.bodyHtml = html;
+      setBodyHtml(html);
+      queueDraftSaveWithHtml(html);
+    },
+    [queueDraftSaveWithHtml]
+  );
+
+  /** WebView is source of truth — React state can lag behind the editor. */
+  const captureBodyHtmlFast = useCallback(async (): Promise<string> => {
+    const live = await Promise.race([
+      editorRef.current?.getHtml().catch(() => '') ?? Promise.resolve(''),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 250)),
+    ]);
+    const trimmed = (live ?? '').trim();
+    if (trimmed && !isBodyEmpty(trimmed)) return sanitizeEmailHtml(live);
+    return sanitizeEmailHtml(bodyHtmlRef.current || bodyHtml);
+  }, [bodyHtml]);
+
+  const resolveBodyHtml = useCallback(async (): Promise<string> => {
+    const refHtml = bodyHtmlRef.current.trim();
+    const live = (await editorRef.current?.getHtml().catch(() => '')) ?? '';
+    const liveTrimmed = live.trim();
+
+    let html = bodyHtmlRef.current || bodyHtml;
+    if (liveTrimmed && !isBodyEmpty(live)) {
+      html = live;
+    } else if (refHtml && !isBodyEmpty(refHtml)) {
+      html = bodyHtmlRef.current;
+    } else if (bodyHtml.trim() && !isBodyEmpty(bodyHtml)) {
+      html = bodyHtml;
+    } else if (liveTrimmed) {
+      html = live;
     }
 
-    const currentBodyHtml = await resolveBodyHtml();
-    const htmlBody = sanitizeEmailHtml(currentBodyHtml);
+    bodyHtmlRef.current = html;
+    composeStateRef.current.bodyHtml = html;
+    if (html !== bodyHtml) setBodyHtml(html);
+    return html;
+  }, [bodyHtml]);
 
-    setSavingDraft(true);
-    try {
-      const res = await saveComposeDraft({
-        to,
-        cc,
-        bcc,
-        subject,
-        htmlBody,
-        draftId,
-        attachments,
-      });
-      setDraftId(res.draftId);
+  const buildDraftSnapshot = useCallback((htmlBody: string): ComposeDraftSnapshot => {
+    const s = composeStateRef.current;
+    return {
+      to: s.to,
+      cc: s.cc,
+      bcc: s.bcc,
+      subject: s.subject,
+      htmlBody,
+      draftId: s.draftId ?? draftSaverRef.current.getKnownDraftId(),
+      attachments: s.attachments,
+    };
+  }, []);
 
-      // Gmail rotates messageId/attachmentId on each save — rehydrate like web app.
-      if (res.draftId) {
-        try {
-          const refreshed = await gmailApi.getDraft(res.draftId);
-          const loadedHtml = draftHtmlForEditor(refreshed.textBody ?? '', refreshed.htmlBody);
-          if (loadedHtml) setBodyHtml(loadedHtml);
-          if (refreshed.attachments?.length) {
-            setAttachments(refreshed.attachments.map((a) => ({
-              key: nextKey(),
-              name: a.filename,
-              mimeType: a.mimeType,
-              size: a.size,
-              uri: '',
-              status: 'saved' as AttachmentStatus,
-              attachmentId: a.attachmentId,
-              savedMessageId: a.messageId ?? refreshed.messageId,
-            })));
-          }
-        } catch {
-          /* non-fatal — draft was saved */
-        }
+  const prepareDraftSnapshot = useCallback(async (): Promise<ComposeDraftSnapshot> => {
+    const refHtml = bodyHtmlRef.current.trim();
+    let html = refHtml;
+    if (!refHtml || isBodyEmpty(refHtml)) {
+      html = await resolveBodyHtml();
+    } else {
+      const live = await Promise.race([
+        editorRef.current?.getHtml().catch(() => '') ?? Promise.resolve(''),
+        new Promise<string>((resolve) => setTimeout(() => resolve(''), 400)),
+      ]);
+      if (live.trim() && !isBodyEmpty(live)) html = live;
+    }
+    const sanitized = sanitizeEmailHtml(html);
+    bodyHtmlRef.current = sanitized;
+    composeStateRef.current.bodyHtml = sanitized;
+    return buildDraftSnapshot(sanitized);
+  }, [buildDraftSnapshot, resolveBodyHtml]);
+
+  const hasDraftableContent = useMemo(
+    () =>
+      Boolean(
+        to.trim() ||
+          cc.trim() ||
+          bcc.trim() ||
+          subject.trim() ||
+          !isBodyEmpty(bodyHtml) ||
+          attachments.length > 0 ||
+          draftId
+      ),
+    [to, cc, bcc, subject, bodyHtml, attachments.length, draftId]
+  );
+
+  useEffect(() => {
+    if (loadingDraft || !hasDraftableContent) return;
+    if (attachments.some((f) => f.status === 'preparing' || f.status === 'uploading')) return;
+    draftSaverRef.current.queueSave(prepareDraftSnapshot);
+  }, [
+    loadingDraft,
+    hasDraftableContent,
+    prepareDraftSnapshot,
+    to,
+    cc,
+    bcc,
+    subject,
+    bodyHtml,
+    attachments,
+    draftId,
+  ]);
+
+  async function saveDraft(opts?: { silent?: boolean }): Promise<boolean> {
+    const blocking = attachments.find((f) => f.status === 'preparing' || f.status === 'uploading');
+    if (blocking) {
+      if (!opts?.silent) {
+        Alert.alert('Please wait', `"${blocking.name}" is still ${blocking.status === 'preparing' ? 'being prepared' : 'uploading'}.`);
       }
-
-      cacheDeleteInboxFolder('drafts');
-      return true;
-    } catch (e: any) {
-      Alert.alert('Could not save draft', e?.message ?? 'Something went wrong.');
       return false;
-    } finally {
-      setSavingDraft(false);
     }
+
+    const result = await draftSaverRef.current.flushSave(prepareDraftSnapshot);
+    if (result?.draftId) setDraftId(result.draftId);
+    if (draftSaverRef.current.getStatus() === 'error') {
+      if (!opts?.silent) {
+        Alert.alert('Could not save draft', 'Something went wrong. Check your connection and try again.');
+      }
+      return false;
+    }
+    return true;
   }
 
   async function handleSaveDraftAndClose() {
-    const ok = await saveDraft();
-    if (ok) router.back();
+    const blocking = attachments.find((f) => f.status === 'preparing' || f.status === 'uploading');
+    if (blocking) {
+      Alert.alert('Please wait', `"${blocking.name}" is still ${blocking.status === 'preparing' ? 'being prepared' : 'uploading'}.`);
+      return;
+    }
+
+    // Give the WebView up to 800ms to post its latest HTML. On blur (which happens
+    // when the user taps back), the editor calls postHtml() automatically, so this
+    // usually resolves within a few ms. The fallback is bodyHtmlRef.current which
+    // is kept current on every input event.
+    const liveHtml = await Promise.race([
+      editorRef.current?.getHtml().catch(() => '') ?? Promise.resolve(''),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 800)),
+    ]);
+    const bestHtml =
+      liveHtml.trim() && !isBodyEmpty(liveHtml)
+        ? liveHtml
+        : bodyHtmlRef.current;
+    const sanitized = sanitizeEmailHtml(bestHtml);
+    bodyHtmlRef.current = sanitized;
+    composeStateRef.current.bodyHtml = sanitized;
+
+    // Await the flush so the save completes before navigating away.
+    // If it takes longer than 3s (network issue) navigate anyway — the pending
+    // save will still finish in the background since draftSaverRef is a module ref.
+    await Promise.race([
+      draftSaverRef.current.flushSave(() =>
+        Promise.resolve(buildDraftSnapshot(sanitized))
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    router.back();
   }
 
   async function discardAndClose() {
-    if (draftId) {
+    draftSaverRef.current.cancelPending();
+    const idToDelete = draftId ?? draftSaverRef.current.getKnownDraftId();
+    if (idToDelete) {
       // Mark as pending-delete BEFORE awaiting Gmail — the inbox screen
       // already filters by this set, so the row vanishes immediately on
       // back-navigation even while Gmail catches up.
-      markPendingDelete(draftId);
-      try { await gmailApi.deleteDraft(draftId); } catch { /* non-fatal */ }
+      markPendingDelete(idToDelete);
+      // Instantly decrement the draft badge.
+      bumpDraftCount(-1);
+      try { await gmailApi.deleteDraft(idToDelete); } catch { /* non-fatal */ }
       // Bust the drafts cache so the inbox refetches on focus
       cacheDeleteInboxFolder('drafts');
     }
     router.back();
   }
 
-  async function handleDiscard() {
-    const currentBodyHtml = await resolveBodyHtml();
+  function handleDiscard() {
+    // Use the ref mirror — no WebView round-trip — so the dialog is instant.
     const hasContent =
       to.trim() ||
       subject.trim() ||
       cc.trim() ||
       bcc.trim() ||
-      !isBodyEmpty(currentBodyHtml) ||
+      !isBodyEmpty(bodyHtmlRef.current) ||
       attachments.length > 0;
     if (!hasContent && !draftId) { router.back(); return; }
     Alert.alert(
@@ -537,42 +842,41 @@ export default function ComposeScreen() {
   }
 
   const hasUploading = attachments.some((f) => f.status === 'uploading' || f.status === 'preparing');
-  const onBodyChange = useCallback((html: string) => setBodyHtml(html), []);
-
-  /** WebView is source of truth — React state can lag behind the editor. */
-  const resolveBodyHtml = useCallback(async (): Promise<string> => {
-    const live = await editorRef.current?.getHtml().catch(() => '');
-    const html = (live && live.trim()) ? live : bodyHtml;
-    if (html !== bodyHtml) setBodyHtml(html);
-    return html;
-  }, [bodyHtml]);
 
   const composeTitle = draftId && !loadingDraft ? 'Draft' : 'Compose';
+  const draftStatusLabel =
+    draftSaveStatus === 'saving'
+      ? 'Saving…'
+      : draftSaveStatus === 'saved'
+        ? 'Saved'
+        : draftSaveStatus === 'error'
+          ? 'Save failed'
+          : '';
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: Gmail.bg }} edges={['top', 'left', 'right']}>
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
       <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity
             onPress={handleDiscard}
-            disabled={savingDraft || sending || loadingDraft}
+            disabled={loadingDraft}
             style={styles.headerIconBtn}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons
               name="arrow-back"
               size={24}
-              color={savingDraft || sending || loadingDraft ? Gmail.textMuted : Gmail.text}
+              color={loadingDraft ? Gmail.textMuted : Gmail.text}
             />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{composeTitle}</Text>
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.headerTitle}>{composeTitle}</Text>
+            {draftStatusLabel ? (
+              <Text style={styles.headerDraftStatus}>{draftStatusLabel}</Text>
+            ) : null}
+          </View>
           <TouchableOpacity
             onPress={pickAttachment}
-            disabled={savingDraft || sending}
             style={styles.headerIconBtn}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
@@ -585,14 +889,11 @@ export default function ComposeScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             onPress={handleSend}
-            disabled={sending || hasUploading}
-            style={[styles.sendBtn, (sending || hasUploading) && styles.sendBtnDisabled]}
+            disabled={hasUploading}
+            style={[styles.sendBtn, hasUploading && styles.sendBtnDisabled]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            {sending
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <Ionicons name="send" size={20} color="#fff" />
-            }
+            <Ionicons name="send" size={20} color="#fff" />
           </TouchableOpacity>
         </View>
 
@@ -603,102 +904,94 @@ export default function ComposeScreen() {
           </View>
         )}
 
-        <ScrollView
-          style={styles.recipientsScroll}
-          keyboardShouldPersistTaps="handled"
-          nestedScrollEnabled
-        >
-          <View style={styles.fieldRow}>
-            <Text style={styles.fieldLabel}>To</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={to}
-              onChangeText={(v) => onChangeField(v, 'to', setTo)}
-              onFocus={() => computeSuggestions(to, 'to')}
-              onBlur={() => setTimeout(() => { setSuggestions([]); setSuggestField(null); }, 150)}
-              placeholder="Recipients"
-              placeholderTextColor={Gmail.textMuted}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <TouchableOpacity onPress={() => setShowCcBcc((v) => !v)}>
-              <Text style={styles.ccBccToggle}>{showCcBcc ? 'Hide' : 'Cc/Bcc'}</Text>
-            </TouchableOpacity>
-          </View>
-
-          {suggestField === 'to' && suggestions.length > 0 && (
-            <SuggestionList suggestions={suggestions} onPick={(c) => pickSuggestion(c, 'to')} />
-          )}
-
-          {showCcBcc && (
-            <>
-              <View style={styles.fieldRow}>
-                <Text style={styles.fieldLabel}>Cc</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={cc}
-                  onChangeText={(v) => onChangeField(v, 'cc', setCc)}
-                  onFocus={() => computeSuggestions(cc, 'cc')}
-                  onBlur={() => setTimeout(() => { setSuggestions([]); setSuggestField(null); }, 150)}
-                  placeholder="Cc"
-                  placeholderTextColor={Gmail.textMuted}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-              {suggestField === 'cc' && suggestions.length > 0 && (
-                <SuggestionList suggestions={suggestions} onPick={(c) => pickSuggestion(c, 'cc')} />
-              )}
-
-              <View style={styles.fieldRow}>
-                <Text style={styles.fieldLabel}>Bcc</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={bcc}
-                  onChangeText={(v) => onChangeField(v, 'bcc', setBcc)}
-                  onFocus={() => computeSuggestions(bcc, 'bcc')}
-                  onBlur={() => setTimeout(() => { setSuggestions([]); setSuggestField(null); }, 150)}
-                  placeholder="Bcc"
-                  placeholderTextColor={Gmail.textMuted}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-              {suggestField === 'bcc' && suggestions.length > 0 && (
-                <SuggestionList suggestions={suggestions} onPick={(c) => pickSuggestion(c, 'bcc')} />
-              )}
-            </>
-          )}
-
-          <View style={styles.fieldRow}>
-            <Text style={styles.fieldLabel}>Subject</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={subject}
-              onChangeText={setSubject}
-              placeholder="Subject"
-              placeholderTextColor={Gmail.textMuted}
-            />
-          </View>
-
-          {attachments.length > 0 && (
-            <View style={styles.attachmentList}>
-              {attachments.map((f) => (
-                <AttachmentChip key={f.key} file={f} onRemove={() => removeAttachment(f.key)} />
-              ))}
+        <View style={styles.recipientsBlock}>
+          <ScrollView
+            style={styles.recipientsScroll}
+            keyboardShouldPersistTaps="always"
+            nestedScrollEnabled
+          >
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>To</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={to}
+                onChangeText={(v) => onChangeField(v, 'to', setTo)}
+                onFocus={() => computeSuggestions(to, 'to')}
+                onBlur={() => blurRecipientField('to', to, setTo)}
+                placeholder="Recipients"
+                placeholderTextColor={Gmail.textMuted}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity onPress={() => setShowCcBcc((v) => !v)}>
+                <Text style={styles.ccBccToggle}>{showCcBcc ? 'Hide' : 'Cc/Bcc'}</Text>
+              </TouchableOpacity>
             </View>
-          )}
-        </ScrollView>
 
-        {savingDraft && (
-          <View style={styles.savingRow}>
-            <ActivityIndicator size="small" color={Gmail.blue} />
-            <Text style={styles.savingText}>Saving draft…</Text>
-          </View>
-        )}
+            {showCcBcc && (
+              <>
+                <View style={styles.fieldRow}>
+                  <Text style={styles.fieldLabel}>Cc</Text>
+                  <TextInput
+                    style={styles.fieldInput}
+                    value={cc}
+                    onChangeText={(v) => onChangeField(v, 'cc', setCc)}
+                    onFocus={() => computeSuggestions(cc, 'cc')}
+                    onBlur={() => blurRecipientField('cc', cc, setCc)}
+                    placeholder="Cc"
+                    placeholderTextColor={Gmail.textMuted}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+
+                <View style={styles.fieldRow}>
+                  <Text style={styles.fieldLabel}>Bcc</Text>
+                  <TextInput
+                    style={styles.fieldInput}
+                    value={bcc}
+                    onChangeText={(v) => onChangeField(v, 'bcc', setBcc)}
+                    onFocus={() => computeSuggestions(bcc, 'bcc')}
+                    onBlur={() => blurRecipientField('bcc', bcc, setBcc)}
+                    placeholder="Bcc"
+                    placeholderTextColor={Gmail.textMuted}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </>
+            )}
+
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>Subject</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={subject}
+                onChangeText={setSubject}
+                placeholder="Subject"
+                placeholderTextColor={Gmail.textMuted}
+              />
+            </View>
+
+            {attachments.length > 0 && (
+              <View style={styles.attachmentList}>
+                {attachments.map((f) => (
+                  <AttachmentChip key={f.key} file={f} onRemove={() => removeAttachment(f.key)} />
+                ))}
+              </View>
+            )}
+          </ScrollView>
+
+          {suggestField && suggestions.length > 0 && (
+            <SuggestionList
+              suggestions={suggestions}
+              onPick={(c) => pickSuggestion(c, suggestField)}
+            />
+          )}
+        </View>
 
         <ComposeRichEditor
           ref={editorRef}
@@ -708,7 +1001,6 @@ export default function ComposeScreen() {
           bottomInset={insets.bottom}
         />
       </View>
-    </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -781,7 +1073,11 @@ function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => 
 
 function SuggestionList({ suggestions, onPick }: { suggestions: Contact[]; onPick: (c: Contact) => void }) {
   return (
-    <View style={styles.suggestionBox}>
+    <ScrollView
+      style={styles.suggestionBox}
+      keyboardShouldPersistTaps="always"
+      nestedScrollEnabled
+    >
       {suggestions.map((c) => (
         <TouchableOpacity
           key={c.email}
@@ -806,7 +1102,7 @@ function SuggestionList({ suggestions, onPick }: { suggestions: Contact[]; onPic
           </View>
         </TouchableOpacity>
       ))}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -828,12 +1124,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: {
+  headerTitleWrap: {
     flex: 1,
+    marginLeft: 4,
+    justifyContent: 'center',
+  },
+  headerTitle: {
     fontSize: 18,
     fontWeight: '500',
     color: Gmail.text,
-    marginLeft: 4,
+  },
+  headerDraftStatus: {
+    fontSize: 11,
+    color: Gmail.textSecondary,
+    marginTop: 1,
   },
   headerAttachBadge: {
     position: 'absolute',
@@ -866,15 +1170,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     backgroundColor: Gmail.blueLight,
   },
-  savingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 6,
-    paddingBottom: 8,
+  recipientsBlock: {
+    flexGrow: 0,
+    flexShrink: 0,
+    zIndex: 40,
+    elevation: 16,
+    backgroundColor: Gmail.bg,
   },
-  savingText: { fontSize: 12, color: Gmail.textSecondary },
   recipientsScroll: { flexGrow: 0, maxHeight: 220 },
   fieldRow: {
     flexDirection: 'row',
@@ -905,8 +1207,15 @@ const styles = StyleSheet.create({
   suggestionBox: {
     backgroundColor: Gmail.bg,
     borderBottomWidth: 1,
-    borderBottomColor: Gmail.border,
-    elevation: 4,
+    borderTopWidth: 1,
+    borderColor: Gmail.border,
+    maxHeight: 220,
+    zIndex: 50,
+    elevation: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
   },
   suggestionRow: {
     flexDirection: 'row',

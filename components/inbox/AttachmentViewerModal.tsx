@@ -6,8 +6,9 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
+  StatusBar,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import WebView from 'react-native-webview';
 import { Colors } from '../../constants/colors';
@@ -48,6 +49,7 @@ export function AttachmentViewerModal({
   onDownload,
   onRetry,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const visible = state !== null;
   const filename = state?.filename ?? '';
   const canDownload = state?.phase === 'ready';
@@ -55,8 +57,9 @@ export function AttachmentViewerModal({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
-        <View style={styles.header}>
+      <StatusBar barStyle="light-content" />
+      <View style={[styles.root, { paddingBottom: insets.bottom }]}>
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Ionicons name="close" size={26} color="#fff" />
           </TouchableOpacity>
@@ -81,6 +84,7 @@ export function AttachmentViewerModal({
           </TouchableOpacity>
         </View>
 
+        <View style={styles.body}>
         {state?.phase === 'loading' ? (
           <View style={styles.center}>
             <ActivityIndicator size="large" color={Gmail.blue} />
@@ -155,7 +159,8 @@ export function AttachmentViewerModal({
             </TouchableOpacity>
           </View>
         ) : null}
-      </SafeAreaView>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -167,8 +172,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 12,
     backgroundColor: '#111',
+    zIndex: 2,
+    elevation: 4,
+  },
+  body: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
   },
   title: {
     flex: 1,

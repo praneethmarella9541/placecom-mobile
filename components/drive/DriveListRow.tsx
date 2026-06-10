@@ -9,18 +9,26 @@ import { DriveFileIcon } from './DriveFileIcon';
 export function DriveListRow({
   file,
   onPress,
+  onPressIn,
   onMorePress,
   loading = false,
 }: {
   file: DriveFile;
   onPress: () => void;
+  onPressIn?: () => void;
   onMorePress: () => void;
   loading?: boolean;
 }) {
   const folder = isDriveFolder(file);
 
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65} disabled={loading}>
+    <TouchableOpacity
+      style={styles.row}
+      onPressIn={onPressIn}
+      onPress={onPress}
+      activeOpacity={0.65}
+      disabled={loading}
+    >
       <DriveFileIcon mimeType={file.mimeType} loading={loading} />
       <View style={styles.body}>
         <Text style={styles.name} numberOfLines={2}>

@@ -2,7 +2,12 @@ import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { router } from 'expo-router';
 import type { Session } from '@supabase/supabase-js';
-import { getNotifications, obtainExpoPushToken } from '../lib/expo-push-native';
+import { markIncomingCallNotified } from '../lib/incoming-call-alerts';
+import {
+  ensureCallNotificationChannels,
+  getNotifications,
+  obtainExpoPushToken,
+} from '../lib/expo-push-native';
 import { registerPushToken, unregisterPushToken } from '../lib/push-notifications';
 
 function navigateFromNotificationData(data: Record<string, unknown> | undefined) {
@@ -14,6 +19,10 @@ function navigateFromNotificationData(data: Record<string, unknown> | undefined)
   }
   if (type === 'inbox') {
     router.push('/(workspace)/inbox');
+    return;
+  }
+  if (type === 'incoming_call') {
+    router.push('/(workspace)/calls');
   }
 }
 
@@ -32,6 +41,8 @@ export function usePushNotifications(session: Session | null) {
 
     const Notifications = getNotifications();
     if (!Notifications) return;
+
+    void ensureCallNotificationChannels();
 
     let cancelled = false;
 
@@ -56,6 +67,13 @@ export function usePushNotifications(session: Session | null) {
     const Notifications = getNotifications();
     if (!Notifications) return;
 
+    const receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+      const data = notification.request.content.data as Record<string, unknown> | undefined;
+      if (data?.type === 'incoming_call' && typeof data.callSid === 'string' && data.callSid) {
+        markIncomingCallNotified(data.callSid);
+      }
+    });
+
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
       navigateFromNotificationData(data);
@@ -67,6 +85,9 @@ export function usePushNotifications(session: Session | null) {
       navigateFromNotificationData(data);
     });
 
-    return () => sub.remove();
+    return () => {
+      receivedSub.remove();
+      sub.remove();
+    };
   }, []);
 }

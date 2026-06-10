@@ -16,12 +16,23 @@ type GmailLabelRow = {
   threadsUnread?: number;
 };
 
-const MAILBOX_LABEL_IDS = ['INBOX', 'SENT', 'DRAFT'] as const;
+const MAILBOX_LABEL_IDS = [
+  'INBOX',
+  'SENT',
+  'DRAFT',
+  'STARRED',
+  'IMPORTANT',
+  'SPAM',
+  'TRASH',
+] as const;
 
 const FOLDER_LABEL_ID: Record<GmailFolder, string> = {
   inbox: 'INBOX',
   sent: 'SENT',
   drafts: 'DRAFT',
+  trash: 'TRASH',
+  spam: 'SPAM',
+  allmail: '',
 };
 
 /** Map backend / alias keys to Gmail label ids. */
@@ -31,6 +42,10 @@ const LABEL_KEY_ALIASES: Record<string, string> = {
   drafts: 'DRAFT',
   draft: 'DRAFT',
   DRAFTS: 'DRAFT',
+  starred: 'STARRED',
+  important: 'IMPORTANT',
+  spam: 'SPAM',
+  trash: 'TRASH',
 };
 
 function rowToCount(row: GmailLabelRow): LabelCount {
@@ -167,12 +182,14 @@ export async function loadMailboxLabelCounts(
   return merged;
 }
 
-/** Badge for Inbox / Sent / Drafts — unread on Inbox, totals on Sent & Drafts. */
+/** Badge for a Gmail API folder — unread on Inbox, totals elsewhere. */
 export function folderSegmentBadge(
   folder: GmailFolder,
   counts: Record<string, LabelCount>
 ): number | null {
-  const c = counts[FOLDER_LABEL_ID[folder]];
+  const labelId = FOLDER_LABEL_ID[folder];
+  if (!labelId) return null;
+  const c = counts[labelId];
   if (!c) return null;
 
   if (folder === 'inbox') {

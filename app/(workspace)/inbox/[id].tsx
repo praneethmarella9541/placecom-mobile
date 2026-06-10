@@ -14,8 +14,9 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../../lib/supabase';
 import { gmailApi, type GmailLabel, type GmailMessage } from '../../../lib/api';
-import { sendMailDirectly, readFileAsBase64 } from '../../../lib/gmail-send-direct';
-import { cacheDeleteInboxFolder, cacheGet, cacheSet } from '../../../lib/cache';
+import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
+import { queueReplyMailSend } from '../../../lib/mail-outbox';
+import { getCachedThread, openMailThread } from '../../../lib/mail-thread-prefetch';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 import { Gmail, avatarColorForName } from '../../../constants/gmailTheme';
@@ -92,7 +93,6 @@ export default function ThreadDetailScreen() {
   const [replySubject, setReplySubject] = useState('');
   const [replyBody, setReplyBody] = useState('');
   const [attachments, setAttachments] = useState<PickedFile[]>([]);
-  const [sending, setSending] = useState(false);
   const bodyInputRef = useRef<TextInput>(null);
 
   // Labels — loaded in parallel with the thread, used by chips + picker.
@@ -128,11 +128,8 @@ export default function ThreadDetailScreen() {
 
   useEffect(() => {
     if (!id || !userId) return;
-    const cacheKey = `thread:${userId}:${id}`;
 
-    // Use prefetched data immediately if available — the inbox screen fires
-    // the fetch on press-in, so by the time this screen mounts it's often done.
-    const cached = cacheGet<{ messages: GmailMessage[]; labelIds?: string[] }>(cacheKey);
+    const cached = getCachedThread(userId, id);
     if (cached) {
       setMessages(cached.messages ?? []);
       const lids = cached.labelIds ?? [];
@@ -140,26 +137,13 @@ export default function ThreadDetailScreen() {
       setStarred(lids.includes('STARRED'));
       applyExpandedForMessages(cached.messages ?? []);
       setLoading(false);
-      // Revalidate in the background so subsequent opens are fresh.
-      gmailApi.getThread(id)
-        .then((data) => {
-          cacheSet(cacheKey, data);
-          const msgs = data.messages ?? [];
-          setMessages(msgs);
-          applyExpandedForMessages(msgs);
-          const lids = data.labelIds ?? [];
-          setThreadLabelIds(lids);
-          setStarred(lids.includes('STARRED'));
-        })
-        .catch(() => { /* non-fatal — cached data is shown */ });
-      return;
+    } else {
+      setLoading(true);
+      setError(null);
     }
 
-    setLoading(true);
-    setError(null);
-    gmailApi.getThread(id)
+    openMailThread(userId, id)
       .then((data) => {
-        cacheSet(cacheKey, data);
         const msgs = data.messages ?? [];
         setMessages(msgs);
         applyExpandedForMessages(msgs);
@@ -168,8 +152,10 @@ export default function ThreadDetailScreen() {
         setStarred(lids.includes('STARRED'));
       })
       .catch((e) => {
-        console.error('[thread] load failed:', e?.message);
-        setError(e?.message ?? 'Failed to load thread');
+        if (!cached) {
+          console.error('[thread] load failed:', (e as Error)?.message);
+          setError((e as Error)?.message ?? 'Failed to load thread');
+        }
       })
       .finally(() => setLoading(false));
   }, [id, userId]);
@@ -409,49 +395,36 @@ export default function ThreadDetailScreen() {
       Alert.alert('Empty message', 'Write something before sending.'); return;
     }
 
-    setSending(true);
-    try {
-      const driveLinks = attachments.filter((f) => f.status === 'drive' && f.driveLink);
-      let finalBody = replyBody;
-      if (driveLinks.length > 0) {
-        const linkBlock = driveLinks.map((f) => `${f.name}: ${f.driveLink}`).join('\n');
-        finalBody = finalBody ? `${finalBody}\n\n--- Attachments ---\n${linkBlock}` : linkBlock;
-      }
-
-      const readyAttachments = attachments.filter((f) => f.status === 'ready');
-
-      const commonParams = {
-        to: replyTo,
-        cc: replyCc || undefined,
-        subject: replySubject,
-        textBody: finalBody,
-        threadId: replyMode !== 'forward' ? lastMessage.threadId : undefined,
-        inReplyToMessageId: replyMode !== 'forward' ? (lastMessage.messageIdHeader ?? lastMessage.id) : undefined,
-      };
-
-      if (readyAttachments.length > 0) {
-        const { accessToken } = await gmailApi.getGoogleToken();
-        await sendMailDirectly({
-          accessToken,
-          ...commonParams,
-          attachments: readyAttachments.map((f) => ({ filename: f.name, mimeType: f.mimeType, uri: f.uri, base64Data: f.base64Data })),
-        });
-      } else {
-        await gmailApi.send(commonParams);
-      }
-
-      // Bust Sent cache so it refetches on focus and shows the new message.
-      cacheDeleteInboxFolder('sent');
-      Alert.alert('Sent', 'Message sent successfully.');
-      setReplyMode(null);
-      setReplyBody('');
-      setAttachments([]);
-    } catch (e: any) {
-      console.error('[thread] send failed:', e?.message);
-      Alert.alert('Failed to send', e?.message ?? 'Something went wrong.');
-    } finally {
-      setSending(false);
+    const driveLinks = attachments.filter((f) => f.status === 'drive' && f.driveLink);
+    let finalBody = replyBody;
+    if (driveLinks.length > 0) {
+      const linkBlock = driveLinks.map((f) => `${f.name}: ${f.driveLink}`).join('\n');
+      finalBody = finalBody ? `${finalBody}\n\n--- Attachments ---\n${linkBlock}` : linkBlock;
     }
+
+    const readyAttachments = attachments.filter((f) => f.status === 'ready');
+
+    queueReplyMailSend({
+      to: replyTo,
+      cc: replyCc || undefined,
+      subject: replySubject,
+      textBody: finalBody,
+      threadId: replyMode !== 'forward' ? lastMessage.threadId : undefined,
+      inReplyToMessageId:
+        replyMode !== 'forward' ? (lastMessage.messageIdHeader ?? lastMessage.id) : undefined,
+      useDirectSend: readyAttachments.length > 0,
+      attachments: readyAttachments.map((f) => ({
+        filename: f.name,
+        mimeType: f.mimeType,
+        uri: f.uri,
+        base64Data: f.base64Data,
+        status: f.status,
+      })),
+    });
+
+    setReplyMode(null);
+    setReplyBody('');
+    setAttachments([]);
   }
 
   if (error && !hasMessages) {
@@ -572,13 +545,10 @@ export default function ThreadDetailScreen() {
             <Text style={styles.modalTitle}>{modeLabel}</Text>
             <TouchableOpacity
               onPress={handleSend}
-              disabled={sending || attachments.some((f) => f.status === 'uploading' || f.status === 'preparing')}
+              disabled={attachments.some((f) => f.status === 'uploading' || f.status === 'preparing')}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              {sending
-                ? <ActivityIndicator size="small" color={Colors.primary} />
-                : <Ionicons name="send" size={22} color={Colors.primary} />
-              }
+              <Ionicons name="send" size={22} color={Colors.primary} />
             </TouchableOpacity>
           </View>
 

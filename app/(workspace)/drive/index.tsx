@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -20,16 +20,27 @@ import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
-import { driveApi, type DriveListView } from '../../../lib/api';
-import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
+import { driveApi } from '../../../lib/api';
 import { fetchDriveFileToCache } from '../../../lib/drive-download';
 import {
-  listDriveFilesDirectly,
-  driveStarredQuery,
-  buildDriveSharedQuery,
-  driveRecentQuery,
-  driveFolderQuery,
-} from '../../../lib/drive-list-direct';
+  applyDriveMoveOverrides,
+  syncDriveMoveAcrossCaches,
+} from '../../../lib/drive-move-session-sync';
+import { applyDriveStarOverrides } from '../../../lib/drive-star-session-sync';
+import {
+  buildDriveListCacheKey,
+  clearDriveListSessionCache,
+  fetchDriveListPage,
+  getDriveListCache,
+  getDriveListMutationEpoch,
+  prefetchDriveFolderChildren,
+  setDriveListCache,
+  startDriveListPrefetchWarm,
+  syncDriveListCache,
+  type DriveListContext,
+  type DriveTabKey,
+} from '../../../lib/drive-list-prefetch';
+import { getCacheWriteGeneration } from '../../../lib/session-cache-core';
 import { sortDriveFiles, type DriveSortKey, isDriveFolder } from '../../../lib/drive-utils';
 import type { DriveFile } from '../../../lib/types';
 import { DriveTheme } from '../../../constants/driveTheme';
@@ -43,9 +54,7 @@ import { copyDriveFileLink, shareDriveFileLink } from '../../../lib/drive-file-a
 import { DriveCreateSheet } from '../../../components/drive/DriveCreateSheet';
 
 type LayoutMode = 'list' | 'grid';
-type DriveTab = 'my-drive' | 'starred' | 'recent' | 'shared';
-
-const TABS: { key: DriveTab; label: string; view: DriveListView }[] = [
+const TABS: { key: DriveTabKey; label: string; view: DriveListContext['view'] }[] = [
   { key: 'my-drive', label: 'My Drive', view: 'folder' },
   { key: 'starred', label: 'Starred', view: 'starred' },
   { key: 'recent', label: 'Recent', view: 'recent' },
@@ -58,131 +67,8 @@ const SORT_OPTIONS: { key: DriveSortKey; label: string }[] = [
   { key: 'size', label: 'Size' },
 ];
 
-function normalizeFiles(raw: unknown[]): DriveFile[] {
-  return (raw ?? []).map((f: any) => ({
-    id: f.id,
-    name: f.name,
-    mimeType: f.mimeType,
-    size: f.size,
-    modifiedTime: f.modifiedTime,
-    webViewLink: f.webViewLink ?? null,
-    starred: !!(f.starred ?? f.isStarred),
-    shared: !!(f.shared ?? f.sharedWithMe),
-    thumbnailLink: f.thumbnailLink ?? null,
-  }));
-}
-
-type ListPage = { files: DriveFile[]; nextPageToken?: string };
-
-async function fetchDrivePage(
-  view: DriveListView,
-  tab: DriveTab,
-  folderId: string | undefined,
-  opts: { pageToken?: string; search?: string; pageSize: number }
-): Promise<ListPage> {
-  const browsingFolderInView =
-    (tab === 'starred' || tab === 'shared' || tab === 'recent') && !!folderId;
-
-  if (view === 'folder' || browsingFolderInView) {
-    const parent = folderId ?? 'root';
-    try {
-      const data = await driveApi.listFiles(parent === 'root' ? undefined : parent, {
-        pageToken: opts.pageToken,
-        search: opts.search,
-        pageSize: opts.pageSize,
-        view: 'folder',
-      });
-      return { files: normalizeFiles(data.files ?? []), nextPageToken: data.nextPageToken };
-    } catch {
-      if (parent !== 'root') {
-        const direct = await listDriveFilesDirectly({
-          q: driveFolderQuery(parent),
-          pageToken: opts.pageToken,
-          pageSize: opts.pageSize,
-          orderBy: 'folder,name',
-        });
-        return direct;
-      }
-      throw new Error('Failed to load folder');
-    }
-  }
-
-  if (view === 'starred') {
-    try {
-      const data = await driveApi.listFiles(undefined, {
-        pageToken: opts.pageToken,
-        search: opts.search,
-        pageSize: opts.pageSize,
-        view: 'starred',
-      });
-      const files = normalizeFiles(data.files ?? []);
-      if (files.length > 0 || opts.pageToken) {
-        return { files, nextPageToken: data.nextPageToken };
-      }
-    } catch {
-      /* fall through to direct API */
-    }
-    const q = opts.search
-      ? `starred = true and name contains '${opts.search.replace(/'/g, "\\'")}' and trashed = false`
-      : driveStarredQuery();
-    return listDriveFilesDirectly({
-      q,
-      pageToken: opts.pageToken,
-      pageSize: opts.pageSize,
-      orderBy: 'folder,name,modifiedTime desc',
-    });
-  }
-
-  if (view === 'shared') {
-    try {
-      return await listDriveFilesDirectly({
-        q: buildDriveSharedQuery(opts.search),
-        pageToken: opts.pageToken,
-        pageSize: opts.pageSize,
-        orderBy: 'sharedWithMeTime desc',
-        corpora: 'user',
-      });
-    } catch (directErr) {
-      try {
-        const data = await driveApi.listFiles(undefined, {
-          pageToken: opts.pageToken,
-          search: opts.search,
-          pageSize: opts.pageSize,
-          view: 'shared',
-        });
-        return {
-          files: normalizeFiles(data.files ?? []),
-          nextPageToken: data.nextPageToken,
-        };
-      } catch {
-        throw directErr;
-      }
-    }
-  }
-
-  if (view === 'recent') {
-    try {
-      const data = await driveApi.listFiles(undefined, {
-        pageToken: opts.pageToken,
-        search: opts.search,
-        pageSize: opts.pageSize,
-        view: 'recent',
-      });
-      const files = normalizeFiles(data.files ?? []);
-      if (files.length > 0 || opts.pageToken) return { files, nextPageToken: data.nextPageToken };
-    } catch {
-      /* direct */
-    }
-    return listDriveFilesDirectly({
-      q: driveRecentQuery(),
-      pageToken: opts.pageToken,
-      pageSize: opts.pageSize,
-      orderBy: 'viewedByMeTime desc',
-    });
-  }
-
-  const data = await driveApi.listFiles(undefined, { ...opts, view: 'folder' });
-  return { files: normalizeFiles(data.files ?? []), nextPageToken: data.nextPageToken };
+function applyDriveDisplayOverrides(files: DriveFile[]): DriveFile[] {
+  return applyDriveStarOverrides(applyDriveMoveOverrides(files));
 }
 
 export default function DriveScreen() {
@@ -195,7 +81,7 @@ export default function DriveScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [folderStack, setFolderStack] = useState<{ id: string; name: string }[]>([]);
-  const [tab, setTab] = useState<DriveTab>('my-drive');
+  const [tab, setTab] = useState<DriveTabKey>('my-drive');
   const [layout, setLayout] = useState<LayoutMode>('list');
   const [sortBy, setSortBy] = useState<DriveSortKey>('modified');
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
@@ -216,6 +102,24 @@ export default function DriveScreen() {
   const activeTab = TABS.find((t) => t.key === tab)!;
   const inFolderBrowse = !debouncedSearch && (tab === 'my-drive' || folderStack.length > 0);
 
+  const listContext = useMemo((): DriveListContext => ({
+    view: activeTab.view,
+    tab,
+    parentId: currentFolderId,
+    search: debouncedSearch || undefined,
+    pathDepth: folderStack.length,
+  }), [activeTab.view, tab, currentFolderId, debouncedSearch, folderStack.length]);
+
+  const listCacheKey = buildDriveListCacheKey(listContext);
+  const activeListCacheKey = useRef(listCacheKey);
+  const loadIdRef = useRef(0);
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  const warmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchStartedAtRef = useRef(0);
+  const epochAtFetchRef = useRef(0);
+  const writeGenAtFetchRef = useRef(0);
+  const prefetchedFoldersRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 400);
     return () => clearTimeout(t);
@@ -223,63 +127,108 @@ export default function DriveScreen() {
 
   const sortedFiles = useMemo(() => sortDriveFiles(files, sortBy), [files, sortBy]);
 
-  const loadFiles = useCallback(async () => {
+  const loadFiles = useCallback(async (force = false, viewLoadId?: number) => {
+    const cacheKey = buildDriveListCacheKey(listContext);
+    const thisLoadId = viewLoadId ?? ++loadIdRef.current;
+    activeListCacheKey.current = cacheKey;
     setError(null);
-    const view = activeTab.view;
-    const cacheKey = `drive:v2:${view}:${tab}:${currentFolderId ?? 'root'}:${debouncedSearch}`;
 
-    const cached = cacheGet<ListPage>(cacheKey);
-    if (cached) {
-      setFiles(cached.files);
+    const cached = getDriveListCache(cacheKey);
+    const hadCache = !!cached;
+    if (cached && !force) {
+      setFiles(applyDriveDisplayOverrides(cached.files));
       setNextPageToken(cached.nextPageToken);
       setLoading(false);
-      if (!cacheIsStale(cacheKey)) {
-        setRefreshing(false);
-        return;
-      }
-    } else {
+    } else if (!cached) {
       setLoading(true);
     }
 
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+    fetchStartedAtRef.current = Date.now();
+    epochAtFetchRef.current = getDriveListMutationEpoch();
+    writeGenAtFetchRef.current = getCacheWriteGeneration();
+
     try {
-      const page = await fetchDrivePage(view, tab, currentFolderId, {
-        search: debouncedSearch || undefined,
+      const page = await fetchDriveListPage(listContext, {
         pageSize: 30,
+        signal: controller.signal,
+        skipCache: force,
       });
-      cacheSet(cacheKey, page);
-      setFiles(page.files);
+
+      if (thisLoadId !== loadIdRef.current) return;
+      if (activeListCacheKey.current !== cacheKey) return;
+      if (epochAtFetchRef.current !== getDriveListMutationEpoch()) return;
+      if (writeGenAtFetchRef.current !== getCacheWriteGeneration()) return;
+
+      const displayFiles = applyDriveDisplayOverrides(page.files);
+      setDriveListCache(cacheKey, { files: displayFiles, nextPageToken: page.nextPageToken });
+      setFiles(displayFiles);
       setNextPageToken(page.nextPageToken);
+
+      if (warmTimerRef.current) clearTimeout(warmTimerRef.current);
+      warmTimerRef.current = setTimeout(() => {
+        startDriveListPrefetchWarm({ skipKeys: new Set([cacheKey]), concurrency: 2 });
+      }, 400);
     } catch (e: any) {
+      if (controller.signal.aborted) return;
       console.error('[drive] load failed:', e?.message);
-      if (!cached) {
+      if (!hadCache) {
         setError(e?.message ?? 'Failed to load Drive');
         setFiles([]);
         setNextPageToken(undefined);
       }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (thisLoadId === loadIdRef.current && activeListCacheKey.current === cacheKey) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [activeTab.view, tab, currentFolderId, debouncedSearch]);
+  }, [listContext]);
+
+  useLayoutEffect(() => {
+    activeListCacheKey.current = listCacheKey;
+    const loadId = ++loadIdRef.current;
+    const cached = getDriveListCache(listCacheKey);
+    if (cached) {
+      setFiles(applyDriveDisplayOverrides(cached.files));
+      setNextPageToken(cached.nextPageToken);
+      setLoading(false);
+      setError(null);
+    } else {
+      setLoading(true);
+    }
+    void loadFiles(false, loadId);
+  }, [listCacheKey, loadFiles]);
 
   useEffect(() => {
-    setFiles([]);
-    setNextPageToken(undefined);
-    loadFiles();
-  }, [loadFiles]);
+    if (loading || debouncedSearch) return;
+    const folders = sortedFiles.filter(isDriveFolder).slice(0, 8);
+    for (const folder of folders) {
+      if (prefetchedFoldersRef.current.has(folder.id)) continue;
+      prefetchedFoldersRef.current.add(folder.id);
+      prefetchDriveFolderChildren(folder.id, tab, folderStack.length);
+    }
+  }, [loading, sortedFiles, debouncedSearch, tab, folderStack.length]);
 
   async function loadMore() {
     if (!nextPageToken || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await fetchDrivePage(activeTab.view, tab, currentFolderId, {
+      const page = await fetchDriveListPage(listContext, {
         pageToken: nextPageToken,
-        search: debouncedSearch || undefined,
         pageSize: 50,
+        skipCache: true,
       });
       setFiles((prev) => {
         const ids = new Set(prev.map((f) => f.id));
-        return [...prev, ...page.files.filter((f) => !ids.has(f.id))];
+        const merged = [...prev, ...applyDriveDisplayOverrides(page.files).filter((f) => !ids.has(f.id))];
+        syncDriveListCache(listCacheKey, (cur) => ({
+          files: merged,
+          nextPageToken: page.nextPageToken ?? cur?.nextPageToken,
+        }));
+        return merged;
       });
       setNextPageToken(page.nextPageToken);
     } catch {
@@ -289,7 +238,7 @@ export default function DriveScreen() {
     }
   }
 
-  function selectTab(next: DriveTab) {
+  function selectTab(next: DriveTabKey) {
     setTab(next);
     setFolderStack([]);
     setSearch('');
@@ -297,8 +246,14 @@ export default function DriveScreen() {
   }
 
   function navigateToFolder(file: DriveFile) {
+    prefetchDriveFolderChildren(file.id, tab, folderStack.length);
     setFolderStack((prev) => [...prev, { id: file.id, name: file.name }]);
     setSearch('');
+  }
+
+  function onFolderPressIn(file: DriveFile) {
+    if (!isDriveFolder(file)) return;
+    prefetchDriveFolderChildren(file.id, tab, folderStack.length);
   }
 
   function navigateToBreadcrumb(index: number) {
@@ -663,6 +618,7 @@ export default function DriveScreen() {
                 file={item}
                 loading={fileActionLoading === item.id}
                 onPress={() => openFile(item)}
+                onPressIn={() => onFolderPressIn(item)}
                 onMorePress={() => setActionFile(item)}
               />
             ) : (
@@ -677,7 +633,13 @@ export default function DriveScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => { setRefreshing(true); loadFiles(); }}
+              onRefresh={() => {
+                setRefreshing(true);
+                clearDriveListSessionCache();
+                prefetchedFoldersRef.current.clear();
+                void loadFiles(true);
+                startDriveListPrefetchWarm({ skipKeys: new Set([listCacheKey]), concurrency: 2 });
+              }}
               tintColor={DriveTheme.blue}
             />
           }
@@ -755,8 +717,9 @@ export default function DriveScreen() {
         visible={!!moveFile}
         onClose={() => setMoveFile(null)}
         onMoved={() => {
+          if (moveFile) syncDriveMoveAcrossCaches(moveFile.id);
+          setFiles((prev) => prev.filter((f) => f.id !== moveFile?.id));
           setMoveFile(null);
-          loadFiles();
         }}
       />
 

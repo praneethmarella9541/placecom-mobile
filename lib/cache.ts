@@ -1,3 +1,6 @@
+import { invalidateMailListFolder } from './inbox-list-prefetch';
+import type { GmailFolder } from './api';
+
 /**
  * Tiny in-memory stale-while-revalidate cache.
  * Data is held for the process lifetime (app session).
@@ -50,5 +53,16 @@ export function cacheDeleteInboxFolder(folder: string): void {
     if (key.includes(needle) || key.startsWith(`inbox:${folder}:`)) {
       store.delete(key);
     }
+  }
+  const apiFolders: GmailFolder[] = [
+    'inbox',
+    'sent',
+    'drafts',
+    'trash',
+    'spam',
+    'allmail',
+  ];
+  if (apiFolders.includes(folder as GmailFolder)) {
+    invalidateMailListFolder(folder as GmailFolder);
   }
 }

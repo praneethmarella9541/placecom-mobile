@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Keyboard, Platform, type KeyboardEvent } from 'react-native';
+import { Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
 
 /**
  * Height of the on-screen keyboard (0 when hidden).
@@ -14,7 +14,13 @@ export function useKeyboardHeight() {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
 
-    const onShow = (e: KeyboardEvent) => setHeight(e.endCoordinates.height);
+    const onShow = (e: KeyboardEvent) => {
+      // Screen-relative offset is reliable inside nested views / WebViews where
+      // `endCoordinates.height` alone can misplace accessory toolbars.
+      const windowHeight = Dimensions.get('window').height;
+      const keyboardTop = e.endCoordinates.screenY;
+      setHeight(Math.max(0, windowHeight - keyboardTop));
+    };
     const onHide = () => setHeight(0);
 
     const showSub = Keyboard.addListener(showEvent, onShow);

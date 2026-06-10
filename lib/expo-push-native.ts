@@ -11,6 +11,25 @@ export function isPushNativeAvailable(): boolean {
   return getNotifications() != null;
 }
 
+export async function ensureCallNotificationChannels(): Promise<void> {
+  const Notifications = getNotifications();
+  if (!Notifications || Platform.OS !== 'android') return;
+
+  await Notifications.setNotificationChannelAsync('default', {
+    name: 'Messages',
+    importance: Notifications.AndroidImportance.MAX,
+    vibrationPattern: [0, 250, 250, 250],
+  });
+  await Notifications.setNotificationChannelAsync('calls', {
+    name: 'Incoming calls',
+    importance: Notifications.AndroidImportance.MAX,
+    vibrationPattern: [0, 400, 200, 400],
+    sound: 'default',
+    bypassDnd: false,
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+  });
+}
+
 export function getNotifications(): NotificationsModule | null {
   if (notifications !== undefined) return notifications;
   try {
@@ -54,13 +73,7 @@ export async function obtainExpoPushToken(): Promise<string | null> {
   const Notifications = getNotifications();
   if (!Notifications || !isPhysicalDevice()) return null;
 
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('default', {
-      name: 'Messages',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-    });
-  }
+  await ensureCallNotificationChannels();
 
   const { status: existing } = await Notifications.getPermissionsAsync();
   let finalStatus = existing;

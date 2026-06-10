@@ -2,10 +2,11 @@ import { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthContext, useAuth, useAuthState } from '../hooks/useAuth';
+import { useIncomingCallAlerts } from '../hooks/useIncomingCallAlerts';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import AppToastHost from '../components/AppToastHost';
 import LoadingScreen from '../components/LoadingScreen';
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -14,6 +15,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const segments = useSegments();
 
   usePushNotifications(session);
+  useIncomingCallAlerts(session);
 
   useEffect(() => {
     if (loading) return;
@@ -31,19 +33,18 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <KeyboardProvider>
-        <SafeAreaProvider>
-          <StatusBar style="auto" />
-          <AuthContext.Provider value={auth}>
-            <AuthGuard>
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="(auth)" />
-                <Stack.Screen name="(workspace)" />
-              </Stack>
-            </AuthGuard>
-          </AuthContext.Provider>
-        </SafeAreaProvider>
-      </KeyboardProvider>
+      <SafeAreaProvider>
+        <StatusBar style="auto" />
+        <AuthContext.Provider value={auth}>
+          <AuthGuard>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="(auth)" />
+              <Stack.Screen name="(workspace)" />
+            </Stack>
+            <AppToastHost />
+          </AuthGuard>
+        </AuthContext.Provider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

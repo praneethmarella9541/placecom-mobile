@@ -7,6 +7,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Platform,
+  StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -91,8 +92,9 @@ export function DrivePreviewModal({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.root}>
-        <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+      <StatusBar barStyle="dark-content" />
+      <View style={[styles.root, { paddingBottom: insets.bottom }]}>
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={onClose} style={styles.headerBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Ionicons name="close" size={26} color={DriveTheme.text} />
           </TouchableOpacity>
@@ -113,6 +115,7 @@ export function DrivePreviewModal({
           </TouchableOpacity>
         </View>
 
+        <View style={styles.body}>
         {phase === 'loading' && (
           <View style={styles.center}>
             <ActivityIndicator color={DriveTheme.blue} size="large" />
@@ -197,6 +200,7 @@ export function DrivePreviewModal({
             </TouchableOpacity>
           </View>
         )}
+        </View>
       </View>
     </Modal>
   );
@@ -213,6 +217,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: DriveTheme.border,
     gap: 4,
+    zIndex: 2,
+    elevation: 4,
+  },
+  body: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
   },
   headerBtn: {
     width: 44,

@@ -1,4 +1,4 @@
-import React, { useCallback, useImperativeHandle, useRef, useState, forwardRef } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  type NativeSyntheticEvent,
   type LayoutChangeEvent,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -76,9 +75,21 @@ const EDITOR_PAGE = `<!DOCTYPE html>
   }
 
   editor.addEventListener('input', syncAll);
-  editor.addEventListener('keyup', postFormatState);
+  editor.addEventListener('keyup', function(e) {
+    postFormatState();
+    if (!e.isComposing) postHtml();
+  });
   editor.addEventListener('mouseup', postFormatState);
-  editor.addEventListener('touchend', postFormatState);
+  editor.addEventListener('touchend', function() {
+    postFormatState();
+    postHtml();
+  });
+  editor.addEventListener('paste', function() {
+    setTimeout(postHtml, 0);
+  });
+  editor.addEventListener('cut', function() {
+    setTimeout(postHtml, 0);
+  });
   editor.addEventListener('compositionend', postHtml);
   editor.addEventListener('focus', function() { postEditorFocus(true); });
   editor.addEventListener('blur', function() {
@@ -102,6 +113,10 @@ const EDITOR_PAGE = `<!DOCTYPE html>
 
   window.requestFormatState = function() {
     postFormatState();
+  };
+
+  window.readEditorHtml = function() {
+    return editor ? editor.innerHTML : '';
   };
 
   syncAll();
@@ -180,7 +195,7 @@ interface EditorProps {
   contentInsetBottom?: number;
 }
 
-const HTML_REQUEST_TIMEOUT_MS = 800;
+const HTML_REQUEST_TIMEOUT_MS = 2500;
 
 /** Rich-text body (WebView only). Pair with ComposeFormatToolbar below the editor. */
 export const ComposeEditorBody = forwardRef<ComposeEditorHandle, EditorProps>(function ComposeEditorBody(
@@ -200,6 +215,11 @@ export const ComposeEditorBody = forwardRef<ComposeEditorHandle, EditorProps>(fu
   const [ready, setReady] = useState(false);
   const initialSetRef = useRef(false);
   const pendingHtmlRequest = useRef<((html: string) => void) | null>(null);
+  const latestHtmlRef = useRef(initialHtml);
+
+  useEffect(() => {
+    latestHtmlRef.current = initialHtml;
+  }, [initialHtml]);
 
   const setInitialContent = useCallback(() => {
     if (initialSetRef.current || !ready) return;
@@ -211,27 +231,42 @@ export const ComposeEditorBody = forwardRef<ComposeEditorHandle, EditorProps>(fu
 
   const requestHtmlSnapshot = useCallback((): Promise<string> => {
     return new Promise((resolve) => {
-      pendingHtmlRequest.current = resolve;
+      let settled = false;
+      const finish = (html: string) => {
+        if (settled) return;
+        settled = true;
+        pendingHtmlRequest.current = null;
+        const value = html || latestHtmlRef.current || '';
+        latestHtmlRef.current = value;
+        resolve(value);
+      };
+
+      pendingHtmlRequest.current = finish;
       webRef.current?.injectJavaScript(`
         (function() {
-          var editor = document.getElementById('editor');
+          var html = (window.readEditorHtml && window.readEditorHtml()) || '';
           if (!window.ReactNativeWebView) return;
           window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'htmlSnapshot',
-            html: editor ? editor.innerHTML : ''
+            html: html
           }));
         })();
         true;
       `);
-      setTimeout(() => {
-        if (!pendingHtmlRequest.current) return;
-        pendingHtmlRequest.current('');
-        pendingHtmlRequest.current = null;
-      }, HTML_REQUEST_TIMEOUT_MS);
+      setTimeout(() => finish(latestHtmlRef.current), HTML_REQUEST_TIMEOUT_MS);
     });
   }, [webRef]);
 
-  useImperativeHandle(ref, () => ({ getHtml: requestHtmlSnapshot }), [requestHtmlSnapshot]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      getHtml: async () => {
+        const snap = await requestHtmlSnapshot();
+        return snap || latestHtmlRef.current || '';
+      },
+    }),
+    [requestHtmlSnapshot]
+  );
 
   const onLoadEnd = useCallback(() => {
     setReady(true);
@@ -241,16 +276,25 @@ export const ComposeEditorBody = forwardRef<ComposeEditorHandle, EditorProps>(fu
   }, [setInitialContent, onReady, webRef]);
 
   const onMessage = useCallback(
-    (e: NativeSyntheticEvent<WebViewMessageEvent>) => {
+    (e: WebViewMessageEvent) => {
       try {
         const data = JSON.parse(e.nativeEvent.data);
         if (
           (data.type === 'html' || data.type === 'htmlSnapshot') &&
           typeof data.html === 'string'
         ) {
+          // The WebView fires syncAll() with empty innerHTML on first load, before
+          // setEditorHtml() is injected via setInitialContent(). Skip that empty
+          // message to prevent overwriting a non-empty bodyHtmlRef in the parent.
+          if (!initialSetRef.current && !data.html.trim()) {
+            // Seed latestHtmlRef with the known initial value so getHtml() snapshots
+            // (e.g. taken while the draft is loading) still return sensible content.
+            if (initialHtml.trim()) latestHtmlRef.current = initialHtml;
+            return;
+          }
+          latestHtmlRef.current = data.html;
           if (pendingHtmlRequest.current) {
             pendingHtmlRequest.current(data.html);
-            pendingHtmlRequest.current = null;
           }
           onChangeHtml(data.html);
         }
@@ -273,7 +317,7 @@ export const ComposeEditorBody = forwardRef<ComposeEditorHandle, EditorProps>(fu
         /* ignore */
       }
     },
-    [onChangeHtml, onFormatStateChange, onEditorFocusChange]
+    [onChangeHtml, onFormatStateChange, onEditorFocusChange, initialHtml]
   );
 
   return (
@@ -547,7 +591,7 @@ function SubMenuChip({
 }
 
 const styles = StyleSheet.create({
-  composeBlock: { flex: 1, minHeight: 160, position: 'relative' },
+  composeBlock: { flex: 1, minHeight: 160, position: 'relative', zIndex: 1 },
   editorWrap: { flex: 1, backgroundColor: '#fff' },
   webview: { flex: 1, backgroundColor: '#fff' },
   editorLoading: {
