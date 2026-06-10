@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { canonicalWhatsAppPeer } from '../lib/whatsapp-peer';
 import {
@@ -7,27 +7,50 @@ import {
   fetchWaContacts,
   upsertWaContact,
 } from '../lib/wa-contacts-db';
+import {
+  contactsMapFromPrefetch,
+  loadCachedContactsMap,
+  persistContactsCache,
+} from '../lib/wa-contacts-cache';
 import { useAuth } from './useAuth';
 
 export function useWhatsAppContacts() {
-  const { session } = useAuth();
-  const [contacts, setContacts] = useState<Record<string, string>>({});
+  const { session, user } = useAuth();
+  const userId = user?.id ?? '';
+  const [contacts, setContacts] = useState<Record<string, string>>(() => contactsMapFromPrefetch());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (!userId) return;
+    const fromPrefetch = contactsMapFromPrefetch();
+    if (Object.keys(fromPrefetch).length) {
+      setContacts(fromPrefetch);
+    }
+    let cancelled = false;
+    void loadCachedContactsMap(userId).then((map) => {
+      if (!cancelled && Object.keys(map).length) setContacts(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   const load = useCallback(async () => {
     if (!session) return;
     setError(null);
     try {
       const rows = await fetchWaContacts();
-      setContacts(buildContactsMap(rows));
+      const map = buildContactsMap(rows);
+      setContacts(map);
+      if (userId) await persistContactsCache(userId, rows);
     } catch (e: unknown) {
       setContacts({});
       setError(e instanceof Error ? e.message : 'Failed to load contacts');
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [session, userId]);
 
   useEffect(() => {
     if (!session) {

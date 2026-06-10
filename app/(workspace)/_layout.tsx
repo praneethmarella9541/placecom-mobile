@@ -16,7 +16,7 @@ import type { LabelCount } from '../../lib/gmail-label-counts';
 import type { GmailLabel } from '../../lib/api';
 import { labelDisplayName } from '../../lib/gmail-labels';
 const MODULES = [
-  { key: 'inbox',        label: 'Inbox',     icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false },
+  { key: 'inbox',        label: 'Mail',      icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false },
   { key: 'calls',        label: 'Calls',     icon: 'call-outline' as const,            path: '/(workspace)/calls',        feature: 'calls',        googleOnly: false },
   { key: 'calendar',     label: 'Calendar',  icon: 'calendar-outline' as const,        path: '/(workspace)/calendar',     feature: 'calendar',     googleOnly: false },
   { key: 'meetings',     label: 'Meetings',  icon: 'videocam-outline' as const,        path: '/(workspace)/meetings',     feature: 'meetings',     googleOnly: false },
@@ -72,7 +72,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   const { profile, user, signOut, hasFeature } = useAuth();
   const { mailView, setMailView, labelCounts, userLabels, filterLabelId, setFilterLabelId } = useMailView();
   const onInbox = pathname.includes('inbox') && !pathname.includes('compose');
-  const [mailExpanded, setMailExpanded] = useState(onInbox);
+  const [mailExpanded, setMailExpanded] = useState(false);
   const [labelsExpanded, setLabelsExpanded] = useState(false);
 
   // True only when the user authenticated via Google OAuth.
@@ -99,7 +99,6 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   const selectMailView = useCallback((view: MailViewKey) => {
     setMailView(view);
     setFilterLabelId(null);
-    setMailExpanded(true);
     if (!onInbox) router.push('/(workspace)/inbox' as any);
     onClose();
   }, [setMailView, setFilterLabelId, onInbox, router, onClose]);
@@ -108,7 +107,6 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
     // Labels always show inside Inbox view
     setMailView('inbox');
     setFilterLabelId(id);
-    setMailExpanded(true);
     if (!onInbox) router.push('/(workspace)/inbox' as any);
     onClose();
   }, [setMailView, setFilterLabelId, onInbox, router, onClose]);
@@ -184,7 +182,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
                     color={onInbox && mailView === 'inbox' ? Colors.sidebarActiveText : Colors.sidebarText}
                   />
                   <Text style={[styles.navLabel, onInbox && mailView === 'inbox' && styles.navLabelActive]} numberOfLines={1}>
-                    Inbox
+                    Mail
                   </Text>
                   {inboxUnread > 0 && (
                     <View style={styles.navBadge}>

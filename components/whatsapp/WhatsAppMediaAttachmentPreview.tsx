@@ -21,6 +21,7 @@ export type PendingAttachment = {
   name: string;
   mimeType: string;
   isImage: boolean;
+  fromCamera?: boolean;
   status: AttachmentUploadStatus;
   sizeBytes?: number | null;
   remoteUrl?: string;
@@ -48,6 +49,12 @@ function formatFileSize(bytes?: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function mediaIconForMime(mimeType: string): { name: keyof typeof Ionicons.glyphMap; color: string } {
+  if (mimeType.startsWith('video/')) return { name: 'videocam', color: '#1565C0' };
+  if (mimeType.startsWith('audio/')) return { name: 'musical-notes', color: '#6A1B9A' };
+  return { name: 'document-text', color: '#075E54' };
+}
+
 function AttachmentTile({
   item,
   onRemove,
@@ -59,6 +66,7 @@ function AttachmentTile({
 }) {
   const uploading = item.status === 'uploading';
   const failed = item.status === 'failed';
+  const isVideo = item.mimeType.startsWith('video/');
 
   if (item.isImage) {
     return (
@@ -81,9 +89,33 @@ function AttachmentTile({
     );
   }
 
+  if (isVideo) {
+    return (
+      <View style={[styles.tile, styles.tileVideo]}>
+        <Ionicons name="videocam" size={32} color="#fff" />
+        <Text style={styles.tileVideoName} numberOfLines={2}>
+          {item.name}
+        </Text>
+        {formatFileSize(item.sizeBytes) ? (
+          <Text style={styles.tileDocSize}>{formatFileSize(item.sizeBytes)}</Text>
+        ) : null}
+        {uploading ? <ActivityIndicator size="small" color="#fff" style={{ marginTop: 4 }} /> : null}
+        {failed ? (
+          <TouchableOpacity onPress={onRetry}>
+            <Text style={styles.tileFail}>Retry</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity style={styles.tileRemove} onPress={onRemove}>
+          <Ionicons name="close-circle" size={22} color="rgba(255,255,255,0.9)" />
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const icon = mediaIconForMime(item.mimeType);
   return (
     <View style={[styles.tile, styles.tileDoc]}>
-      <Ionicons name="document-text" size={28} color="#075E54" />
+      <Ionicons name={icon.name} size={28} color={icon.color} />
       <Text style={styles.tileDocName} numberOfLines={2}>
         {item.name}
       </Text>
@@ -115,8 +147,10 @@ export function WhatsAppMediaAttachmentPreview({
   const { width: screenWidth } = useWindowDimensions();
   const readyCount = attachments.filter((a) => a.status === 'ready').length;
   const uploadingCount = attachments.filter((a) => a.status === 'uploading').length;
-  const singleImage =
-    attachments.length === 1 && attachments[0].isImage ? attachments[0] : null;
+  const singleMediaItem =
+    attachments.length === 1 ? attachments[0] : null;
+  const singleImage = singleMediaItem?.isImage ? singleMediaItem : null;
+  const singleVideo = singleMediaItem && singleMediaItem.mimeType.startsWith('video/') ? singleMediaItem : null;
   const heroHeight = Math.min(260, Math.round((screenWidth - 24) * 0.65));
 
   return (
@@ -142,6 +176,20 @@ export function WhatsAppMediaAttachmentPreview({
         <View style={[styles.heroFrame, { height: heroHeight }]}>
           <Image source={{ uri: singleImage.localUri }} style={styles.heroImage} resizeMode="cover" />
           {singleImage.status === 'uploading' ? (
+            <View style={styles.heroOverlay}>
+              <ActivityIndicator size="large" color="#fff" />
+              <Text style={styles.heroOverlayText}>Uploading…</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : singleVideo && singleVideo.status !== 'failed' ? (
+        <View style={[styles.heroFrame, styles.heroVideoFrame, { height: heroHeight }]}>
+          <Ionicons name="videocam" size={48} color="rgba(255,255,255,0.85)" />
+          <Text style={styles.heroVideoName} numberOfLines={2}>{singleVideo.name}</Text>
+          {formatFileSize(singleVideo.sizeBytes) ? (
+            <Text style={styles.heroVideoSize}>{formatFileSize(singleVideo.sizeBytes)}</Text>
+          ) : null}
+          {singleVideo.status === 'uploading' ? (
             <View style={styles.heroOverlay}>
               <ActivityIndicator size="large" color="#fff" />
               <Text style={styles.heroOverlayText}>Uploading…</Text>
@@ -254,9 +302,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 6,
   },
+  tileVideo: {
+    backgroundColor: '#1A237E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+  },
   tileDocName: { fontSize: 9, fontWeight: '600', color: Colors.text, textAlign: 'center' },
+  tileVideoName: { fontSize: 9, fontWeight: '600', color: '#fff', textAlign: 'center', marginTop: 2 },
   tileDocSize: { fontSize: 8, color: Colors.textMuted },
   tileFail: { fontSize: 10, color: '#DC2626', marginTop: 2 },
+  heroVideoFrame: {
+    backgroundColor: '#1A237E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  heroVideoName: { color: '#fff', fontSize: 14, fontWeight: '600', textAlign: 'center', paddingHorizontal: 12 },
+  heroVideoSize: { color: 'rgba(255,255,255,0.7)', fontSize: 12 },
   addTile: {
     width: TILE,
     height: TILE,

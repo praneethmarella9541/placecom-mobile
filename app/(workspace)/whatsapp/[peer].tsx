@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -39,14 +39,28 @@ import { markWhatsAppThreadRead } from '../../../lib/whatsapp-unread';
 import { normalizeWhatsAppMessages } from '../../../lib/whatsapp-message-normalize';
 import { WhatsAppMessageBubble } from '../../../components/whatsapp/WhatsAppMessageBubble';
 import { WhatsAppComposerBar } from '../../../components/whatsapp/WhatsAppComposerBar';
+import type { PendingAttachment } from '../../../components/whatsapp/WhatsAppMediaAttachmentPreview';
 import { WhatsAppChatSearchBar } from '../../../components/whatsapp/WhatsAppChatSearchBar';
-import { WhatsAppImageViewer } from '../../../components/whatsapp/WhatsAppImageViewer';
+import { WhatsAppMediaViewer } from '../../../components/whatsapp/WhatsAppMediaViewer';
+import { WhatsAppReplyBar } from '../../../components/whatsapp/WhatsAppReplyBar';
+import { ForwardChatModal } from '../../../components/whatsapp/ForwardChatModal';
+import {
+  categorizeWhatsAppMedia,
+  mediaFilenameFromMessage,
+} from '../../../lib/whatsapp-media-helpers';
+import { resolveWhatsAppMediaUrl } from '../../../lib/whatsapp-media';
 import {
   dedupeThreadMessages,
   messageMatchesChatSearch,
   shouldRenderInThread,
 } from '../../../lib/whatsapp-message-display';
 import { Colors } from '../../../constants/colors';
+import {
+  getMemoryThreadMessages,
+  readThreadCache,
+  writeThreadCache,
+} from '../../../lib/whatsapp-thread-cache';
+import { normalizeOutboundImageAsset } from '../../../lib/whatsapp-outbound-media';
 
 // ─── Date separator helpers ───────────────────────────────────────────────────
 
@@ -82,6 +96,16 @@ const CHAT_SEARCH_BAR_HEIGHT = 48;
 
 const POLL_MS = 1000;
 const LIST_BOTTOM_GAP = 8;
+const EST_MSG_HEIGHT = 76;
+const EST_SEP_HEIGHT = 34;
+
+function estimatedOffsetForIndex(items: ChatItem[], index: number): number {
+  let y = 0;
+  for (let i = 0; i < index; i++) {
+    y += items[i].kind === 'separator' ? EST_SEP_HEIGHT : EST_MSG_HEIGHT;
+  }
+  return y;
+}
 
 export default function WhatsAppConversationScreen() {
   const { peer } = useLocalSearchParams<{ peer: string }>();
@@ -89,8 +113,11 @@ export default function WhatsAppConversationScreen() {
   const insets = useSafeAreaInsets();
   const flatListRef = useRef<FlatList>(null);
   const stickToBottomRef = useRef(true);
+  const pendingScrollIndexRef = useRef<number | null>(null);
+  const chatItemsRef = useRef<ChatItem[]>([]);
   const { contacts, saveName } = useWhatsAppContacts();
-  const { session } = useAuth();
+  const { session, user } = useAuth();
+  const userId = user?.id ?? '';
   const authToken = session?.access_token ?? null;
 
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
@@ -107,11 +134,18 @@ export default function WhatsAppConversationScreen() {
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [searchMatchCursor, setSearchMatchCursor] = useState(0);
-  const [viewerUri, setViewerUri] = useState<string | null>(null);
+  const [viewerMessage, setViewerMessage] = useState<WhatsAppMessage | null>(null);
   const peerDecoded = normalizePhone(decodeURIComponent(peer ?? ''));
   const displayName = displayNameForPeer(peerDecoded, contacts);
 
   const [contextMenu, setContextMenu] = useState<{ message: WhatsAppMessage } | null>(null);
+  const [replyingTo, setReplyingTo] = useState<WhatsAppMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<WhatsAppMessage | null>(null);
+  const [forwardModalOpen, setForwardModalOpen] = useState(false);
+  const [kbVisible, setKbVisible] = useState(false);
+  const [flashMessageId, setFlashMessageId] = useState<string | null>(null);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [listAnchored, setListAnchored] = useState(false);
 
   const visibleMessages = useMemo(
     () => dedupeThreadMessages(messages.filter(shouldRenderInThread)),
@@ -121,6 +155,21 @@ export default function WhatsAppConversationScreen() {
   const chatItems = useMemo(
     () => injectDateSeparators(visibleMessages),
     [visibleMessages]
+  );
+
+  /** Newest-first for inverted FlatList — opens at latest message without scroll jump. */
+  const listItems = useMemo(() => [...chatItems].reverse(), [chatItems]);
+
+  chatItemsRef.current = listItems;
+
+  const scrollToLatest = useCallback((animated = false) => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated });
+  }, []);
+
+  const listIndexForMessageId = useCallback(
+    (messageId: string) =>
+      listItems.findIndex((i) => i.kind === 'message' && i.data.id === messageId),
+    [listItems]
   );
 
   const searchMatches = useMemo(() => {
@@ -134,6 +183,47 @@ export default function WhatsAppConversationScreen() {
   const highlightedMessageId =
     searchMatches.length > 0 ? searchMatches[searchMatchCursor]?.message.id ?? null : null;
 
+  const messagesById = useMemo(() => {
+    const map = new Map<string, WhatsAppMessage>();
+    for (const m of messages) map.set(m.id, m);
+    return map;
+  }, [messages]);
+
+  const scrollToBottom = useCallback(
+    (animated = true) => {
+      stickToBottomRef.current = true;
+      setShowScrollDown(false);
+      scrollToLatest(animated);
+    },
+    [scrollToLatest]
+  );
+
+  const scrollToMessage = useCallback(
+    (messageId: string) => {
+      const listIdx = listIndexForMessageId(messageId);
+      if (listIdx < 0) {
+        Alert.alert('Message not found', 'The original message is not in this chat.');
+        return;
+      }
+      stickToBottomRef.current = false;
+      setShowScrollDown(true);
+      setFlashMessageId(messageId);
+      setTimeout(() => setFlashMessageId(null), 1800);
+      pendingScrollIndexRef.current = listIdx;
+
+      const offset = estimatedOffsetForIndex(listItems, listIdx);
+      flatListRef.current?.scrollToOffset({ offset, animated: false });
+      requestAnimationFrame(() => {
+        flatListRef.current?.scrollToIndex({
+          index: listIdx,
+          animated: true,
+          viewPosition: 0.45,
+        });
+      });
+    },
+    [listIndexForMessageId, listItems]
+  );
+
   useEffect(() => {
     setSearchMatchCursor(0);
   }, [chatSearchQuery]);
@@ -143,17 +233,17 @@ export default function WhatsAppConversationScreen() {
     const msg = searchMatches[searchMatchCursor]?.message;
     if (!msg) return;
     // Find the index in chatItems (which includes separator rows)
-    const chatIdx = chatItems.findIndex((i) => i.kind === 'message' && i.data.id === msg.id);
-    if (chatIdx < 0) return;
+    const listIdx = listIndexForMessageId(msg.id);
+    if (listIdx < 0) return;
     const t = setTimeout(() => {
       flatListRef.current?.scrollToIndex({
-        index: chatIdx,
+        index: listIdx,
         animated: true,
         viewPosition: 0.35,
       });
     }, 80);
     return () => clearTimeout(t);
-  }, [searchMatchCursor, searchMatches, chatItems]);
+  }, [searchMatchCursor, searchMatches, listIndexForMessageId]);
 
   const loadMessages = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -166,6 +256,7 @@ export default function WhatsAppConversationScreen() {
           setMessages((prev) => {
             if (!hasNewWhatsAppMessages(prev, incoming)) return prev;
             const merged = mergeWhatsAppMessages(prev, incoming);
+            if (userId) writeThreadCache(userId, peerDecoded, merged);
             const grew = merged.length > prev.length;
             const lastChanged =
               merged.length > 0 &&
@@ -173,22 +264,26 @@ export default function WhatsAppConversationScreen() {
               merged[merged.length - 1]?.id !== prev[prev.length - 1]?.id;
             if (grew || lastChanged) {
               stickToBottomRef.current = true;
-              setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
+              setTimeout(() => scrollToLatest(true), 80);
             }
             return merged;
           });
         } else {
           stickToBottomRef.current = true;
-          setMessages(mergeWhatsAppMessages([], incoming));
+          const merged = mergeWhatsAppMessages([], incoming);
+          setMessages(merged);
+          if (userId) writeThreadCache(userId, peerDecoded, merged);
         }
         void markWhatsAppThreadRead(peerDecoded, new Date().toISOString());
       } catch {
-        if (!opts?.silent) setMessages([]);
+        if (!opts?.silent && !getMemoryThreadMessages(peerDecoded)?.length) {
+          setMessages([]);
+        }
       } finally {
         if (!opts?.silent) setLoading(false);
       }
     },
-    [peerDecoded]
+    [peerDecoded, scrollToLatest, userId]
   );
 
   const refreshSession = useCallback(async () => {
@@ -207,9 +302,63 @@ export default function WhatsAppConversationScreen() {
       router.back();
       return;
     }
-    void loadMessages();
+
+    const memCached = getMemoryThreadMessages(peerDecoded);
+    stickToBottomRef.current = true;
+    setShowScrollDown(false);
+
+    if (memCached?.length) {
+      setMessages(memCached);
+      setLoading(false);
+      void loadMessages({ silent: true });
+    } else {
+      setLoading(true);
+      setMessages([]);
+      if (userId) {
+        void readThreadCache(userId, peerDecoded).then((disk) => {
+          if (disk?.length) {
+            setMessages(disk);
+            setLoading(false);
+            void loadMessages({ silent: true });
+          } else {
+            void loadMessages({ silent: false });
+          }
+        });
+      } else {
+        void loadMessages({ silent: false });
+      }
+    }
+
     void refreshSession();
-  }, [loadMessages, refreshSession, peerDecoded, router]);
+  }, [loadMessages, refreshSession, peerDecoded, router, userId]);
+
+  useEffect(() => {
+    setListAnchored(false);
+  }, [peerDecoded]);
+
+  useLayoutEffect(() => {
+    if (chatSearchOpen) {
+      setListAnchored(true);
+      return;
+    }
+    if (loading && messages.length === 0) return;
+    if (!listItems.length) {
+      setListAnchored(true);
+      return;
+    }
+    stickToBottomRef.current = true;
+    setShowScrollDown(false);
+    // Inverted list starts at offset 0 (newest) — show immediately, no scroll jump.
+    setListAnchored(true);
+    scrollToLatest(false);
+  }, [
+    peerDecoded,
+    loading,
+    messages.length,
+    listItems.length,
+    chatSearchOpen,
+    scrollToLatest,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
@@ -229,16 +378,19 @@ export default function WhatsAppConversationScreen() {
     return () => sub.remove();
   }, [loadMessages]);
 
-  // Keep the latest message visible when the keyboard opens.
+  // Track keyboard visibility and keep the latest message visible when keyboard opens.
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const sub = Keyboard.addListener(showEvent, () => {
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => {
+      setKbVisible(true);
       if (stickToBottomRef.current && !chatSearchQuery.trim()) {
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 60);
+        setTimeout(() => scrollToLatest(true), 80);
       }
     });
-    return () => sub.remove();
-  }, [chatSearchQuery]);
+    const hideSub = Keyboard.addListener(hideEvent, () => setKbVisible(false));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [chatSearchQuery, scrollToLatest]);
 
   function sendMessage(payload: WhatsAppSendPayload) {
     if (needsTemplate && (!templateVar1.trim() || !templateVar2.trim())) {
@@ -270,12 +422,14 @@ export default function WhatsAppConversationScreen() {
       num_media: payload.mediaUrl ? 1 : 0,
       media_url: payload.mediaUrl ?? null,
       content_type: contentType,
+      reply_to_id: payload.replyToId ?? null,
     };
 
     setMessages((prev) => [...prev, optimistic]);
     setDraft('');
+    setReplyingTo(null);
     stickToBottomRef.current = true;
-    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+    setTimeout(() => scrollToLatest(true), 50);
 
     void (async () => {
       try {
@@ -289,6 +443,7 @@ export default function WhatsAppConversationScreen() {
           mediaUrl: payload.mediaUrl,
           mediaCaption: payload.mediaCaption,
           mediaFilename: payload.mediaFilename,
+          replyToId: payload.replyToId,
         });
         setMessages((prev) =>
           prev.map((m) =>
@@ -315,10 +470,164 @@ export default function WhatsAppConversationScreen() {
     })();
   }
 
+  function openContactInfo() {
+    setHeaderMenuOpen(false);
+    router.push(`/(workspace)/whatsapp/contact/${encodeURIComponent(peerDecoded)}`);
+  }
+
   function openRename() {
     setHeaderMenuOpen(false);
     setNameInput(lookupContactName(peerDecoded, contacts) ?? '');
     setRenameOpen(true);
+  }
+
+  function startReply(message: WhatsAppMessage) {
+    setContextMenu(null);
+    setReplyingTo(message);
+  }
+
+  function startForward(message: WhatsAppMessage) {
+    setContextMenu(null);
+    setForwardingMessage(message);
+    setForwardModalOpen(true);
+  }
+
+  function sendAttachments(items: PendingAttachment[], caption: string) {
+    if (!items.length) return;
+    const replyId = replyingTo?.id;
+    const replyToId = replyId && !replyId.startsWith('optimistic-') ? replyId : undefined;
+
+    items.forEach((att, index) => {
+      const isLast = index === items.length - 1;
+      const tempId = `optimistic-${Date.now()}-${index}`;
+      const messageType = att.kind ?? (att.isImage ? 'image' : 'document');
+      const optimistic: WhatsAppMessage = {
+        id: tempId,
+        direction: 'outbound',
+        peer_e164: peerDecoded,
+        body:
+          isLast && caption
+            ? caption
+            : messageType === 'image'
+              ? '[Image]'
+              : messageType === 'video'
+                ? '[Video]'
+                : messageType === 'audio'
+                  ? '[Audio]'
+                  : `[Document: ${att.filename ?? att.name}]`,
+        created_at: new Date().toISOString(),
+        delivery_status: 'pending',
+        message_sid: null,
+        num_media: 1,
+        media_url: att.remoteUrl ?? att.localUri,
+        content_type: messageType,
+        reply_to_id: isLast ? replyToId ?? null : null,
+      };
+
+      setMessages((prev) => [...prev, optimistic]);
+      stickToBottomRef.current = true;
+
+      void (async () => {
+        try {
+          let remoteUrl = att.remoteUrl;
+          let kind = messageType;
+          if (!remoteUrl) {
+            let uploadUri = att.localUri;
+            let uploadName = att.name;
+            let uploadMime = att.mimeType;
+            if (messageType === 'image' || att.isImage) {
+              const norm = await normalizeOutboundImageAsset(
+                { localUri: att.localUri, name: att.name, mimeType: att.mimeType },
+                { force: att.fromCamera }
+              );
+              uploadUri = norm.localUri;
+              uploadName = norm.name;
+              uploadMime = norm.mimeType;
+            }
+            const data = await whatsappApi.uploadMedia(uploadUri, uploadName, uploadMime);
+            remoteUrl = data.url;
+            kind = data.kind ?? messageType;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === tempId ? { ...m, media_url: remoteUrl!, content_type: kind } : m
+              )
+            );
+          }
+          const res = await whatsappApi.send(peerDecoded, {
+            messageType: kind,
+            mediaUrl: remoteUrl,
+            mediaCaption: isLast ? caption || undefined : undefined,
+            mediaFilename: att.filename ?? att.name,
+            replyToId: isLast ? replyToId : undefined,
+          });
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === tempId
+                ? {
+                    ...m,
+                    delivery_status: 'sent',
+                    message_sid: res.messageSid ?? m.message_sid ?? null,
+                    media_url: remoteUrl!,
+                  }
+                : m
+            )
+          );
+          void loadMessages({ silent: true });
+          void refreshSession();
+        } catch (e: unknown) {
+          const err = e instanceof Error ? e.message : 'Send failed';
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === tempId ? { ...m, delivery_status: `failed: ${err}` } : m
+            )
+          );
+        }
+      })();
+    });
+
+    setReplyingTo(null);
+    setTimeout(() => scrollToLatest(true), 50);
+  }
+
+  async function forwardToPeer(targetPeer: string) {
+    const msg = forwardingMessage;
+    if (!msg) return;
+    setForwardModalOpen(false);
+    setForwardingMessage(null);
+
+    try {
+      if (msg.media_url) {
+        const cat = categorizeWhatsAppMedia(msg);
+        const messageType = cat ?? 'document';
+        const mediaUrl = resolveWhatsAppMediaUrl(msg.media_url) ?? msg.media_url;
+        if (!mediaUrl?.startsWith('http')) {
+          Alert.alert('Forward failed', 'Media URL is not available for forwarding.');
+          return;
+        }
+        await whatsappApi.send(targetPeer, {
+          messageType,
+          mediaUrl,
+          mediaCaption: msg.body?.trim() && !msg.body.startsWith('[') ? msg.body : undefined,
+          mediaFilename: mediaFilenameFromMessage(msg),
+        });
+      } else if (msg.body?.trim()) {
+        await whatsappApi.send(targetPeer, {
+          messageType: 'text',
+          text: msg.body.trim(),
+        });
+      }
+      Alert.alert('Forwarded', 'Message sent.');
+    } catch (e: unknown) {
+      Alert.alert('Forward failed', e instanceof Error ? e.message : 'Could not forward message');
+    }
+  }
+
+  function sendWithReply(payload: WhatsAppSendPayload) {
+    const replyId = replyingTo?.id;
+    return sendMessage({
+      ...payload,
+      replyToId: replyId && !replyId.startsWith('optimistic-') ? replyId : undefined,
+    });
   }
 
   async function saveRename() {
@@ -331,7 +640,7 @@ export default function WhatsAppConversationScreen() {
     <KeyboardAvoidingView
       style={[styles.container, { paddingTop: insets.top }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+      keyboardVerticalOffset={0}
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -340,26 +649,27 @@ export default function WhatsAppConversationScreen() {
         <View style={styles.headerAvatar}>
           <Text style={styles.headerAvatarText}>{peerInitials(peerDecoded, displayName)}</Text>
         </View>
-        <TouchableOpacity style={styles.headerInfo} onPress={openRename} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.headerInfo} onPress={openContactInfo} activeOpacity={0.7}>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {displayName}
           </Text>
           <Text style={styles.headerSub} numberOfLines={1}>
             {displayName !== formatWhatsAppPhone(peerDecoded)
               ? formatWhatsAppPhone(peerDecoded)
-              : 'Tap to save contact'}
+              : 'Tap for media & info'}
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => {
-            setHeaderMenuOpen(false);
-            setChatSearchOpen((v) => !v);
-            if (chatSearchOpen) setChatSearchQuery('');
-          }}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name={chatSearchOpen ? 'close' : 'search'} size={22} color="#fff" />
-        </TouchableOpacity>
+        {!chatSearchOpen ? (
+          <TouchableOpacity
+            onPress={() => {
+              setHeaderMenuOpen(false);
+              setChatSearchOpen(true);
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="search" size={22} color="#fff" />
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           onPress={() => setHeaderMenuOpen((v) => !v)}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -397,28 +707,23 @@ export default function WhatsAppConversationScreen() {
             <Ionicons name="person-outline" size={18} color={Colors.text} />
             <Text style={styles.headerMenuText}>Save / edit contact name</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerMenuItem}
-            onPress={() => {
-              setHeaderMenuOpen(false);
-              void loadMessages();
-            }}
-          >
-            <Ionicons name="refresh" size={18} color={Colors.text} />
-            <Text style={styles.headerMenuText}>Refresh messages</Text>
-          </TouchableOpacity>
         </View>
       ) : null}
 
-      {loading ? (
+      {loading && messages.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator color="#25D366" size="large" />
         </View>
       ) : (
+        <View style={styles.listWrap}>
         <FlatList
           ref={flatListRef}
-          style={styles.list}
-          data={chatItems}
+          style={[styles.list, { opacity: listAnchored ? 1 : 0 }]}
+          inverted={listItems.length > 0}
+          data={listItems}
+          initialNumToRender={20}
+          maxToRenderPerBatch={12}
+          windowSize={15}
           keyExtractor={(item) => item.kind === 'separator' ? item.id : item.data.id}
           ListEmptyComponent={
             <View style={styles.emptyThread}>
@@ -436,55 +741,82 @@ export default function WhatsAppConversationScreen() {
                 </View>
               );
             }
+            const quoted = item.data.reply_to_id
+              ? messagesById.get(item.data.reply_to_id) ?? null
+              : null;
             return (
               <WhatsAppMessageBubble
                 message={item.data}
-                highlighted={item.data.id === highlightedMessageId}
+                highlighted={
+                  item.data.id === highlightedMessageId || item.data.id === flashMessageId
+                }
                 authToken={authToken}
-                onImagePress={(uri) => setViewerUri(uri)}
+                peerName={displayName}
+                quotedMessage={quoted}
+                onQuotedPress={quoted ? () => scrollToMessage(quoted.id) : undefined}
+                onSwipeReply={() => startReply(item.data)}
+                onImagePress={() => setViewerMessage(item.data)}
                 onLongPress={() => setContextMenu({ message: item.data })}
               />
             );
           }}
           contentContainerStyle={
-            chatItems.length === 0
+            listItems.length === 0
               ? { flexGrow: 1, padding: 12 }
               : {
-                  paddingHorizontal: 12,
-                  paddingTop: 12,
-                  paddingBottom: LIST_BOTTOM_GAP,
-                  flexGrow: 1,
-                  justifyContent: 'flex-end',
+                  paddingLeft: 8,
+                  paddingRight: 8,
+                  paddingTop: LIST_BOTTOM_GAP,
+                  paddingBottom: 12,
                 }
           }
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
           onScroll={(e) => {
-            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-            const distFromBottom =
-              contentSize.height - layoutMeasurement.height - contentOffset.y;
-            stickToBottomRef.current = distFromBottom < 72;
+            const { contentOffset } = e.nativeEvent;
+            const nearBottom = contentOffset.y < 72;
+            stickToBottomRef.current = nearBottom;
+            setShowScrollDown(!nearBottom && listItems.length > 0);
           }}
-          scrollEventThrottle={64}
+          scrollEventThrottle={32}
           onContentSizeChange={() => {
             if (stickToBottomRef.current && !chatSearchOpen && !chatSearchQuery.trim()) {
-              flatListRef.current?.scrollToEnd({ animated: false });
+              scrollToLatest(false);
             }
           }}
           onScrollToIndexFailed={(info) => {
+            const idx = pendingScrollIndexRef.current ?? info.index;
+            const items = chatItemsRef.current;
+            const offset = Math.max(
+              0,
+              items.length ? estimatedOffsetForIndex(items, idx) : info.averageItemLength * idx
+            );
+            flatListRef.current?.scrollToOffset({ offset, animated: false });
             setTimeout(() => {
               flatListRef.current?.scrollToIndex({
-                index: info.index,
+                index: idx,
                 animated: true,
-                viewPosition: 0.35,
+                viewPosition: 0.45,
               });
-            }, 100);
+              pendingScrollIndexRef.current = null;
+            }, 120);
           }}
           onScrollBeginDrag={() => {
             setHeaderMenuOpen(false);
             Keyboard.dismiss();
           }}
         />
+        {showScrollDown && !chatSearchOpen ? (
+          <TouchableOpacity
+            style={styles.scrollDownFab}
+            onPress={() => scrollToBottom(true)}
+            activeOpacity={0.85}
+            accessibilityLabel="Scroll to latest messages"
+          >
+            <Ionicons name="chevron-down" size={22} color="#54656F" />
+          </TouchableOpacity>
+        ) : null}
+        </View>
       )}
 
       {/* Long-press context menu */}
@@ -514,15 +846,17 @@ export default function WhatsAppConversationScreen() {
             ) : null}
             <TouchableOpacity
               style={styles.ctxItem}
-              onPress={() => {
-                if (contextMenu?.message.body) {
-                  setDraft((d) => (d ? `${d}\n` : '') + `> ${contextMenu.message.body}\n`);
-                }
-                setContextMenu(null);
-              }}
+              onPress={() => contextMenu && startReply(contextMenu.message)}
             >
-              <Ionicons name="return-down-forward-outline" size={20} color={Colors.text} />
-              <Text style={styles.ctxLabel}>Quote & reply</Text>
+              <Ionicons name="arrow-undo-outline" size={20} color={Colors.text} />
+              <Text style={styles.ctxLabel}>Reply</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.ctxItem}
+              onPress={() => contextMenu && startForward(contextMenu.message)}
+            >
+              <Ionicons name="arrow-redo-outline" size={20} color={Colors.text} />
+              <Text style={styles.ctxLabel}>Forward</Text>
             </TouchableOpacity>
             {contextMenu?.message.direction === 'outbound' ? (
               <TouchableOpacity
@@ -547,6 +881,14 @@ export default function WhatsAppConversationScreen() {
         </TouchableOpacity>
       </Modal>
 
+      {replyingTo ? (
+        <WhatsAppReplyBar
+          message={replyingTo}
+          peerName={displayName}
+          onCancel={() => setReplyingTo(null)}
+        />
+      ) : null}
+
       <WhatsAppComposerBar
         needsTemplate={needsTemplate}
         templateVar1={templateVar1}
@@ -557,15 +899,26 @@ export default function WhatsAppConversationScreen() {
         draft={draft}
         onDraftChange={setDraft}
         sending={false}
-        onSend={sendMessage}
-        bottomInset={insets.bottom}
+        onSend={sendWithReply}
+        onSendAttachments={sendAttachments}
+        bottomInset={Platform.OS === 'ios' && kbVisible ? 0 : insets.bottom}
         onEmojiOpenChange={setEmojiOpen}
       />
 
-      <WhatsAppImageViewer
-        uri={viewerUri}
+      <WhatsAppMediaViewer
+        message={viewerMessage}
         authToken={authToken}
-        onClose={() => setViewerUri(null)}
+        onClose={() => setViewerMessage(null)}
+      />
+
+      <ForwardChatModal
+        visible={forwardModalOpen}
+        contacts={contacts}
+        onClose={() => {
+          setForwardModalOpen(false);
+          setForwardingMessage(null);
+        }}
+        onForward={(target) => void forwardToPeer(target)}
       />
 
       <Modal visible={renameOpen} transparent animationType="fade" onRequestClose={() => setRenameOpen(false)}>
@@ -599,7 +952,24 @@ export default function WhatsAppConversationScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ECE5DD' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  listWrap: { flex: 1 },
   list: { flex: 1 },
+  scrollDownFab: {
+    position: 'absolute',
+    bottom: 12,
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 4,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

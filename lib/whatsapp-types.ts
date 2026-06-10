@@ -32,6 +32,7 @@ export type WhatsAppSendPayload = {
   mediaUrl?: string;
   mediaCaption?: string;
   mediaFilename?: string;
+  replyToId?: string;
 };
 
 export type WhatsAppStatus = {

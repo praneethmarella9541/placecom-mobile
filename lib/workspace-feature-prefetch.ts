@@ -1,4 +1,6 @@
 import { calendarApi, formsApi, gmailApi, whatsappApi } from './api';
+import { persistContactsCache } from './wa-contacts-cache';
+import { clearWhatsAppThreadCache, prefetchWhatsAppThreads } from './whatsapp-thread-cache';
 import { prefetchMailListViews, cancelMailPrefetch } from './inbox-list-prefetch';
 import { prefetchDriveListViews, cancelDrivePrefetch } from './drive-list-prefetch';
 import { getCacheWriteGeneration } from './session-cache-core';
@@ -53,12 +55,13 @@ export function clearWorkspaceFeaturePrefetchCaches(): void {
   loginRanForUser = null;
   cancelMailPrefetch();
   cancelDrivePrefetch();
+  clearWhatsAppThreadCache();
   whatsappCache = null;
   calendarCache = null;
   formsCache = null;
 }
 
-async function prefetchWhatsApp(signal: AbortSignal): Promise<void> {
+async function prefetchWhatsApp(signal: AbortSignal, userId: string): Promise<void> {
   if (signal.aborted) return;
   try {
     const [status, conversations, contacts] = await Promise.all([
@@ -68,6 +71,15 @@ async function prefetchWhatsApp(signal: AbortSignal): Promise<void> {
     ]);
     if (signal.aborted) return;
     whatsappCache = { status, conversations, contacts };
+    const rows = (contacts.contacts ?? []).map((c) => ({
+      peer_e164: c.peer_e164,
+      name: c.name?.trim() ?? '',
+    }));
+    if (rows.length) await persistContactsCache(userId, rows);
+    const peers = (conversations.conversations ?? []).map((c) => c.peer_e164);
+    if (peers.length) {
+      void prefetchWhatsAppThreads(userId, peers, { limit: 24 });
+    }
   } catch {
     /* best-effort */
   }
@@ -107,6 +119,7 @@ async function prefetchForms(signal: AbortSignal): Promise<void> {
 }
 
 async function runLoginPrefetchChainInternal(
+  userId: string,
   access: FeaturePrefetchAccess,
   signal: AbortSignal
 ): Promise<void> {
@@ -117,7 +130,7 @@ async function runLoginPrefetchChainInternal(
   ]);
   if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
 
-  if (access.whatsapp) await prefetchWhatsApp(signal);
+  if (access.whatsapp) await prefetchWhatsApp(signal, userId);
   if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
 
   if (access.calendar) await prefetchCalendar(signal);
@@ -143,6 +156,6 @@ export function scheduleLoginPrefetchChain(
     loginRanForUser = userId;
     const controller = new AbortController();
     loginChainAbort = controller;
-    void runLoginPrefetchChainInternal(access, controller.signal).catch(() => {});
+    void runLoginPrefetchChainInternal(userId, access, controller.signal).catch(() => {});
   }, LOGIN_DEBOUNCE_MS);
 }

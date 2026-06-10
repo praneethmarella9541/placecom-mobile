@@ -22,6 +22,7 @@ export function isImageMessage(message: WhatsAppMessage): boolean {
   return (
     message.content_type?.startsWith('image/') === true ||
     message.content_type === 'image' ||
+    message.body === '[Image]' ||
     /\.(jpe?g|png|gif|webp)(\?|$)/i.test(message.media_url)
   );
 }

@@ -8,6 +8,10 @@ import { clearMailListSessionCache } from './inbox-list-prefetch';
 import { clearDriveListSessionCache } from './drive-list-prefetch';
 import { clearMailThreadPrefetchCache } from './mail-thread-prefetch';
 import { clearWorkspaceFeaturePrefetchCaches } from './workspace-feature-prefetch';
+import {
+  clearWhatsAppThreadCache,
+  clearWhatsAppThreadDiskCache,
+} from './whatsapp-thread-cache';
 import { clearSessionInboxUnread } from './inbox-unread-session';
 import { clearDriveStarSessionSync } from './drive-star-session-sync';
 import { clearDriveMoveSessionSync } from './drive-move-session-sync';
@@ -28,11 +32,13 @@ export async function resetAppSessionCaches(userId?: string): Promise<void> {
   resetCacheWriteGeneration();
   clearPendingSessionState();
   clearWhatsAppUnreadSessionState();
+  clearWhatsAppThreadCache();
   clearGmailAttachmentCaches();
 
   const keys: string[] = [`${WA_CONV_CACHE_PREFIX}`];
   if (userId) {
     keys.push(`${WA_CONV_CACHE_PREFIX}:${userId}`);
+    await clearWhatsAppThreadDiskCache(userId);
   }
 
   await AsyncStorage.multiRemove(keys).catch(() => {});

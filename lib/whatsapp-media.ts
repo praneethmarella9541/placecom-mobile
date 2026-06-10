@@ -4,19 +4,32 @@ import type { WhatsAppMessage } from './whatsapp-types';
 /**
  * Resolve a stored media URL into something <Image>/<Audio> can actually load.
  *
- * The server may hand us either an absolute URL (S3/CDN/Twilio) or a relative
- * path like `/api/whatsapp/media/123`. Relative paths must be joined onto the
- * API base or the native image/audio loader silently fails (grey box / no audio).
+ * Rules:
+ *  • Relative paths (/api/...) → prepend BASE_URL (our proxy, gets Bearer token).
+ *  • Exotel API host URLs      → route through our proxy (require Exotel credentials).
+ *  • Other absolute HTTPS URLs → use as-is (public CDN links).
  */
 export function resolveWhatsAppMediaUrl(
   url: string | null | undefined
 ): string | null {
   const u = url?.trim();
   if (!u) return null;
-  if (/^(https?:|data:|file:|content:)/i.test(u)) return u;
-  if (u.startsWith('//')) return `https:${u}`;
+
+  // Relative path → our own API (proxy adds Bearer token automatically).
   if (u.startsWith('/')) return `${BASE_URL}${u}`;
-  // Bare token / id with no scheme and no leading slash — treat as API path.
+
+  // Exotel API URLs require server-side credentials — route through our proxy.
+  if (
+    u.startsWith('https://api.exotel.com/') ||
+    u.startsWith('https://api.in.exotel.com/')
+  ) {
+    return `${BASE_URL}/api/whatsapp/media?url=${encodeURIComponent(u)}`;
+  }
+
+  if (u.startsWith('//')) return `https:${u}`;
+  if (/^(https?:|data:|file:|content:)/i.test(u)) return u;
+
+  // Bare token / id with no scheme → treat as relative API path.
   return `${BASE_URL}/${u}`;
 }
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Keyboard,
+  InteractionManager,
   type TextInput as RNTextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,14 +18,27 @@ import { Colors } from '../../constants/colors';
 import { whatsappApi } from '../../lib/api';
 import type { WhatsAppSendPayload } from '../../lib/whatsapp-types';
 import { WhatsAppEmojiPicker } from './WhatsAppEmojiPicker';
-import { WhatsAppAttachSheet } from './WhatsAppAttachSheet';
+import { WhatsAppAttachSheet, type AttachPickerKind } from './WhatsAppAttachSheet';
 import {
   WhatsAppMediaAttachmentPreview,
   WHATSAPP_MAX_ATTACHMENTS,
   type PendingAttachment,
 } from './WhatsAppMediaAttachmentPreview';
+import { normalizeOutboundImageAsset } from '../../lib/whatsapp-outbound-media';
 
 const EMOJI_PANEL_HEIGHT = 280;
+
+let nativePickerBusy = false;
+
+async function withNativePickerLock(run: () => Promise<void>) {
+  if (nativePickerBusy) return;
+  nativePickerBusy = true;
+  try {
+    await run();
+  } finally {
+    nativePickerBusy = false;
+  }
+}
 
 type Props = {
   needsTemplate: boolean;
@@ -37,6 +51,7 @@ type Props = {
   onDraftChange: (v: string) => void;
   sending: boolean;
   onSend: (payload: WhatsAppSendPayload) => void | Promise<void>;
+  onSendAttachments?: (attachments: PendingAttachment[], caption: string) => void;
   bottomInset: number;
   onEmojiOpenChange?: (open: boolean) => void;
   onAttachmentActiveChange?: (active: boolean) => void;
@@ -53,6 +68,7 @@ export function WhatsAppComposerBar({
   onDraftChange,
   sending,
   onSend,
+  onSendAttachments,
   bottomInset,
   onEmojiOpenChange,
   onAttachmentActiveChange,
@@ -62,6 +78,7 @@ export function WhatsAppComposerBar({
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const uploadGenRef = useRef<Record<string, number>>({});
+  const pendingPickerRef = useRef<AttachPickerKind | null>(null);
 
   // The screen wraps this bar in a KeyboardAvoidingView, so the system keyboard
   // offset is handled there. Here we only reserve the safe-area inset — adding
@@ -110,7 +127,19 @@ export function WhatsAppComposerBar({
 
     void (async () => {
       try {
-        const data = await whatsappApi.uploadMedia(localUri, name, mimeType);
+        let uploadUri = localUri;
+        let uploadName = name;
+        let uploadMime = mimeType;
+        if (item.isImage) {
+          const norm = await normalizeOutboundImageAsset(
+            { localUri, name, mimeType },
+            { force: item.fromCamera }
+          );
+          uploadUri = norm.localUri;
+          uploadName = norm.name;
+          uploadMime = norm.mimeType;
+        }
+        const data = await whatsappApi.uploadMedia(uploadUri, uploadName, uploadMime);
         if (uploadGenRef.current[id] !== gen) return;
         setAttachmentsState((prev) =>
           prev.map((a) =>
@@ -142,6 +171,7 @@ export function WhatsAppComposerBar({
       name: string;
       mimeType: string;
       isImage: boolean;
+      fromCamera?: boolean;
       sizeBytes?: number | null;
     }>
   ) {
@@ -166,6 +196,7 @@ export function WhatsAppComposerBar({
           name: it.name,
           mimeType: it.mimeType,
           isImage: it.isImage,
+          fromCamera: it.fromCamera,
           status: 'uploading',
           sizeBytes: it.sizeBytes,
         };
@@ -210,63 +241,157 @@ export function WhatsAppComposerBar({
     setAttachSheetOpen(true);
   }
 
-  async function pickDocument() {
-    const res = await DocumentPicker.getDocumentAsync({
-      copyToCacheDirectory: true,
-      multiple: true,
+  function scheduleAttachPicker(kind: AttachPickerKind) {
+    pendingPickerRef.current = kind;
+    setAttachSheetOpen(false);
+  }
+
+  useEffect(() => {
+    if (attachSheetOpen || !pendingPickerRef.current) return;
+
+    const kind = pendingPickerRef.current;
+    pendingPickerRef.current = null;
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      switch (kind) {
+        case 'gallery':
+          void pickImage();
+          break;
+        case 'camera':
+          void pickCamera();
+          break;
+        case 'audio':
+          void pickAudio();
+          break;
+        case 'document':
+          void pickDocument();
+          break;
+      }
     });
-    if (res.canceled || !res.assets?.length) return;
-    queueAttachments(
-      res.assets.map((a) => {
-        const mime = a.mimeType ?? 'application/octet-stream';
-        return {
-          localUri: a.uri,
-          name: a.name ?? 'file',
-          mimeType: mime,
-          isImage: mime.startsWith('image/'),
-          sizeBytes: a.size ?? null,
-        };
-      })
-    );
+
+    return () => task.cancel();
+  }, [attachSheetOpen]);
+
+  async function pickDocument() {
+    await withNativePickerLock(async () => {
+      try {
+      const res = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: true,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      queueAttachments(
+        res.assets.map((a) => {
+          const mime = a.mimeType ?? 'application/octet-stream';
+          return {
+            localUri: a.uri,
+            name: a.name ?? 'file',
+            mimeType: mime,
+            isImage: mime.startsWith('image/'),
+            sizeBytes: a.size ?? null,
+          };
+        })
+      );
+      } catch (e) {
+        Alert.alert('Error', e instanceof Error ? e.message : 'Could not open document picker.');
+      }
+    });
   }
 
   async function pickImage() {
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.8,
-      allowsMultipleSelection: true,
-      selectionLimit: WHATSAPP_MAX_ATTACHMENTS,
+    await withNativePickerLock(async () => {
+      try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow access to your photos and videos to attach them.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images', 'videos'],
+        quality: 0.8,
+        allowsMultipleSelection: true,
+        selectionLimit: WHATSAPP_MAX_ATTACHMENTS,
+        // Convert HEIC/TIFF to JPEG so WhatsApp/Exotel can deliver the image.
+        preferredAssetRepresentationMode:
+          ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        videoExportPreset: ImagePicker.VideoExportPreset.H264_1280x720,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      queueAttachments(
+        res.assets.map((a, i) => {
+          // Use asset.type ("image"|"video") as the source of truth — mimeType can be null on some devices.
+          const isVideo = a.type === 'video' || (a.mimeType ?? '').startsWith('video/');
+          const mime = a.mimeType ?? (isVideo ? 'video/mp4' : 'image/jpeg');
+          return {
+            localUri: a.uri,
+            name: a.fileName ?? (isVideo ? `video-${i + 1}.mp4` : `photo-${i + 1}.jpg`),
+            mimeType: mime,
+            isImage: !isVideo,
+            sizeBytes: a.fileSize ?? null,
+          };
+        })
+      );
+      } catch (e) {
+        Alert.alert('Error', e instanceof Error ? e.message : 'Could not open gallery.');
+      }
     });
-    if (res.canceled || !res.assets?.length) return;
-    queueAttachments(
-      res.assets.map((a, i) => ({
-        localUri: a.uri,
-        name: a.fileName ?? `photo-${i + 1}.jpg`,
-        mimeType: a.mimeType ?? 'image/jpeg',
-        isImage: true,
-        sizeBytes: a.fileSize ?? null,
-      }))
-    );
   }
 
   async function pickCamera() {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Camera', 'Allow camera access to take a photo.');
-      return;
-    }
-    const res = await ImagePicker.launchCameraAsync({ quality: 0.8 });
-    if (res.canceled || !res.assets?.[0]) return;
-    const a = res.assets[0];
-    queueAttachments([
-      {
-        localUri: a.uri,
-        name: a.fileName ?? 'photo.jpg',
-        mimeType: a.mimeType ?? 'image/jpeg',
-        isImage: true,
-        sizeBytes: a.fileSize ?? null,
-      },
-    ]);
+    await withNativePickerLock(async () => {
+      try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Camera permission needed', 'Allow camera access to take a photo or video.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 0.85,
+        exif: false,
+        preferredAssetRepresentationMode:
+          ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const a = res.assets[0];
+      queueAttachments([
+        {
+          localUri: a.uri,
+          name: a.fileName ?? 'photo.jpg',
+          mimeType: 'image/jpeg',
+          isImage: true,
+          fromCamera: true,
+          sizeBytes: a.fileSize ?? null,
+        },
+      ]);
+      } catch (e) {
+        Alert.alert('Error', e instanceof Error ? e.message : 'Could not open camera.');
+      }
+    });
+  }
+
+  async function pickAudio() {
+    await withNativePickerLock(async () => {
+      try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['audio/*'],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      queueAttachments(
+        res.assets.map((a) => ({
+          localUri: a.uri,
+          name: a.name ?? 'audio',
+          mimeType: a.mimeType ?? 'audio/mpeg',
+          isImage: false,
+          sizeBytes: a.size ?? null,
+        }))
+      );
+      } catch (e) {
+        Alert.alert('Error', e instanceof Error ? e.message : 'Could not open audio picker.');
+      }
+    });
   }
 
   function handleSend() {
@@ -278,22 +403,15 @@ export function WhatsAppComposerBar({
     }
 
     if (hasAttachments) {
-      const ready = attachments.filter((a) => a.status === 'ready' && a.remoteUrl);
-      if (!ready.length) return;
       const caption = draft.trim();
-      clearAttachments();
+      const items = [...attachments];
+      for (const a of attachments) {
+        uploadGenRef.current[a.id] = (uploadGenRef.current[a.id] ?? 0) + 1;
+      }
+      setAttachmentsState([]);
       onDraftChange('');
       setEmojiPanel(false);
-
-      ready.forEach((att, index) => {
-        const isLast = index === ready.length - 1;
-        void onSend({
-          messageType: att.kind ?? (att.isImage ? 'image' : 'document'),
-          mediaUrl: att.remoteUrl!,
-          mediaCaption: isLast ? caption || undefined : undefined,
-          mediaFilename: att.filename ?? att.name,
-        });
-      });
+      onSendAttachments?.(items, caption);
       return;
     }
 
@@ -302,16 +420,10 @@ export function WhatsAppComposerBar({
     setEmojiPanel(false);
   }
 
-  const anyUploading = attachments.some((a) => a.status === 'uploading');
-  const allReady =
-    hasAttachments &&
-    attachments.every((a) => a.status === 'ready' && a.remoteUrl) &&
-    !anyUploading;
-
   const canSend = needsTemplate
     ? templateVar1.trim() && templateVar2.trim()
     : hasAttachments
-      ? allReady
+      ? true
       : !!draft.trim();
 
   return (
@@ -319,9 +431,7 @@ export function WhatsAppComposerBar({
       <WhatsAppAttachSheet
         visible={attachSheetOpen}
         onClose={() => setAttachSheetOpen(false)}
-        onPickGallery={() => void pickImage()}
-        onPickCamera={() => void pickCamera()}
-        onPickDocument={() => void pickDocument()}
+        onSelect={scheduleAttachPicker}
       />
 
       <WhatsAppEmojiPicker
@@ -370,18 +480,22 @@ export function WhatsAppComposerBar({
         ) : null}
 
         <View style={styles.bar}>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={toggleEmoji}
-            disabled={needsTemplate || hasAttachments}
-          >
-            <Ionicons
-              name={emojiOpen ? 'keypad-outline' : 'happy-outline'}
-              size={26}
-              color={needsTemplate || hasAttachments ? Colors.textMuted : '#54656F'}
-            />
-          </TouchableOpacity>
+          {/* ── Left: attach button (WhatsApp order) ───────────────── */}
+          {!needsTemplate ? (
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={openAttachSheet}
+              disabled={hasAttachments}
+            >
+              <Ionicons
+                name="add"
+                size={26}
+                color={hasAttachments ? Colors.textMuted : '#54656F'}
+              />
+            </TouchableOpacity>
+          ) : null}
 
+          {/* ── Middle: text input ─────────────────────────────────── */}
           {!needsTemplate && !hasAttachments ? (
             <TextInput
               ref={inputRef}
@@ -401,6 +515,7 @@ export function WhatsAppComposerBar({
             <View style={styles.inputSpacer} />
           )}
 
+          {/* ── Right: emoji toggle + send / mic ───────────────────── */}
           {!needsTemplate ? (
             hasAttachments ? (
               <TouchableOpacity
@@ -408,16 +523,19 @@ export function WhatsAppComposerBar({
                 onPress={handleSend}
                 disabled={!canSend || sending}
               >
-                {anyUploading ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons name="send" size={20} color="#fff" />
-                )}
+                <Ionicons name="send" size={20} color="#fff" />
               </TouchableOpacity>
             ) : (
               <>
-                <TouchableOpacity style={styles.iconBtn} onPress={openAttachSheet}>
-                  <Ionicons name="add" size={28} color="#54656F" />
+                <TouchableOpacity
+                  style={styles.iconBtn}
+                  onPress={toggleEmoji}
+                >
+                  <Ionicons
+                    name={emojiOpen ? 'keypad-outline' : 'happy-outline'}
+                    size={24}
+                    color="#54656F"
+                  />
                 </TouchableOpacity>
                 {draft.trim() ? (
                   <TouchableOpacity
@@ -427,7 +545,11 @@ export function WhatsAppComposerBar({
                   >
                     <Ionicons name="send" size={20} color="#fff" />
                   </TouchableOpacity>
-                ) : null}
+                ) : (
+                  <TouchableOpacity style={styles.iconBtn} activeOpacity={0.6}>
+                    <Ionicons name="mic-outline" size={24} color="#54656F" />
+                  </TouchableOpacity>
+                )}
               </>
             )
           ) : (
@@ -453,13 +575,16 @@ export const WHATSAPP_COMPOSER_EMOJI_HEIGHT = EMOJI_PANEL_HEIGHT;
 
 const styles = StyleSheet.create({
   outer: {
+    position: 'relative',
+    zIndex: 10,
+    elevation: 10,
     backgroundColor: '#F0F2F5',
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.border,
   },
   wrap: {
     paddingHorizontal: 4,
-    paddingBottom: 4,
+    paddingBottom: 0,
   },
   templateBox: {
     marginHorizontal: 4,
@@ -484,32 +609,33 @@ const styles = StyleSheet.create({
   },
   bar: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     gap: 2,
-    paddingHorizontal: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
   },
   iconBtn: {
-    width: 40,
-    height: 48,
+    width: 38,
+    height: 38,
     alignItems: 'center',
     justifyContent: 'center',
   },
   input: {
     flex: 1,
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 16,
+    borderRadius: 22,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    fontSize: 15,
     color: Colors.text,
-    minHeight: 48,
+    minHeight: 38,
     maxHeight: 120,
     backgroundColor: Colors.surface,
   },
-  inputSpacer: { flex: 1, minHeight: 48 },
+  inputSpacer: { flex: 1, minHeight: 38 },
   sendBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#25D366',
     alignItems: 'center',
     justifyContent: 'center',

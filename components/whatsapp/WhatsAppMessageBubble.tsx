@@ -1,43 +1,79 @@
-import React, { useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   View,
   Text,
   Image,
-  TouchableOpacity,
   StyleSheet,
-  Pressable,
   ActivityIndicator,
 } from 'react-native';
+import { Gesture, GestureDetector, Pressable as GHPressable } from 'react-native-gesture-handler';
+import Reanimated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { format } from 'date-fns';
 import { Ionicons } from '@expo/vector-icons';
 import type { WhatsAppMessage } from '../../lib/whatsapp-types';
 import { Colors } from '../../constants/colors';
 import { getDeliveryFailureAdvice, showWhatsAppFailureDetail } from '../../lib/whatsapp-delivery';
 import { isEmojiOnlyMessage, isImageMessage } from '../../lib/whatsapp-message-display';
+
+// Placeholder bodies that Twilio inserts when media arrives without a stored URL
+const MEDIA_PLACEHOLDER_RE = /^\[(Image|Video|Audio|Voice|Document|Sticker|Location)\]$/i;
 import {
   isAudioMessage,
+  isVideoMessage,
   resolveWhatsAppMediaUrl,
   whatsAppMediaSource,
 } from '../../lib/whatsapp-media';
-import { getWhatsAppTickLevel } from '../../lib/whatsapp-tick-level';
 import { WhatsAppAudioBubble } from './WhatsAppAudioBubble';
+import { WhatsAppQuotedReply } from './WhatsAppQuotedReply';
+import { WhatsAppTicks } from './WhatsAppTicks';
 
-// ── Tick rendering as nested Text (no View → no flickering / overlap) ────────
-
-const GREY = '#8696A0';
-const BLUE = '#53BDEB';
 const FAIL_RED = '#EF4444';
 
-/** Returns the tick string + colour for a given delivery status. */
-function tickInfo(deliveryStatus?: string | null): { str: string; color: string } | null {
-  const level = getWhatsAppTickLevel(deliveryStatus);
-  switch (level) {
-    case 'failed':    return { str: ' !', color: FAIL_RED };
-    case 'pending':   return { str: ' ·', color: GREY };      // clock-like indicator
-    case 'read':      return { str: ' ✓✓', color: BLUE };
-    case 'delivered': return { str: ' ✓✓', color: GREY };
-    default:          return { str: ' ✓', color: GREY };       // sent
-  }
+function BubbleMetaContent({
+  timeLabel,
+  isOut,
+  deliveryStatus,
+  light = false,
+}: {
+  timeLabel: string;
+  isOut: boolean;
+  deliveryStatus?: string | null;
+  light?: boolean;
+}) {
+  return (
+    <>
+      <Text style={[styles.time, isOut && !light && styles.timeOut, light && styles.timeLight]}>
+        {timeLabel}
+      </Text>
+      {isOut ? <WhatsAppTicks deliveryStatus={deliveryStatus} light={light} /> : null}
+    </>
+  );
+}
+
+/** Time + ticks in a bottom row (audio, files, emoji). */
+function BubbleMetaRow({
+  timeLabel,
+  isOut,
+  deliveryStatus,
+}: {
+  timeLabel: string;
+  isOut: boolean;
+  deliveryStatus?: string | null;
+}) {
+  return (
+    <View style={styles.metaRow}>
+      <BubbleMetaContent
+        timeLabel={timeLabel}
+        isOut={isOut}
+        deliveryStatus={deliveryStatus}
+      />
+    </View>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +82,11 @@ type Props = {
   message: WhatsAppMessage;
   highlighted?: boolean;
   authToken?: string | null;
+  peerName?: string;
+  quotedMessage?: WhatsAppMessage | null;
   onImagePress?: (uri: string) => void;
+  onQuotedPress?: () => void;
+  onSwipeReply?: () => void;
   onLongPress?: () => void;
 };
 
@@ -54,42 +94,80 @@ export function WhatsAppMessageBubble({
   message,
   highlighted,
   authToken,
+  peerName = 'Contact',
+  quotedMessage,
   onImagePress,
+  onQuotedPress,
+  onSwipeReply,
   onLongPress,
 }: Props) {
+  const translateX = useSharedValue(0);
   const [imageFailed, setImageFailed] = useState(false);
   const [imageLoading, setImageLoading] = useState(true);
 
   const isOut  = message.direction === 'outbound';
   const isImage = isImageMessage(message);
   const isAudio = isAudioMessage(message);
+  const isVideo = isVideoMessage(message);
   const showMedia = !!message.media_url;
-  const mediaUri = resolveWhatsAppMediaUrl(message.media_url);
-  const mediaSource = whatsAppMediaSource(mediaUri, authToken);
-  const body  = message.body?.trim() ?? '';
-  const emojiOnly   = !showMedia && isEmojiOnlyMessage(body);
-  const caption     = showMedia && isImage && body && body !== '[Image]' ? body : '';
-  const showTextBody = !showMedia && !!body && !emojiOnly;
+  const mediaUri = resolveWhatsAppMediaUrl(message.media_url) ?? message.media_url ?? null;
+  const isLocalMedia =
+    !!mediaUri && (mediaUri.startsWith('file:') || mediaUri.startsWith('content:'));
+  const mediaSource = isLocalMedia
+    ? { uri: mediaUri }
+    : whatsAppMediaSource(mediaUri, authToken);
+  const body = message.body ?? '';
+  const bodyTrimmed = body.trim();
+  const emojiOnly = !showMedia && isEmojiOnlyMessage(bodyTrimmed);
+  // Body is a Twilio placeholder but has no stored media_url → render as a chip, not raw text
+  const isOrphanPlaceholder = !showMedia && MEDIA_PLACEHOLDER_RE.test(bodyTrimmed);
+  const caption = showMedia && isImage && bodyTrimmed && bodyTrimmed !== '[Image]' ? body : '';
+  const showTextBody = !showMedia && !!bodyTrimmed && !emojiOnly && !isOrphanPlaceholder;
 
   const timeLabel = message.created_at
     ? format(new Date(message.created_at), 'h:mm a')
     : '';
 
-  const ticks = isOut ? tickInfo(message.delivery_status) : null;
+  const metaProps = {
+    timeLabel,
+    isOut,
+    deliveryStatus: message.delivery_status,
+  };
 
-  // ── Meta row used for non-text bubbles (images, files, emoji) ────────────
-  const MetaRow = () => (
-    <View style={styles.metaRow}>
-      <Text style={[styles.time, isOut && styles.timeOut]}>{timeLabel}</Text>
-      {ticks ? (
-        <Text style={[styles.tickText, { color: ticks.color }]}>{ticks.str.trim()}</Text>
-      ) : null}
-    </View>
+  const triggerSwipeReply = useCallback(() => {
+    onSwipeReply?.();
+  }, [onSwipeReply]);
+
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-22, 22])
+        .failOffsetY([-18, 18])
+        .enabled(!!onSwipeReply)
+        .onUpdate((e) => {
+          if (isOut && e.translationX < 0) {
+            translateX.value = Math.max(e.translationX * 0.35, -40);
+          } else if (!isOut && e.translationX > 0) {
+            translateX.value = Math.min(e.translationX * 0.35, 40);
+          }
+        })
+        .onEnd((e) => {
+          if (isOut && e.translationX < -56) {
+            runOnJS(triggerSwipeReply)();
+          } else if (!isOut && e.translationX > 56) {
+            runOnJS(triggerSwipeReply)();
+          }
+          translateX.value = withSpring(0, { damping: 20, stiffness: 300 });
+        }),
+    [isOut, onSwipeReply, triggerSwipeReply, translateX]
   );
 
-  return (
-    <View style={[styles.wrapper, isOut ? styles.right : styles.left]}>
-      <Pressable onLongPress={onLongPress} delayLongPress={300} android_ripple={null}>
+  const swipeStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+
+  const bubble = (
+    <View>
         <View
           style={[
             styles.bubble,
@@ -99,11 +177,22 @@ export function WhatsAppMessageBubble({
             highlighted && styles.bubbleHighlight,
           ]}
         >
+          {quotedMessage ? (
+            <WhatsAppQuotedReply
+              quoted={quotedMessage}
+              peerName={peerName}
+              outbound={isOut}
+              onPress={onQuotedPress}
+            />
+          ) : null}
+
           {/* ── Image ─────────────────────────────────────────────────── */}
           {showMedia && isImage && mediaUri && !imageFailed ? (
-            <TouchableOpacity
-              activeOpacity={0.92}
+            <GHPressable
               onPress={() => onImagePress?.(mediaUri)}
+              onLongPress={onLongPress}
+              delayLongPress={300}
+              style={styles.imagePressable}
             >
               <Image
                 source={mediaSource ?? { uri: mediaUri }}
@@ -121,46 +210,62 @@ export function WhatsAppMessageBubble({
                   <ActivityIndicator color="#fff" />
                 </View>
               ) : null}
-              {/* Time pill overlaid on image */}
-              <View style={styles.imageMeta}>
-                <Text style={styles.imageTime}>{timeLabel}</Text>
-                {ticks ? (
-                  <Text style={[styles.imageTickText, { color: 'rgba(255,255,255,0.85)' }]}>
-                    {ticks.str.trim()}
-                  </Text>
-                ) : null}
+              <View style={styles.imageMeta} pointerEvents="none">
+                <View style={styles.imageMetaRow}>
+                  <BubbleMetaContent {...metaProps} light />
+                </View>
               </View>
-            </TouchableOpacity>
+            </GHPressable>
           ) : null}
 
           {/* ── Image that failed to load → fall back to a tappable chip ─ */}
           {showMedia && isImage && (imageFailed || !mediaUri) ? (
             <>
-              <TouchableOpacity
+              <GHPressable
                 style={styles.fileChip}
                 onPress={() => mediaUri && onImagePress?.(mediaUri)}
+                onLongPress={onLongPress}
+                delayLongPress={300}
               >
                 <Ionicons name="image" size={18} color={isOut ? '#075E54' : Colors.primary} />
                 <Text style={styles.fileText} numberOfLines={1}>Tap to open image</Text>
-              </TouchableOpacity>
-              <MetaRow />
+              </GHPressable>
+              <BubbleMetaRow {...metaProps} />
             </>
           ) : null}
 
           {/* ── Audio / voice note ────────────────────────────────────── */}
           {showMedia && !isImage && isAudio && mediaSource ? (
-            <>
+            <GHPressable onLongPress={onLongPress} delayLongPress={300}>
               <WhatsAppAudioBubble source={mediaSource} outbound={isOut} />
-              <MetaRow />
+              <BubbleMetaRow {...metaProps} />
+            </GHPressable>
+          ) : null}
+
+          {/* ── Video ─────────────────────────────────────────────────── */}
+          {showMedia && !isImage && !isAudio && isVideo ? (
+            <>
+              <GHPressable
+                style={styles.fileChip}
+                onPress={() => mediaUri && onImagePress?.(mediaUri)}
+                onLongPress={onLongPress}
+                delayLongPress={300}
+              >
+                <Ionicons name="play-circle" size={22} color={isOut ? '#075E54' : Colors.primary} />
+                <Text style={styles.fileText} numberOfLines={1}>Video — tap to open</Text>
+              </GHPressable>
+              <BubbleMetaRow {...metaProps} />
             </>
           ) : null}
 
           {/* ── File / document ───────────────────────────────────────── */}
-          {showMedia && !isImage && !isAudio ? (
+          {showMedia && !isImage && !isAudio && !isVideo ? (
             <>
-              <TouchableOpacity
+              <GHPressable
                 style={styles.fileChip}
                 onPress={() => mediaUri && onImagePress?.(mediaUri)}
+                onLongPress={onLongPress}
+                delayLongPress={300}
               >
                 <Ionicons
                   name="document-attach"
@@ -170,44 +275,68 @@ export function WhatsAppMessageBubble({
                 <Text style={styles.fileText} numberOfLines={1}>
                   {body.startsWith('[') ? body : 'Attachment'}
                 </Text>
-              </TouchableOpacity>
-              <MetaRow />
+              </GHPressable>
+              <BubbleMetaRow {...metaProps} />
             </>
+          ) : null}
+
+          {/* ── Media placeholder without stored URL ──────────────────── */}
+          {isOrphanPlaceholder ? (
+            <View style={styles.orphanWrap}>
+              <View style={styles.orphanChip}>
+                <Ionicons
+                  name={
+                    /Video/i.test(bodyTrimmed) ? 'videocam-outline' :
+                    /Audio|Voice/i.test(bodyTrimmed) ? 'mic-outline' :
+                    /Image/i.test(bodyTrimmed) ? 'image-outline' :
+                    'document-outline'
+                  }
+                  size={16}
+                  color={Colors.textMuted}
+                />
+                <Text style={styles.orphanLabel}>
+                  {/Video/i.test(bodyTrimmed) ? 'Video' :
+                   /Audio|Voice/i.test(bodyTrimmed) ? 'Voice message' :
+                   /Image/i.test(bodyTrimmed) ? 'Photo' :
+                   'Attachment'}
+                </Text>
+              </View>
+              <BubbleMetaRow {...metaProps} />
+            </View>
           ) : null}
 
           {/* ── Emoji-only ────────────────────────────────────────────── */}
           {emojiOnly ? (
-            <>
+            <GHPressable onLongPress={onLongPress} delayLongPress={300}>
               <Text style={styles.emojiBody}>{body}</Text>
-              <MetaRow />
-            </>
+              <BubbleMetaRow {...metaProps} />
+            </GHPressable>
           ) : null}
 
-          {/* ── Plain text ────────────────────────────────────────────── *
-           *
-           *  The timestamp + ticks are rendered as NESTED <Text> nodes
-           *  inside the same <Text> as the message body.  This means:
-           *    • No absolute positioning → zero flickering / overlap
-           *    • React Native reflows the whole thing as a single paragraph
-           *    • Short messages → time sits on the same visual line
-           *    • Long (wrapped) messages → time falls after the last word
-           *
-           *  A tiny non-breaking-space prefix on the time creates the same
-           *  small visual gap WhatsApp shows.
-           * ──────────────────────────────────────────────────────────── */}
+          {/* ── Plain text ────────────────────────────────────────────── */}
           {showTextBody ? (
-            <Text style={[styles.body, isOut && styles.bodyOut]}>
-              {body}
-              {/* Inline timestamp — always flows with the text naturally */}
-              <Text style={[styles.inlineTime, isOut && styles.inlineTimeOut]}>
-                {'\u00A0\u00A0'}{timeLabel}
-              </Text>
-              {ticks ? (
-                <Text style={[styles.inlineTicks, { color: ticks.color }]}>
-                  {ticks.str}
+            <GHPressable onLongPress={onLongPress} delayLongPress={300}>
+            <View>
+              <Text style={[styles.body, isOut && styles.bodyOut]}>
+                {body}
+                {/*
+                  Transparent spacer reserves space on the last text line so the
+                  visible text never runs under the floating time badge.
+                  Width: 2 non-breaking spaces + time string + tick allowance.
+                */}
+                <Text style={styles.bodyTimeSpacer}>
+                  {isOut
+                    ? '\u00A0\u00A0' + timeLabel + '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0'
+                    : '\u00A0\u00A0' + timeLabel + '\u00A0\u00A0'}
                 </Text>
-              ) : null}
-            </Text>
+              </Text>
+              {/* Real badge floats over the spacer area, bottom-right of wrapper */}
+              <View style={styles.bodyFloatMeta}>
+                <Text style={[styles.time, isOut && styles.timeOut]}>{timeLabel}</Text>
+                {isOut ? <WhatsAppTicks deliveryStatus={message.delivery_status} /> : null}
+              </View>
+            </View>
+            </GHPressable>
           ) : null}
 
           {/* Delivery failure hint (below the text paragraph) */}
@@ -227,18 +356,35 @@ export function WhatsAppMessageBubble({
             <Text style={[styles.caption, isOut && styles.bodyOut]}>{caption}</Text>
           ) : null}
         </View>
-      </Pressable>
+      </View>
+  );
+
+  return (
+    <View style={[styles.wrapper, isOut ? styles.wrapperOut : styles.wrapperIn]}>
+      <GestureDetector gesture={panGesture}>
+        <Reanimated.View
+          style={[isOut ? styles.alignOut : styles.alignIn, swipeStyle]}
+        >
+          {bubble}
+        </Reanimated.View>
+      </GestureDetector>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrapper: { flexDirection: 'row', marginBottom: 2 },
-  left:    { justifyContent: 'flex-start' },
-  right:   { justifyContent: 'flex-end' },
+  wrapper: {
+    flexDirection: 'row',
+    marginBottom: 2,
+    width: '100%',
+    alignSelf: 'stretch',
+  },
+  wrapperIn:  { justifyContent: 'flex-start' },
+  wrapperOut: { justifyContent: 'flex-end' },
+  alignIn:  { alignSelf: 'flex-start', maxWidth: '82%' },
+  alignOut: { alignSelf: 'flex-end', maxWidth: '82%' },
 
   bubble: {
-    maxWidth: '82%',
     borderRadius: 8,
     paddingHorizontal: 9,
     paddingTop: 6,
@@ -255,6 +401,7 @@ const styles = StyleSheet.create({
   bubbleImage:     { padding: 3, overflow: 'hidden' },
   bubbleHighlight: { borderWidth: 2, borderColor: '#25D366' },
 
+  imagePressable: { borderRadius: 6, overflow: 'hidden' },
   // Image
   image: { width: 240, height: 200, borderRadius: 6, backgroundColor: Colors.border },
   imageLoading: {
@@ -263,28 +410,46 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   imageMeta: {
-    position: 'absolute', right: 6, bottom: 6,
-    flexDirection: 'row', alignItems: 'center', gap: 3,
+    position: 'absolute',
+    right: 6,
+    bottom: 6,
     backgroundColor: 'rgba(0,0,0,0.45)',
-    borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
-  imageTime:     { fontSize: 11, color: '#fff', fontWeight: '500' },
-  imageTickText: { fontSize: 11 },
+  imageMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
 
   // File
   fileChip: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     padding: 8, backgroundColor: 'rgba(0,0,0,0.04)', borderRadius: 8, marginBottom: 4,
   },
-  fileText: { flex: 1, fontSize: 13, color: Colors.text },
+  fileText: { flexShrink: 1, fontSize: 13, color: Colors.text },
+  orphanWrap: { minWidth: 140 },
+  orphanChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+    marginBottom: 2,
+  },
+  orphanLabel: { fontSize: 13, color: Colors.textMuted, fontStyle: 'italic' },
 
   // Emoji
   emojiBody: { fontSize: 40, lineHeight: 46, textAlign: 'center', includeFontPadding: false },
 
-  // Meta row for non-text content (file / emoji)
   metaRow: {
-    flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'flex-end', gap: 4, marginTop: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 2,
+    marginTop: 2,
+    alignSelf: 'flex-end',
   },
 
   // ── Plain text body ──────────────────────────────────────────────────────
@@ -292,28 +457,29 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: Colors.text,
     lineHeight: 21,
+    includeFontPadding: false,
   },
   bodyOut: { color: Colors.text },
-
-  // Inline time — nested <Text>, smaller than body, vertically shifted down
-  // so it sits at the baseline of the last text line
-  inlineTime: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    lineHeight: 21,   // matches body so it sits on the same baseline
-  },
-  inlineTimeOut: { color: '#7E9B7A' },
-
-  // Inline ticks — nested <Text>
-  inlineTicks: {
+  bodyTimeSpacer: {
+    // Invisible — same font metrics as the real badge so it reserves the
+    // correct amount of space on the last text line.
     fontSize: 11,
     lineHeight: 21,
+    color: 'transparent',
+    includeFontPadding: false,
+  },
+  bodyFloatMeta: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
 
-  // Shared small time text (non-inline uses)
-  time:     { fontSize: 11, color: Colors.textMuted },
-  timeOut:  { color: '#7E9B7A' },
-  tickText: { fontSize: 11 },
+  time:      { fontSize: 11, color: Colors.textMuted, lineHeight: 15 },
+  timeOut:   { color: '#7E9B7A' },
+  timeLight: { color: '#fff', fontWeight: '500' },
 
   caption: { fontSize: 14, color: Colors.text, lineHeight: 19, paddingHorizontal: 4, paddingBottom: 2 },
   failHint: { fontSize: 11, color: FAIL_RED, lineHeight: 15, marginTop: 3 },

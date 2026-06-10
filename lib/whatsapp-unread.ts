@@ -127,12 +127,17 @@ async function migrateLocalReadStateToSupabase(userId: string): Promise<void> {
   await AsyncStorage.removeItem(await localReadKey(userId));
 }
 
-/** Load read cursors — uses TTL cache to avoid hitting Supabase on every poll. */
-async function loadReadAtByPeer(userId: string): Promise<Record<string, string>> {
+/** Load read cursors — uses TTL cache unless forceRefresh (cross-device sync). */
+async function loadReadAtByPeer(
+  userId: string,
+  opts?: { forceRefresh?: boolean }
+): Promise<Record<string, string>> {
   const now = Date.now();
-  const cached = _readAtCache.get(userId);
-  if (cached && now - cached.ts < READ_AT_CACHE_TTL_MS) {
-    return mergeReadMaps(cached.data, _optimisticReadAt);
+  if (!opts?.forceRefresh) {
+    const cached = _readAtCache.get(userId);
+    if (cached && now - cached.ts < READ_AT_CACHE_TTL_MS) {
+      return mergeReadMaps(cached.data, _optimisticReadAt);
+    }
   }
 
   const { data, error } = await supabase
@@ -240,7 +245,7 @@ export async function attachUnreadCounts(
   } = await supabase.auth.getUser();
   if (!user || !businessLine) return conversations;
 
-  const readAtByPeer = await loadReadAtByPeer(user.id);
+  const readAtByPeer = await loadReadAtByPeer(user.id, { forceRefresh: true });
 
   const { data: rows, error } = await supabase
     .from('whatsapp_messages')
@@ -266,8 +271,7 @@ export async function attachUnreadCounts(
 
   return conversations.map((c) => {
     const peer = canonicalWhatsAppPeer(c.peer_e164);
-    const fromApi = c.unread_count ?? 0;
     const computed = unreadByPeer.get(peer) ?? 0;
-    return { ...c, unread_count: Math.max(fromApi, computed) };
+    return { ...c, unread_count: computed };
   });
 }

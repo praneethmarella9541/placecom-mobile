@@ -1,101 +1,83 @@
 import React from 'react';
 import {
-  Modal,
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   Pressable,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../../constants/colors';
 
+export type AttachPickerKind = 'gallery' | 'camera' | 'audio' | 'document';
+
 type Option = {
-  id: string;
+  id: AttachPickerKind;
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
-  onPress: () => void;
 };
 
 type Props = {
   visible: boolean;
   onClose: () => void;
-  onPickGallery: () => void;
-  onPickCamera: () => void;
-  onPickDocument: () => void;
+  onSelect: (kind: AttachPickerKind) => void;
 };
 
-export function WhatsAppAttachSheet({
-  visible,
-  onClose,
-  onPickGallery,
-  onPickCamera,
-  onPickDocument,
-}: Props) {
-  const insets = useSafeAreaInsets();
+const OPTIONS: Option[] = [
+  { id: 'gallery', label: 'Photos & Videos', icon: 'images-outline' },
+  { id: 'camera', label: 'Camera', icon: 'camera-outline' },
+  { id: 'audio', label: 'Audio', icon: 'musical-notes-outline' },
+  { id: 'document', label: 'Document', icon: 'document-text-outline' },
+];
 
-  const options: Option[] = [
-    {
-      id: 'gallery',
-      label: 'Gallery',
-      icon: 'images-outline',
-      onPress: () => {
-        onClose();
-        onPickGallery();
-      },
-    },
-    {
-      id: 'camera',
-      label: 'Camera',
-      icon: 'camera-outline',
-      onPress: () => {
-        onClose();
-        onPickCamera();
-      },
-    },
-    {
-      id: 'document',
-      label: 'Document',
-      icon: 'document-text-outline',
-      onPress: () => {
-        onClose();
-        onPickDocument();
-      },
-    },
-  ];
+/** Inline bottom sheet — avoids React Native Modal, which blocks native pickers on Android. */
+export function WhatsAppAttachSheet({ visible, onClose, onSelect }: Props) {
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+
+  if (!visible) return null;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable
-          style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) }]}
-          onPress={(e) => e.stopPropagation()}
-        >
-          <View style={styles.handle} />
-          <Text style={styles.title}>Attach</Text>
-          {options.map((opt) => (
-            <TouchableOpacity key={opt.id} style={styles.row} onPress={opt.onPress}>
-              <View style={styles.iconWrap}>
-                <Ionicons name={opt.icon} size={24} color="#075E54" />
-              </View>
-              <Text style={styles.rowLabel}>{opt.label}</Text>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-            <Text style={styles.cancelText}>Cancel</Text>
+    <View style={[styles.overlay, { height: windowHeight }]} pointerEvents="box-none">
+      <Pressable style={styles.backdrop} onPress={onClose} />
+      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View style={styles.handle} />
+        <Text style={styles.title}>Attach</Text>
+        {OPTIONS.map((opt) => (
+          <TouchableOpacity
+            key={opt.id}
+            style={styles.row}
+            onPress={() => onSelect(opt.id)}
+          >
+            <View style={styles.iconWrap}>
+              <Ionicons name={opt.icon} size={24} color="#075E54" />
+            </View>
+            <Text style={styles.rowLabel}>{opt.label}</Text>
           </TouchableOpacity>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        ))}
+        <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+  overlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1000,
+    elevation: 1000,
     justifyContent: 'flex-end',
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)',
   },
   sheet: {
     backgroundColor: Colors.surface,

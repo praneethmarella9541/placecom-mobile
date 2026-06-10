@@ -28,6 +28,8 @@ import {
 } from '../../../lib/whatsapp-utils';
 import { savedContactsWithoutConversation } from '../../../lib/whatsapp-contacts';
 import { attachUnreadCounts } from '../../../lib/whatsapp-unread';
+import { getWhatsAppPrefetchCache } from '../../../lib/workspace-feature-prefetch';
+import { prefetchWhatsAppThreads, warmWhatsAppThread } from '../../../lib/whatsapp-thread-cache';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 
@@ -47,16 +49,21 @@ export default function WhatsAppScreen() {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
 
-  // Load cached conversations immediately on mount so the list is instant
+  // Load cached conversations + login prefetch immediately so the list is instant
   useEffect(() => {
     if (!userId) return;
+    const pref = getWhatsAppPrefetchCache();
+    if (pref?.conversations?.conversations?.length) {
+      setConversations(pref.conversations.conversations as WhatsAppConversation[]);
+      setLoading(false);
+    }
     AsyncStorage.getItem(convCacheKey(userId))
       .then((raw) => {
         if (!raw) return;
         const cached = JSON.parse(raw) as WhatsAppConversation[];
         if (cached.length > 0) {
           setConversations(cached);
-          setLoading(false); // show cached list without spinner
+          setLoading(false);
         }
       })
       .catch(() => {});
@@ -75,6 +82,11 @@ export default function WhatsAppScreen() {
       // Persist to cache for next cold open
       if (userId) {
         AsyncStorage.setItem(convCacheKey(userId), JSON.stringify(withUnread)).catch(() => {});
+        void prefetchWhatsAppThreads(
+          userId,
+          withUnread.map((c) => c.peer_e164),
+          { limit: 24 }
+        );
       }
     },
     [userId]
@@ -186,7 +198,7 @@ export default function WhatsAppScreen() {
         />
       </View>
 
-      {loading ? (
+      {loading && conversations.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator color="#25D366" />
         </View>
@@ -225,9 +237,10 @@ export default function WhatsAppScreen() {
             <ConvRow
               conv={item}
               displayName={displayNameForPeer(item.peer_e164, contacts)}
-              onPress={() =>
-                router.push(`/(workspace)/whatsapp/${encodeURIComponent(item.peer_e164)}` as any)
-              }
+              onPress={() => {
+                if (userId) void warmWhatsAppThread(userId, item.peer_e164);
+                router.push(`/(workspace)/whatsapp/${encodeURIComponent(item.peer_e164)}` as any);
+              }}
             />
           )}
           refreshControl={
