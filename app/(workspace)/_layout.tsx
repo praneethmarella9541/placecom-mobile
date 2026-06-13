@@ -358,6 +358,8 @@ export default function WorkspaceLayout() {
           <Stack.Screen name="broadcasting/index" />
           <Stack.Screen name="dashboard/index" />
           <Stack.Screen name="admin/index" />
+          <Stack.Screen name="admin/analytics/index" />
+          <Stack.Screen name="admin/analytics/[userId]" />
         </Stack>
       </Drawer>
     </DrawerContext.Provider>

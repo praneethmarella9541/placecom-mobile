@@ -61,13 +61,17 @@ export function CallListRow({ call, contacts, onPress, onCallBack }: Props) {
           <View style={[styles.statusPill, { backgroundColor: status.bg }]}>
             <Text style={[styles.statusText, { color: status.text }]}>{status.label}</Text>
           </View>
-          {talkSecs != null ? (
-            <Text style={styles.duration}>{formatCallDuration(talkSecs)}</Text>
-          ) : null}
           {call.recording_sid ? (
-            <View style={styles.recBadge}>
-              <Ionicons name="mic" size={11} color={CallsTheme.blue} />
+            <View style={styles.recRow}>
+              <View style={styles.recBadge}>
+                <Ionicons name="mic" size={11} color={CallsTheme.blue} />
+              </View>
+              {talkSecs != null ? (
+                <Text style={styles.duration}>{formatCallDuration(talkSecs)}</Text>
+              ) : null}
             </View>
+          ) : talkSecs != null ? (
+            <Text style={styles.duration}>{formatCallDuration(talkSecs)}</Text>
           ) : null}
         </View>
       </View>
@@ -124,6 +128,7 @@ const styles = StyleSheet.create({
   time: { fontSize: 12, color: CallsTheme.textMuted },
   peer: { fontSize: 13, color: CallsTheme.textSecondary, fontVariant: ['tabular-nums'] },
   meta: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  recRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   statusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   statusText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
   duration: { fontSize: 12, color: CallsTheme.textSecondary, fontVariant: ['tabular-nums'] },

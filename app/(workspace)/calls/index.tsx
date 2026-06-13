@@ -312,14 +312,6 @@ export default function CallsScreen() {
               onCallBack={(number) => void placeCall(number)}
             />
           )}
-          ListHeaderComponent={
-            calls.length > 0 ? (
-              <View style={styles.listHeader}>
-                <Text style={styles.listHeaderTitle}>{calls.length} recent calls</Text>
-                <Text style={styles.listHeaderSub}>Tap a row for details · green button to call back</Text>
-              </View>
-            ) : null
-          }
           renderSectionHeader={({ section: { title } }) => (
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>{title}</Text>
@@ -416,18 +408,6 @@ const styles = StyleSheet.create({
   },
   retryText: { color: CallsTheme.fabIcon, fontWeight: '600', fontSize: 14 },
   listContent: { paddingTop: 8, paddingBottom: 100 },
-  listHeader: {
-    marginHorizontal: 16,
-    marginBottom: 12,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: CallsTheme.blueLight,
-    borderWidth: 1,
-    borderColor: 'rgba(26,115,232,0.12)',
-    gap: 4,
-  },
-  listHeaderTitle: { fontSize: 15, fontWeight: '700', color: CallsTheme.text },
-  listHeaderSub: { fontSize: 13, color: CallsTheme.textSecondary, lineHeight: 18 },
   sectionHeader: {
     marginHorizontal: 16,
     marginBottom: 8,

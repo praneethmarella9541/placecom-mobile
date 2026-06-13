@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'expo-router';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   RefreshControl, ActivityIndicator, Alert, Modal, TextInput, Switch, ScrollView,
@@ -24,6 +25,7 @@ const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
 };
 
 export default function AdminScreen() {
+  const router = useRouter();
   const { openDrawer } = useDrawer();
   const { profile } = useAuth();
   const [members, setMembers] = useState<any[]>([]);
@@ -163,8 +165,14 @@ export default function AdminScreen() {
       <ScreenHeader
         title="Team"
         onMenuPress={openDrawer}
-        rightAction={{ icon: 'person-add-outline', onPress: openAdd }}
+        rightAction={{ icon: 'stats-chart-outline', onPress: () => router.push('/(workspace)/admin/analytics' as any) }}
       />
+      <View style={styles.toolbar}>
+        <TouchableOpacity style={styles.toolbarBtn} onPress={openAdd}>
+          <Ionicons name="person-add-outline" size={16} color={Colors.primary} />
+          <Text style={styles.toolbarBtnText}>Add member</Text>
+        </TouchableOpacity>
+      </View>
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
       ) : (
@@ -348,6 +356,25 @@ function MemberRow({ member, onEdit, onDelete }: { member: any; onEdit: () => vo
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  toolbar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  toolbarBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: Colors.primaryLight,
+  },
+  toolbarBtnText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
   memberCard: {
     flexDirection: 'row',
     alignItems: 'center',

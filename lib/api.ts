@@ -695,6 +695,60 @@ export const mailMergeApi = {
     post<MailMergeSendResult>('/api/broadcast/mail-merge', data),
 };
 
+export type UsageCosts = {
+  callsInr: number;
+  whatsappInr: number;
+  totalInr: number;
+  callBillableMinutes: number;
+  whatsappUtilityMsgs: number;
+  whatsappPromotionalMsgs: number;
+  whatsappSessionMsgs: number;
+};
+
+export type AdminAnalyticsTotals = {
+  callsIn: number;
+  callsOut: number;
+  callsFailed: number;
+  talkMinutes: number;
+  smsSent: number;
+  whatsappSent: number;
+  whatsappReceived: number;
+  emailsSent: number;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+  costs: UsageCosts;
+};
+
+export type AdminUserAnalytics = {
+  userId: string;
+  email: string | null;
+  displayUsername: string | null;
+  role: string;
+  totals: AdminAnalyticsTotals;
+  callStatusBreakdown: Record<string, number>;
+  series: Array<{ date: string; callsIn: number; callsOut: number; messages: number; tokens: number }>;
+};
+
+export type AdminAnalyticsResponse = {
+  users: AdminUserAnalytics[];
+  accountTotals?: {
+    callsIn: number;
+    callsOut: number;
+    talkMinutes: number;
+    smsSent: number;
+    whatsappSent: number;
+    whatsappReceived: number;
+    emailsSent: number;
+    costUsd: number;
+    costs: UsageCosts;
+  };
+  windowDays?: number;
+  from?: string;
+  to?: string;
+  error?: string;
+};
+
 // Admin
 export const adminApi = {
   listExotelNumbers: () => get<{ numbers: string[] }>('/api/admin/exotel-numbers'),
@@ -736,6 +790,17 @@ export const adminApi = {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
     return body;
+  },
+  getAnalytics: (params?: { userId?: string; from?: string; to?: string; allTime?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.userId) qs.set('userId', params.userId);
+    if (params?.allTime) qs.set('allTime', '1');
+    else {
+      if (params?.from) qs.set('from', params.from);
+      if (params?.to) qs.set('to', params.to);
+    }
+    const q = qs.toString();
+    return get<AdminAnalyticsResponse>(`/api/admin/analytics${q ? `?${q}` : ''}`);
   },
 };
 

@@ -82,6 +82,10 @@ export function callTalkSeconds(call: CallLog): number | null {
   if (call.conversation_duration_seconds && call.conversation_duration_seconds > 0) {
     return Math.round(call.conversation_duration_seconds);
   }
+  // Recording exists but durations missing — use total until API backfill runs.
+  if (call.recording_sid && call.duration_seconds && call.duration_seconds > 0) {
+    return Math.round(call.duration_seconds);
+  }
   return null;
 }
 
