@@ -23,6 +23,7 @@
         "backgroundColor": "#fafafa"
       },
       "package": "in.thenucleus.app",
+      "softwareKeyboardLayoutMode": "resize",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [

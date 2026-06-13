@@ -2,10 +2,16 @@ import { supabase } from './supabase';
 
 export const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
+/** Set EXPO_PUBLIC_DEBUG_API=1 to log every request in dev builds. */
+const DEBUG_API = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_API === '1';
+
+function debugApi(...args: unknown[]): void {
+  if (DEBUG_API) console.log(...args);
+}
+
 async function authHeaders(): Promise<Record<string, string>> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
-  console.log('[api] session token present:', !!token, '| BASE_URL:', BASE_URL);
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -35,7 +41,7 @@ async function get<T>(
 ): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  console.log('[api] GET', url.toString());
+  debugApi('[api] GET', url.toString());
   const res = await fetchWithTimeout(url.toString(), {
     headers: await authHeaders(),
     signal: opts?.signal,
@@ -49,7 +55,7 @@ async function get<T>(
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  console.log('[api] POST', `${BASE_URL}${path}`);
+  debugApi('[api] POST', `${BASE_URL}${path}`);
   const res = await fetchWithTimeout(`${BASE_URL}${path}`, {
     method: 'POST',
     headers: await authHeaders(),
@@ -254,6 +260,23 @@ export const gmailApi = {
         size: number;
         messageId: string;
       }>;
+      files?: Array<{
+        attachmentId: string;
+        filename: string;
+        mimeType: string;
+        size: number;
+        messageId: string;
+      }>;
+      message?: {
+        id?: string;
+        attachments?: Array<{
+          attachmentId: string;
+          filename: string;
+          mimeType: string;
+          size: number;
+          messageId: string;
+        }>;
+      };
     }>('/api/gmail/drafts', { draftId }),
   deleteDraft: async (draftId: string) => {
     const headers = await authHeaders();
