@@ -7,8 +7,17 @@ import {
   prefetchMailListViews,
 } from './inbox-list-prefetch';
 
+/** Set EXPO_PUBLIC_DISABLE_MAIL_THREAD_PREFETCH=1 in .env to pause background thread fetches. */
+export const MAIL_THREAD_PREFETCH_DISABLED =
+  process.env.EXPO_PUBLIC_DISABLE_MAIL_THREAD_PREFETCH === '1';
+
 const THREAD_CACHE_TTL_MS = 120_000;
 const BODY_PREFETCH_CONCURRENCY = 2;
+/** Skip re-warming thread bodies when inbox list reloads frequently (history poll). */
+const BODY_WARM_COOLDOWN_MS = 90_000;
+
+let lastBodyWarmAt = 0;
+let bodyWarmInFlight = false;
 
 type ThreadPayload = { threadId: string; messages: GmailMessage[]; labelIds?: string[] };
 
@@ -69,6 +78,7 @@ export function prefetchMailThreadOnce(
   threadId: string,
   opts?: { signal?: AbortSignal }
 ): Promise<ThreadPayload | null> {
+  if (MAIL_THREAD_PREFETCH_DISABLED) return Promise.resolve(null);
   if (!userId || !threadId || opts?.signal?.aborted) return Promise.resolve(null);
 
   const key = cacheKey(userId, threadId, 'prefetch');
@@ -123,6 +133,7 @@ export async function prefetchMailBodiesForWarmedCategories(
     concurrency?: number;
   }
 ): Promise<void> {
+  if (MAIL_THREAD_PREFETCH_DISABLED) return;
   if (!userId || opts?.signal?.aborted) return;
 
   const threadIds = collectThreadIdsFromWarmedMailLists(opts?.perCategory ?? MAIL_LIST_PAGE_SIZE);
@@ -144,18 +155,35 @@ export async function prefetchMailBodiesForWarmedCategories(
 /** After the active list loads — warm other categories, then prefetch their thread bodies. */
 export function startMailListAndBodyPrefetchWarm(
   userId: string | undefined,
-  opts?: { skipKeys?: Set<string>; listConcurrency?: number; bodyConcurrency?: number }
+  opts?: {
+    skipKeys?: Set<string>;
+    listConcurrency?: number;
+    bodyConcurrency?: number;
+    /** Bypass cooldown (e.g. pull-to-refresh). */
+    force?: boolean;
+  }
 ): void {
+  const now = Date.now();
+  if (!opts?.force && (bodyWarmInFlight || now - lastBodyWarmAt < BODY_WARM_COOLDOWN_MS)) {
+    return;
+  }
+  bodyWarmInFlight = true;
+  lastBodyWarmAt = now;
+
   void prefetchMailListViews({
     skipKeys: opts?.skipKeys,
     concurrency: opts?.listConcurrency ?? 3,
-  }).then(() => {
-    if (userId) {
-      void prefetchMailBodiesForWarmedCategories(userId, {
-        concurrency: opts?.bodyConcurrency ?? BODY_PREFETCH_CONCURRENCY,
-      });
-    }
-  });
+  })
+    .then(() => {
+      if (userId && !MAIL_THREAD_PREFETCH_DISABLED) {
+        return prefetchMailBodiesForWarmedCategories(userId, {
+          concurrency: opts?.bodyConcurrency ?? BODY_PREFETCH_CONCURRENCY,
+        });
+      }
+    })
+    .finally(() => {
+      bodyWarmInFlight = false;
+    });
 }
 
 /** Login / warm: list metadata first, then thread bodies for each category. */
@@ -174,25 +202,30 @@ export async function warmMailListsThenThreadBodies(
     signal: opts?.signal,
   });
   if (opts?.signal?.aborted) return;
-  await prefetchMailBodiesForWarmedCategories(userId, {
-    signal: opts?.signal,
-    concurrency: opts?.bodyConcurrency ?? BODY_PREFETCH_CONCURRENCY,
-  });
+  if (!MAIL_THREAD_PREFETCH_DISABLED) {
+    await prefetchMailBodiesForWarmedCategories(userId, {
+      signal: opts?.signal,
+      concurrency: opts?.bodyConcurrency ?? BODY_PREFETCH_CONCURRENCY,
+    });
+  }
 }
 
 /** Open thread — reuse prefetch promise if available; else fetch (marks read server-side). */
 export async function openMailThread(userId: string, threadId: string): Promise<ThreadPayload> {
   const cached = getCachedThread(userId, threadId);
   if (cached) {
-    // Background revalidate on open.
-    void gmailApi.getThread(threadId).then((data) => store(userId, threadId, 'open', data)).catch(() => {});
+    if (!MAIL_THREAD_PREFETCH_DISABLED) {
+      void gmailApi.getThread(threadId).then((data) => store(userId, threadId, 'open', data)).catch(() => {});
+    }
     return cached;
   }
 
   const prefetchInflight = inflight.get(`prefetch:${userId}:${threadId}`);
   if (prefetchInflight) {
     const data = await prefetchInflight;
-    void gmailApi.getThread(threadId).then((d) => store(userId, threadId, 'open', d)).catch(() => {});
+    if (!MAIL_THREAD_PREFETCH_DISABLED) {
+      void gmailApi.getThread(threadId).then((d) => store(userId, threadId, 'open', d)).catch(() => {});
+    }
     return data;
   }
 

@@ -103,17 +103,21 @@ export function createComposeDraftSaver(
         const htmlBody = sanitizeEmailHtml(snapshot.htmlBody);
         const hasSaved = snapshot.attachments.some((f) => f.status === 'saved');
         const hasNewReady = snapshot.attachments.some((f) => f.status === 'ready');
+        const hasStaged = snapshot.attachments.some(
+          (f) => f.status === 'staged' && f.stagedUploadId
+        );
         const hasDrive = snapshot.attachments.some((f) => f.status === 'drive');
         const preserveAttachments =
-          !!snapshot.draftId && hasSaved && !hasNewReady && !hasDrive;
-        const mergeExistingAttachments = !!snapshot.draftId && hasSaved && hasNewReady;
+          !!snapshot.draftId && hasSaved && !hasNewReady && !hasStaged && !hasDrive;
+        const mergeExistingAttachments =
+          !!snapshot.draftId && hasSaved && (hasNewReady || hasStaged);
         const filesToEncode =
           mergeExistingAttachments
             ? snapshot.attachments.filter((f) => f.status === 'ready')
             : preserveAttachments
               ? []
               : snapshot.attachments.filter((f) => f.status === 'ready' || f.status === 'saved');
-        const hadAttachmentPayload = filesToEncode.length > 0;
+        const hadAttachmentPayload = filesToEncode.length > 0 || hasStaged;
 
         const res = await saveComposeDraft({
           to: snapshot.to,

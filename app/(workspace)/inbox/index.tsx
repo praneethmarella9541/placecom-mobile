@@ -121,8 +121,18 @@ export default function InboxScreen() {
       .catch(() => {});
   }, []);
 
+  const labelCountsInFlightRef = useRef(false);
+  const labelCountsLastAtRef = useRef(0);
+  const LABEL_COUNTS_MIN_INTERVAL_MS = 20_000;
+
   const refreshLabelCounts = useCallback(async (force = false) => {
     if (!session) return;
+    const now = Date.now();
+    if (!force) {
+      if (labelCountsInFlightRef.current) return;
+      if (now - labelCountsLastAtRef.current < LABEL_COUNTS_MIN_INTERVAL_MS) return;
+    }
+    labelCountsInFlightRef.current = true;
     const fetchStartedAt = Date.now();
     try {
       const counts = await loadMailboxLabelCounts({
@@ -161,6 +171,9 @@ export default function InboxScreen() {
       setLabelCounts(final);
     } catch (e: unknown) {
       console.warn('[inbox] label counts failed:', (e as Error)?.message);
+    } finally {
+      labelCountsInFlightRef.current = false;
+      labelCountsLastAtRef.current = Date.now();
     }
   }, [session, allLabels]);
 
@@ -172,12 +185,12 @@ export default function InboxScreen() {
   const scheduleCountRefresh = useCallback(() => {
     countRefreshTimersRef.current.forEach(clearTimeout);
     countRefreshTimersRef.current = [];
-    void refreshLabelCounts();
+    void refreshLabelCounts(true);
     countRefreshTimersRef.current.push(
-      setTimeout(() => void refreshLabelCounts(), 800)
+      setTimeout(() => void refreshLabelCounts(true), 800)
     );
     countRefreshTimersRef.current.push(
-      setTimeout(() => void refreshLabelCounts(), 2500)
+      setTimeout(() => void refreshLabelCounts(true), 2500)
     );
   }, [refreshLabelCounts]);
 
@@ -188,7 +201,7 @@ export default function InboxScreen() {
   // Poll while this screen is focused so badges stay aligned with Gmail.
   useFocusEffect(
     useCallback(() => {
-      const timer = setInterval(() => void refreshLabelCounts(), 45_000);
+      const timer = setInterval(() => void refreshLabelCounts(), 60_000);
       return () => clearInterval(timer);
     }, [refreshLabelCounts])
   );
@@ -884,6 +897,7 @@ export default function InboxScreen() {
                   skipKeys: new Set([listCacheKey]),
                   listConcurrency: 3,
                   bodyConcurrency: 2,
+                  force: true,
                 });
               }}
               tintColor={Colors.primary}
@@ -1111,6 +1125,13 @@ function SelectionActionBtn({
   );
 }
 
+function threadListPreviewLine(subject: string | undefined, snippet: string | undefined): string {
+  const subj = subject?.trim() || '(no subject)';
+  const snip = snippet?.trim();
+  if (!snip || snip === subj) return subj;
+  return `${subj} — ${snip}`;
+}
+
 function ThreadRow({
   thread,
   labelsById,
@@ -1140,8 +1161,7 @@ function ThreadRow({
   const avatarBg = avatarColorForName(fromName);
   const isUnread = Boolean(thread.unread);
   const isStarred = Boolean(thread.starred);
-  const subject = thread.subject || '(no subject)';
-  const previewLine = thread.snippet ? `${subject} — ${thread.snippet}` : subject;
+  const previewLine = threadListPreviewLine(thread.subject, thread.snippet);
   const chips = (thread.labelIds ?? [])
     .map((id) => labelsById.get(id))
     .filter((l): l is GmailLabel => !!l && l.type === 'user')

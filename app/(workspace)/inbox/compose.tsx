@@ -1,13 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert, ScrollView,
+  ActivityIndicator, Alert, ScrollView, KeyboardAvoidingView, Platform, BackHandler,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useMailView } from '../_layout';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAppInsets } from '../../../lib/safe-area';
 import * as DocumentPicker from 'expo-document-picker';
 import ComposeRichEditor, { type ComposeEditorHandle } from '../../../components/inbox/ComposeRichEditor';
 import { gmailApi } from '../../../lib/api';
@@ -16,13 +15,20 @@ import { markPendingDelete } from '../../../lib/pending-deletes';
 import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
 import { uploadStagedAttachment } from '../../../lib/gmail-staged-attachment';
 import { queueComposeMailSend } from '../../../lib/mail-outbox';
+import { queueComposeDraftSave } from '../../../lib/draft-outbox';
 import {
   createComposeDraftSaver,
   type ComposeDraftSnapshot,
   type DraftSaveResult,
   type DraftSaveStatus,
 } from '../../../lib/compose-draft-save';
-import { draftAttachmentsToFiles, draftHtmlForEditor, extractDriveLinksFromHtml, stripDriveLinksFromHtml } from '../../../lib/gmail-draft-compose';
+import {
+  draftAttachmentsToFiles,
+  draftHtmlForEditor,
+  extractDriveLinksFromHtml,
+  parseDraftAttachmentsFromResponse,
+  stripDriveLinksFromHtml,
+} from '../../../lib/gmail-draft-compose';
 import { htmlToPlain, sanitizeEmailHtml } from '../../../lib/html-email';
 import {
   isValidEmailAddress,
@@ -110,13 +116,13 @@ function nextKey() { return String(++keySeq); }
 export default function ComposeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ draftId?: string }>();
-  const insets = useAppInsets();
   const { bumpDraftCount } = useMailView();
   const [to, setTo] = useState('');
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
   const [subject, setSubject] = useState('');
   const [bodyHtml, setBodyHtml] = useState('');
+  const [editorInitialHtml, setEditorInitialHtml] = useState('');
   const [editorKey, setEditorKey] = useState('new');
   const [showCcBcc, setShowCcBcc] = useState(false);
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>('idle');
@@ -141,16 +147,21 @@ export default function ComposeScreen() {
   const syncAttachmentsFromDraft = useCallback(async (savedDraftId: string) => {
     try {
       const refreshed = await gmailApi.getDraft(savedDraftId);
+      const parsed = parseDraftAttachmentsFromResponse(refreshed);
       const driveFiles = composeStateRef.current.attachments.filter((f) => f.status === 'drive');
-      const savedFiles = draftAttachmentsToFiles(
-        (refreshed.attachments ?? []).map((a) => ({
-          ...a,
-          messageId: a.messageId ?? refreshed.messageId ?? '',
-        })),
-        refreshed.messageId,
-        nextKey
+      const pendingFiles = composeStateRef.current.attachments.filter(
+        (f) =>
+          f.status === 'ready' ||
+          f.status === 'preparing' ||
+          f.status === 'uploading' ||
+          f.status === 'staged'
       );
-      const merged = [...savedFiles, ...driveFiles];
+
+      // API may omit attachment metadata — never wipe chips the user already has.
+      if (parsed.length === 0) return;
+
+      const savedFiles = draftAttachmentsToFiles(parsed, refreshed.messageId, nextKey);
+      const merged = [...savedFiles, ...driveFiles, ...pendingFiles];
       setAttachments(merged);
       composeStateRef.current.attachments = merged;
     } catch {
@@ -178,7 +189,7 @@ export default function ComposeScreen() {
       bumpDraftCount(+1);
     }
 
-    if (result.hadAttachmentPayload || snapshot.attachments.length > 0) {
+    if (result.hadAttachmentPayload) {
       await syncAttachmentsFromDraft(result.draftId);
     }
 
@@ -254,17 +265,11 @@ export default function ComposeScreen() {
         const loadedHtml = draftHtmlForEditor(d.textBody ?? '', rawHtml);
 
         // Restore MIME attachments (saved on the Gmail draft).
-        const savedAttachments: PickedFile[] =
-          d.attachments?.map((a) => ({
-            key: nextKey(),
-            name: a.filename,
-            mimeType: a.mimeType,
-            size: a.size,
-            uri: '',
-            status: 'saved' as AttachmentStatus,
-            attachmentId: a.attachmentId,
-            savedMessageId: a.messageId ?? d.messageId,
-          })) ?? [];
+        const savedAttachments: PickedFile[] = draftAttachmentsToFiles(
+          parseDraftAttachmentsFromResponse(d),
+          d.messageId,
+          nextKey
+        );
 
         // Restore Drive file chips that were embedded as links in the HTML body.
         const driveAttachments: PickedFile[] = extractDriveLinksFromHtml(d.htmlBody ?? '').map((f) => ({
@@ -280,10 +285,9 @@ export default function ComposeScreen() {
         if (loadedBcc) { setBcc(loadedBcc); setShowCcBcc(true); }
         if (loadedSubject) setSubject(loadedSubject);
         bodyHtmlRef.current = loadedHtml;
-        if (loadedHtml) {
-          setBodyHtml(loadedHtml);
-          setEditorKey(d.draftId ?? `draft-${Date.now()}`);
-        }
+        setBodyHtml(loadedHtml);
+        setEditorInitialHtml(loadedHtml);
+        setEditorKey(`${d.draftId}-${Date.now()}`);
         setDraftId(d.draftId);
         setAttachments(loadedAttachments);
         draftSaverRef.current.setKnownDraftId(d.draftId);
@@ -614,44 +618,10 @@ export default function ComposeScreen() {
     router.back();
   }
 
-  const queueDraftSaveWithHtml = useCallback((html: string) => {
-    const s = composeStateRef.current;
-    const hasContent = Boolean(
-      s.to.trim() ||
-        s.cc.trim() ||
-        s.bcc.trim() ||
-        s.subject.trim() ||
-        !isBodyEmpty(html) ||
-        s.attachments.length > 0 ||
-        s.draftId
-    );
-    if (loadingDraftRef.current || !hasContent) return;
-    // Block auto-save while any attachment is still reading (preparing) or uploading (staged Tier 2).
-    if (s.attachments.some((f) => f.status === 'preparing' || f.status === 'uploading')) return;
-
-    const sanitized = sanitizeEmailHtml(html);
-    draftSaverRef.current.queueSave(() =>
-      Promise.resolve({
-        to: s.to,
-        cc: s.cc,
-        bcc: s.bcc,
-        subject: s.subject,
-        htmlBody: sanitized,
-        draftId: s.draftId ?? draftSaverRef.current.getKnownDraftId(),
-        attachments: s.attachments,
-      })
-    );
+  const onBodyChange = useCallback((html: string) => {
+    bodyHtmlRef.current = html;
+    composeStateRef.current.bodyHtml = html;
   }, []);
-
-  const onBodyChange = useCallback(
-    (html: string) => {
-      bodyHtmlRef.current = html;
-      composeStateRef.current.bodyHtml = html;
-      setBodyHtml(html);
-      queueDraftSaveWithHtml(html);
-    },
-    [queueDraftSaveWithHtml]
-  );
 
   /** WebView is source of truth — React state can lag behind the editor. */
   const captureBodyHtmlFast = useCallback(async (): Promise<string> => {
@@ -662,28 +632,6 @@ export default function ComposeScreen() {
     const trimmed = (live ?? '').trim();
     if (trimmed && !isBodyEmpty(trimmed)) return sanitizeEmailHtml(live);
     return sanitizeEmailHtml(bodyHtmlRef.current || bodyHtml);
-  }, [bodyHtml]);
-
-  const resolveBodyHtml = useCallback(async (): Promise<string> => {
-    const refHtml = bodyHtmlRef.current.trim();
-    const live = (await editorRef.current?.getHtml().catch(() => '')) ?? '';
-    const liveTrimmed = live.trim();
-
-    let html = bodyHtmlRef.current || bodyHtml;
-    if (liveTrimmed && !isBodyEmpty(live)) {
-      html = live;
-    } else if (refHtml && !isBodyEmpty(refHtml)) {
-      html = bodyHtmlRef.current;
-    } else if (bodyHtml.trim() && !isBodyEmpty(bodyHtml)) {
-      html = bodyHtml;
-    } else if (liveTrimmed) {
-      html = live;
-    }
-
-    bodyHtmlRef.current = html;
-    composeStateRef.current.bodyHtml = html;
-    if (html !== bodyHtml) setBodyHtml(html);
-    return html;
   }, [bodyHtml]);
 
   const buildDraftSnapshot = useCallback((htmlBody: string): ComposeDraftSnapshot => {
@@ -700,73 +648,30 @@ export default function ComposeScreen() {
   }, []);
 
   const prepareDraftSnapshot = useCallback(async (): Promise<ComposeDraftSnapshot> => {
+    const live = await Promise.race([
+      editorRef.current?.getHtml().catch(() => '') ?? Promise.resolve(''),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 800)),
+    ]);
+    const liveTrimmed = live.trim();
     const refHtml = bodyHtmlRef.current.trim();
-    let html = refHtml;
-    if (!refHtml || isBodyEmpty(refHtml)) {
-      html = await resolveBodyHtml();
-    } else {
-      const live = await Promise.race([
-        editorRef.current?.getHtml().catch(() => '') ?? Promise.resolve(''),
-        new Promise<string>((resolve) => setTimeout(() => resolve(''), 400)),
-      ]);
-      if (live.trim() && !isBodyEmpty(live)) html = live;
+
+    let html = bodyHtmlRef.current || bodyHtml;
+    if (liveTrimmed && !isBodyEmpty(live)) {
+      html = live;
+    } else if (refHtml && !isBodyEmpty(refHtml)) {
+      html = bodyHtmlRef.current;
+    } else if (bodyHtml.trim() && !isBodyEmpty(bodyHtml)) {
+      html = bodyHtml;
+    } else if (liveTrimmed) {
+      html = live;
     }
+
     const sanitized = sanitizeEmailHtml(html);
     bodyHtmlRef.current = sanitized;
     composeStateRef.current.bodyHtml = sanitized;
+    if (sanitized !== bodyHtml) setBodyHtml(sanitized);
     return buildDraftSnapshot(sanitized);
-  }, [buildDraftSnapshot, resolveBodyHtml]);
-
-  const hasDraftableContent = useMemo(
-    () =>
-      Boolean(
-        to.trim() ||
-          cc.trim() ||
-          bcc.trim() ||
-          subject.trim() ||
-          !isBodyEmpty(bodyHtml) ||
-          attachments.length > 0 ||
-          draftId
-      ),
-    [to, cc, bcc, subject, bodyHtml, attachments.length, draftId]
-  );
-
-  useEffect(() => {
-    if (loadingDraft || !hasDraftableContent) return;
-    if (attachments.some((f) => f.status === 'preparing' || f.status === 'uploading')) return;
-    draftSaverRef.current.queueSave(prepareDraftSnapshot);
-  }, [
-    loadingDraft,
-    hasDraftableContent,
-    prepareDraftSnapshot,
-    to,
-    cc,
-    bcc,
-    subject,
-    bodyHtml,
-    attachments,
-    draftId,
-  ]);
-
-  async function saveDraft(opts?: { silent?: boolean }): Promise<boolean> {
-    const blocking = attachments.find((f) => f.status === 'preparing' || f.status === 'uploading');
-    if (blocking) {
-      if (!opts?.silent) {
-        Alert.alert('Please wait', `"${blocking.name}" is still ${blocking.status === 'preparing' ? 'being prepared' : 'uploading'}.`);
-      }
-      return false;
-    }
-
-    const result = await draftSaverRef.current.flushSave(prepareDraftSnapshot);
-    if (result?.draftId) setDraftId(result.draftId);
-    if (draftSaverRef.current.getStatus() === 'error') {
-      if (!opts?.silent) {
-        Alert.alert('Could not save draft', 'Something went wrong. Check your connection and try again.');
-      }
-      return false;
-    }
-    return true;
-  }
+  }, [bodyHtml, buildDraftSnapshot]);
 
   async function handleSaveDraftAndClose() {
     const blocking = attachments.find((f) => f.status === 'preparing' || f.status === 'uploading');
@@ -775,31 +680,12 @@ export default function ComposeScreen() {
       return;
     }
 
-    // Give the WebView up to 800ms to post its latest HTML. On blur (which happens
-    // when the user taps back), the editor calls postHtml() automatically, so this
-    // usually resolves within a few ms. The fallback is bodyHtmlRef.current which
-    // is kept current on every input event.
-    const liveHtml = await Promise.race([
-      editorRef.current?.getHtml().catch(() => '') ?? Promise.resolve(''),
-      new Promise<string>((resolve) => setTimeout(() => resolve(''), 800)),
-    ]);
-    const bestHtml =
-      liveHtml.trim() && !isBodyEmpty(liveHtml)
-        ? liveHtml
-        : bodyHtmlRef.current;
-    const sanitized = sanitizeEmailHtml(bestHtml);
-    bodyHtmlRef.current = sanitized;
-    composeStateRef.current.bodyHtml = sanitized;
+    draftSaverRef.current.cancelPending();
+    const snapshot = await prepareDraftSnapshot();
 
-    // Await the flush so the save completes before navigating away.
-    // If it takes longer than 3s (network issue) navigate anyway — the pending
-    // save will still finish in the background since draftSaverRef is a module ref.
-    await Promise.race([
-      draftSaverRef.current.flushSave(() =>
-        Promise.resolve(buildDraftSnapshot(sanitized))
-      ),
-      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
-    ]);
+    queueComposeDraftSave(snapshot, {
+      onDraftCreated: () => bumpDraftCount(+1),
+    });
     router.back();
   }
 
@@ -840,6 +726,22 @@ export default function ComposeScreen() {
       ]
     );
   }
+
+  const handleDiscardRef = useRef(handleDiscard);
+  handleDiscardRef.current = handleDiscard;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      const onHardwareBack = () => {
+        if (loadingDraft) return true;
+        handleDiscardRef.current();
+        return true;
+      };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+      return () => sub.remove();
+    }, [loadingDraft])
+  );
 
   const hasUploading = attachments.some((f) => f.status === 'uploading' || f.status === 'preparing');
 
@@ -993,13 +895,18 @@ export default function ComposeScreen() {
           )}
         </View>
 
-        <ComposeRichEditor
-          ref={editorRef}
-          key={editorKey}
-          initialHtml={bodyHtml}
-          onChangeHtml={onBodyChange}
-          bottomInset={insets.bottom}
-        />
+        <KeyboardAvoidingView
+          style={styles.editorKeyboardAvoid}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+        >
+          <ComposeRichEditor
+            ref={editorRef}
+            key={editorKey}
+            initialHtml={editorInitialHtml}
+            onChangeHtml={onBodyChange}
+          />
+        </KeyboardAvoidingView>
       </View>
     </SafeAreaView>
   );
@@ -1108,6 +1015,7 @@ function SuggestionList({ suggestions, onPick }: { suggestions: Contact[]; onPic
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Gmail.bg },
+  editorKeyboardAvoid: { flex: 1, minHeight: 0 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

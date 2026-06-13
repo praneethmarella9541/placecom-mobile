@@ -6,7 +6,7 @@ type DraftAttachmentPayload = {
   base64Data: string;
 };
 import { fetchAttachmentBase64Directly, readFileAsBase64 } from './gmail-send-direct';
-import { stripOuterHtml } from './html-email';
+import { htmlToPlain, stripOuterHtml } from './html-email';
 
 export type DraftFileLike = {
   key: string;
@@ -147,15 +147,55 @@ async function encodeDraftAttachments(
   return out;
 }
 
+export type DraftAttachmentMeta = {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  messageId: string;
+};
+
+/** Normalize attachment metadata from GET /api/gmail/drafts (field names vary). */
+export function parseDraftAttachmentsFromResponse(draft: {
+  attachments?: unknown;
+  message?: { attachments?: unknown; id?: string };
+  messageId?: string;
+  files?: unknown;
+}): DraftAttachmentMeta[] {
+  const messageId = draft.messageId ?? draft.message?.id ?? '';
+
+  const raw: unknown[] = Array.isArray(draft.attachments)
+    ? draft.attachments
+    : Array.isArray(draft.files)
+      ? draft.files
+      : Array.isArray(draft.message?.attachments)
+        ? draft.message.attachments
+        : [];
+
+  const out: DraftAttachmentMeta[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const a = item as Record<string, unknown>;
+    const attachmentId = String(
+      a.attachmentId ?? a.id ?? a.attachment_id ?? ''
+    ).trim();
+    if (!attachmentId) continue;
+    out.push({
+      attachmentId,
+      filename: String(a.filename ?? a.name ?? a.fileName ?? 'attachment'),
+      mimeType: String(
+        a.mimeType ?? a.mime ?? a.contentType ?? 'application/octet-stream'
+      ),
+      size: typeof a.size === 'number' ? a.size : Number(a.size ?? 0) || 0,
+      messageId: String(a.messageId ?? a.message_id ?? messageId),
+    });
+  }
+  return out;
+}
+
 /** Rehydrate attachment rows after Gmail rotates message/attachment ids on save. */
 export function draftAttachmentsToFiles(
-  attachments: Array<{
-    attachmentId: string;
-    filename: string;
-    mimeType: string;
-    size: number;
-    messageId: string;
-  }>,
+  attachments: DraftAttachmentMeta[],
   messageId?: string,
   nextKey: () => string = () => String(Date.now())
 ): DraftFileLike[] {
@@ -215,7 +255,7 @@ export async function saveComposeDraft(opts: {
     cc: opts.cc.trim() || undefined,
     bcc: opts.bcc.trim() || undefined,
     subject: opts.subject.trim(),
-    textBody: '',
+    textBody: htmlToPlain(htmlBody),
     htmlBody,
     draftId: opts.draftId,
     preserveAttachments: preserveAttachments || undefined,
