@@ -120,7 +120,7 @@ export default function AdminAnalyticsScreen() {
                 <MiniStat label="Calls" value={`${u.totals.callsIn + u.totals.callsOut}`} sub={formatInr(u.totals.costs.callsInr)} />
                 <MiniStat label="WA sent" value={String(u.totals.whatsappSent)} sub={formatInr(u.totals.costs.whatsappInr)} />
                 <MiniStat label="WA recv" value={String(u.totals.whatsappReceived)} />
-                <MiniStat label="Talk min" value={String(u.totals.costs.callBillableMinutes)} sub={`${u.totals.talkMinutes} actual`} />
+                <MiniStat label="Talk min" value={String(u.totals.costs.callBillableMinutes)} />
               </View>
             </TouchableOpacity>
           ))

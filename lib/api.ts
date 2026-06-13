@@ -710,7 +710,6 @@ export type AdminAnalyticsTotals = {
   callsOut: number;
   callsFailed: number;
   talkMinutes: number;
-  smsSent: number;
   whatsappSent: number;
   whatsappReceived: number;
   emailsSent: number;
@@ -736,7 +735,6 @@ export type AdminAnalyticsResponse = {
     callsIn: number;
     callsOut: number;
     talkMinutes: number;
-    smsSent: number;
     whatsappSent: number;
     whatsappReceived: number;
     emailsSent: number;

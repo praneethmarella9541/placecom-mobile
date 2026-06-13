@@ -116,7 +116,7 @@ export default function AdminMemberAnalyticsScreen() {
             <Text style={styles.sectionTitle}>Calls</Text>
             <View style={styles.grid}>
               <StatCard label="Total calls" value={String(user.totals.callsIn + user.totals.callsOut)} sub={`${user.totals.callsIn} in · ${user.totals.callsOut} out`} />
-              <StatCard label="Billable min" value={String(user.totals.costs.callBillableMinutes)} sub={`${user.totals.talkMinutes} min actual talk`} />
+              <StatCard label="Billable min" value={String(user.totals.costs.callBillableMinutes)} />
               <StatCard label="Call cost" value={formatInr(user.totals.costs.callsInr)} sub="₹0.60/min, rounded up" accent="#1a73e8" />
               <StatCard label="Failed" value={String(user.totals.callsFailed)} />
             </View>
@@ -136,7 +136,6 @@ export default function AdminMemberAnalyticsScreen() {
             <Text style={styles.sectionTitle}>Other</Text>
             <View style={styles.grid}>
               <StatCard label="Emails" value={String(user.totals.emailsSent)} />
-              <StatCard label="SMS" value={String(user.totals.smsSent)} />
               <StatCard label="AI cost" value={`$${user.totals.costUsd.toFixed(2)}`} sub="OpenAI extraction" />
             </View>
           </>
