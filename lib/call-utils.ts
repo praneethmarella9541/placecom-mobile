@@ -72,20 +72,24 @@ export function isUnansweredCall(call: CallLog): boolean {
 }
 
 /**
- * Talk time only — answered portion, never total call duration (which includes ringing).
+ * Talk time only — Exotel conversation duration first, then recording length.
+ * Never use duration_seconds (total call time includes ringing).
  */
 export function callTalkSeconds(call: CallLog): number | null {
   if (!isAnsweredCall(call)) return null;
-  if (call.recording_duration_seconds && call.recording_duration_seconds > 0) {
-    return Math.round(call.recording_duration_seconds);
+
+  const total = Number(call.duration_seconds ?? 0) || 0;
+  const convDur = Number(call.conversation_duration_seconds ?? 0) || 0;
+  const recDur = Number(call.recording_duration_seconds ?? 0) || 0;
+
+  if (convDur > 0) return Math.round(convDur);
+
+  if (recDur > 0) {
+    // Reject when recording length matches total call time (ring + talk).
+    if (total > 0 && recDur >= total - 3) return null;
+    return Math.round(recDur);
   }
-  if (call.conversation_duration_seconds && call.conversation_duration_seconds > 0) {
-    return Math.round(call.conversation_duration_seconds);
-  }
-  // Recording exists but durations missing — use total until API backfill runs.
-  if (call.recording_sid && call.duration_seconds && call.duration_seconds > 0) {
-    return Math.round(call.duration_seconds);
-  }
+
   return null;
 }
 
