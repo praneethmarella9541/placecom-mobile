@@ -71,6 +71,11 @@ export function isUnansweredCall(call: CallLog): boolean {
   return !isAnsweredCall(call);
 }
 
+function talkSecondsLooksInflated(talk: number, total: number): boolean {
+  if (total <= 0 || talk <= 0) return false;
+  return talk >= total - 3;
+}
+
 /**
  * Talk time only — Exotel conversation duration first, then recording length.
  * Never use duration_seconds (total call time includes ringing).
@@ -82,11 +87,11 @@ export function callTalkSeconds(call: CallLog): number | null {
   const convDur = Number(call.conversation_duration_seconds ?? 0) || 0;
   const recDur = Number(call.recording_duration_seconds ?? 0) || 0;
 
-  if (convDur > 0) return Math.round(convDur);
+  if (convDur > 0 && !talkSecondsLooksInflated(convDur, total)) {
+    return Math.round(convDur);
+  }
 
-  if (recDur > 0) {
-    // Reject when recording length matches total call time (ring + talk).
-    if (total > 0 && recDur >= total - 3) return null;
+  if (recDur > 0 && !talkSecondsLooksInflated(recDur, total)) {
     return Math.round(recDur);
   }
 
