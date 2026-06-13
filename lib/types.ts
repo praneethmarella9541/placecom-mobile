@@ -61,6 +61,8 @@ export interface CallLog {
   ended_at: string | null;
   recording_sid: string | null;
   recording_duration_seconds: number | null;
+  /** Answered talk time from Exotel ConversationDuration / DialCallDuration (excludes ring). */
+  conversation_duration_seconds?: number | null;
   transcript: string | null;
   transcript_segments: { speaker?: string; text: string }[] | null;
   created_at: string;

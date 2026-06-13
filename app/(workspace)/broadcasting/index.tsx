@@ -10,7 +10,10 @@ import { useDrawer } from '../_layout';
 import { broadcastApi } from '../../../lib/api';
 import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
 import { MailMergePanel } from '../../../components/MailMergePanel';
+import { WhatsAppBroadcastPanel } from '../../../components/WhatsAppBroadcastPanel';
 import { Colors } from '../../../constants/colors';
+
+type Channel = 'mail' | 'whatsapp';
 
 // Vercel's JSON body limit is ~4.5 MB. Cap the total attachment payload
 // (base64-encoded, so multiply raw bytes by ~1.37) so we stay safely under.
@@ -32,6 +35,7 @@ const EMAIL_COLOR = Colors.primary;
 
 export default function BroadcastingScreen() {
   const { openDrawer } = useDrawer();
+  const [channel, setChannel] = useState<Channel>('mail');
   const [emailSubView, setEmailSubView] = useState<EmailSubView>('broadcast');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
@@ -142,6 +146,33 @@ export default function BroadcastingScreen() {
       <ScreenHeader title="Broadcasting" onMenuPress={openDrawer} />
       <ScrollView contentContainerStyle={styles.content}>
 
+        {/* Mail / WhatsApp channel tabs */}
+        <View style={styles.channelRow}>
+          {([
+            { key: 'mail' as const, label: 'Mail', icon: 'mail-outline' as const },
+            { key: 'whatsapp' as const, label: 'WhatsApp', icon: 'logo-whatsapp' as const },
+          ]).map((t) => (
+            <TouchableOpacity
+              key={t.key}
+              style={[styles.channelBtn, channel === t.key && styles.channelBtnActive]}
+              onPress={() => setChannel(t.key)}
+            >
+              <Ionicons
+                name={t.icon}
+                size={16}
+                color={channel === t.key ? (t.key === 'whatsapp' ? '#25D366' : Colors.primary) : Colors.textSecondary}
+              />
+              <Text style={[styles.channelBtnText, channel === t.key && styles.channelBtnTextActive]}>
+                {t.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {channel === 'whatsapp' ? (
+          <WhatsAppBroadcastPanel />
+        ) : (
+        <>
         {/* Broadcast / Mail merge sub-tabs */}
         <View style={styles.subTabRow}>
           {([
@@ -270,6 +301,8 @@ export default function BroadcastingScreen() {
         </TouchableOpacity>
         </>
         )}
+        </>
+        )}
       </ScrollView>
     </View>
   );
@@ -278,6 +311,25 @@ export default function BroadcastingScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: 16, gap: 16, paddingBottom: 32 },
+  channelRow: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    padding: 4,
+    gap: 4,
+  },
+  channelBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  channelBtnActive: { backgroundColor: Colors.primaryLight },
+  channelBtnText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  channelBtnTextActive: { color: Colors.primary, fontWeight: '700' },
   subTabRow: {
     flexDirection: 'row',
     backgroundColor: Colors.surface,

@@ -19,7 +19,6 @@ const MODULES = [
   { key: 'inbox',        label: 'Mail',      icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false },
   { key: 'calls',        label: 'Calls',     icon: 'call-outline' as const,            path: '/(workspace)/calls',        feature: 'calls',        googleOnly: false },
   { key: 'calendar',     label: 'Calendar',  icon: 'calendar-outline' as const,        path: '/(workspace)/calendar',     feature: 'calendar',     googleOnly: false },
-  { key: 'meetings',     label: 'Meetings',  icon: 'videocam-outline' as const,        path: '/(workspace)/meetings',     feature: 'meetings',     googleOnly: false },
   { key: 'drive',        label: 'Drive',     icon: 'cloud-outline' as const,           path: '/(workspace)/drive',        feature: 'drive',        googleOnly: false },
   { key: 'forms',        label: 'Forms',     icon: 'document-text-outline' as const,   path: '/(workspace)/forms',        feature: 'forms',        googleOnly: false },
   { key: 'broadcasting', label: 'Broadcast', icon: 'megaphone-outline' as const,       path: '/(workspace)/broadcasting', feature: 'broadcasting', googleOnly: false },

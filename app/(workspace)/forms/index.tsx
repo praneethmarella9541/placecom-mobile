@@ -23,6 +23,7 @@ import { useDrawer } from '../_layout';
 import { formsApi, type FormListRow } from '../../../lib/api';
 import { FormsTheme } from '../../../constants/formsTheme';
 import { cacheGet, cacheSet, cacheIsStale } from '../../../lib/cache';
+import { getFormsPrefetchCache } from '../../../lib/workspace-feature-prefetch';
 
 const FORMS_CACHE_KEY = 'forms:list';
 
@@ -42,6 +43,10 @@ export default function FormsScreen() {
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
+  const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
+  const [openInput, setOpenInput] = useState('');
+  const [opening, setOpening] = useState(false);
+  const [showOpen, setShowOpen] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -55,6 +60,7 @@ export default function FormsScreen() {
       if (!opts.append) {
         setError(null);
         const cached = cacheGet<FormListRow[]>(cacheKey);
+        const prefetched = !debouncedSearch ? getFormsPrefetchCache() : null;
         if (cached) {
           setForms(cached);
           setLoading(false);
@@ -62,6 +68,10 @@ export default function FormsScreen() {
             setRefreshing(false);
             return;
           }
+        } else if (prefetched?.forms?.length) {
+          setForms(prefetched.forms);
+          setNextPageToken(prefetched.nextPageToken);
+          setLoading(false);
         }
       }
 
@@ -76,6 +86,7 @@ export default function FormsScreen() {
         if (!opts.append) cacheSet(cacheKey, updated);
         setForms((prev) => (opts.append ? [...prev, ...batch] : batch));
         setNextPageToken(data.nextPageToken);
+        if (typeof data.connectedEmail === 'string') setConnectedEmail(data.connectedEmail);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : 'Failed to load forms');
         if (!opts.append) setForms([]);
@@ -110,6 +121,23 @@ export default function FormsScreen() {
     }
   }
 
+  async function handleOpenExisting() {
+    const input = openInput.trim();
+    if (!input || opening) return;
+    setOpening(true);
+    try {
+      const res = await formsApi.lookup(input);
+      if (!res?.formId) throw new Error('No form id returned');
+      setShowOpen(false);
+      setOpenInput('');
+      router.push(`/(workspace)/forms/${encodeURIComponent(res.formId)}/edit?tab=responses` as any);
+    } catch (e: unknown) {
+      Alert.alert('Could not open form', e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setOpening(false);
+    }
+  }
+
   function loadMore() {
     if (!nextPageToken || loadingMore) return;
     setLoadingMore(true);
@@ -123,8 +151,16 @@ export default function FormsScreen() {
           <Ionicons name="menu" size={24} color={FormsTheme.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Forms</Text>
-        <View style={styles.headerBtn} />
+        <TouchableOpacity onPress={() => setShowOpen(true)} style={styles.headerBtn}>
+          <Ionicons name="link-outline" size={22} color={FormsTheme.purple} />
+        </TouchableOpacity>
       </View>
+
+      {connectedEmail ? (
+        <Text style={styles.connectedEmail} numberOfLines={1}>
+          Connected: {connectedEmail}
+        </Text>
+      ) : null}
 
       <Pressable style={styles.searchRow} onPress={() => searchRef.current?.focus()}>
         <Ionicons name="search" size={20} color={FormsTheme.textSecondary} />
@@ -169,7 +205,10 @@ export default function FormsScreen() {
           renderItem={({ item }) => (
             <FormCard
               form={item}
-              onPress={() => router.push(`/(workspace)/forms/${encodeURIComponent(item.id)}/edit` as any)}
+              onEdit={() => router.push(`/(workspace)/forms/${encodeURIComponent(item.id)}/edit` as any)}
+              onResponses={() =>
+                router.push(`/(workspace)/forms/${encodeURIComponent(item.id)}/edit?tab=responses` as any)
+              }
             />
           )}
           refreshControl={
@@ -252,26 +291,84 @@ export default function FormsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <Modal visible={showOpen} transparent animationType="fade" onRequestClose={() => setShowOpen(false)}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowOpen(false)} />
+          <View style={styles.modalCard}>
+            <View style={styles.modalBand} />
+            <Text style={styles.modalTitle}>Open existing form</Text>
+            <Text style={styles.modalHint}>
+              Paste a Google Form link or form ID to view responses from an older form.
+            </Text>
+            <TextInput
+              style={styles.modalInput}
+              value={openInput}
+              onChangeText={setOpenInput}
+              placeholder="https://docs.google.com/forms/d/…/edit"
+              placeholderTextColor={FormsTheme.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => setShowOpen(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalCreate, (!openInput.trim() || opening) && { opacity: 0.6 }]}
+                onPress={handleOpenExisting}
+                disabled={!openInput.trim() || opening}
+              >
+                {opening ? (
+                  <ActivityIndicator color={FormsTheme.fabIcon} size="small" />
+                ) : (
+                  <Text style={styles.modalCreateText}>Open responses</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
 
-function FormCard({ form, onPress }: { form: FormListRow; onPress: () => void }) {
+function FormCard({
+  form,
+  onEdit,
+  onResponses,
+}: {
+  form: FormListRow;
+  onEdit: () => void;
+  onResponses: () => void;
+}) {
   const title = form.formTitle?.trim() || form.name?.trim() || 'Untitled form';
   const modified = form.modifiedTime ? format(new Date(form.modifiedTime), 'MMM d, yyyy') : '';
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.75}>
-      <View style={styles.cardIcon}>
-        <Ionicons name="document-text" size={22} color={FormsTheme.purple} />
+    <View style={styles.card}>
+      <TouchableOpacity style={styles.cardMain} onPress={onEdit} activeOpacity={0.75}>
+        <View style={styles.cardIcon}>
+          <Ionicons name="document-text" size={22} color={FormsTheme.purple} />
+        </View>
+        <View style={styles.cardBody}>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {title}
+          </Text>
+          {modified ? <Text style={styles.cardMeta}>Modified {modified}</Text> : null}
+        </View>
+      </TouchableOpacity>
+      <View style={styles.cardActions}>
+        <TouchableOpacity onPress={onResponses} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.cardActionMuted}>Responses</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={onEdit} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.cardActionPrimary}>Edit</Text>
+        </TouchableOpacity>
       </View>
-      <View style={styles.cardBody}>
-        <Text style={styles.cardTitle} numberOfLines={2}>
-          {title}
-        </Text>
-        {modified ? <Text style={styles.cardMeta}>Opened {modified}</Text> : null}
-      </View>
-      <Ionicons name="chevron-forward" size={20} color={FormsTheme.textMuted} />
-    </TouchableOpacity>
+    </View>
   );
 }
 
@@ -288,6 +385,13 @@ const styles = StyleSheet.create({
   },
   headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { flex: 1, fontSize: 22, fontWeight: '400', color: FormsTheme.text, textAlign: 'center' },
+  connectedEmail: {
+    fontSize: 12,
+    color: FormsTheme.textSecondary,
+    textAlign: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -314,15 +418,29 @@ const styles = StyleSheet.create({
   retryText: { color: FormsTheme.fabIcon, fontWeight: '600', fontSize: 14 },
   listContent: { paddingHorizontal: 16, paddingBottom: 100, gap: 10 },
   card: {
+    backgroundColor: FormsTheme.surface,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
+    overflow: 'hidden',
+  },
+  cardMain: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    backgroundColor: FormsTheme.surface,
-    borderRadius: 8,
     padding: 14,
-    borderWidth: 1,
-    borderColor: FormsTheme.border,
   },
+  cardActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: FormsTheme.border,
+  },
+  cardActionMuted: { fontSize: 13, fontWeight: '500', color: FormsTheme.textSecondary },
+  cardActionPrimary: { fontSize: 13, fontWeight: '700', color: FormsTheme.purple },
   cardIcon: {
     width: 44,
     height: 44,

@@ -23,6 +23,8 @@ import {
   addMinutes,
 } from 'date-fns';
 import { CalendarTheme, GOOGLE_CALENDAR_COLORS } from '../../constants/calendarTheme';
+import { CalendarMonthGrid } from './CalendarMonthGrid';
+import { TimeWheelPicker } from './TimeWheelPicker';
 import type { CalendarEditorState, RecurrenceOption } from '../../lib/calendar-utils';
 import {
   combineDateTime,
@@ -82,6 +84,9 @@ export function CalendarEventEditor({
   const insets = useSafeAreaInsets();
   const [showRecurrencePicker, setShowRecurrencePicker] = useState(false);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
+  const [startPickerOpen, setStartPickerOpen] = useState(false);
+  const [endPickerOpen, setEndPickerOpen] = useState(false);
+  const pickerScrollLocked = startPickerOpen || endPickerOpen;
 
   if (!editor) return null;
 
@@ -127,6 +132,8 @@ export function CalendarEventEditor({
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
+            scrollEnabled={!pickerScrollLocked}
+            nestedScrollEnabled
           >
             {/* ── Title ── */}
             <TextInput
@@ -162,6 +169,7 @@ export function CalendarEventEditor({
                 date={editor.startDate}
                 hour={editor.startHour}
                 minute={editor.startMinute}
+                onPickerOpenChange={setStartPickerOpen}
                 onChange={(d, h, m) => {
                   const newStart = editor.allDay ? d : combineDateTime(d, h, m);
                   const newEnd = editor.allDay ? d : addMinutes(newStart, 60);
@@ -186,6 +194,7 @@ export function CalendarEventEditor({
                 date={editor.endDate}
                 hour={editor.endHour}
                 minute={editor.endMinute}
+                onPickerOpenChange={setEndPickerOpen}
                 onChange={(d, h, m) => onChange({ ...editor, endDate: d, endHour: h, endMinute: m })}
               />
             </Row>
@@ -445,6 +454,7 @@ function DateTimePickerRow({
   hour,
   minute,
   onChange,
+  onPickerOpenChange,
 }: {
   label: string;
   allDay: boolean;
@@ -452,9 +462,16 @@ function DateTimePickerRow({
   hour: number;
   minute: number;
   onChange: (d: Date, h: number, m: number) => void;
+  onPickerOpenChange?: (open: boolean) => void;
 }) {
   const [showDate, setShowDate] = useState(false);
   const [showTime, setShowTime] = useState(false);
+
+  function setPickerOpen(dateOpen: boolean, timeOpen: boolean) {
+    setShowDate(dateOpen);
+    setShowTime(timeOpen);
+    onPickerOpenChange?.(dateOpen || timeOpen);
+  }
 
   return (
     <View>
@@ -462,7 +479,7 @@ function DateTimePickerRow({
       <View style={styles.dtRow}>
         <TouchableOpacity
           style={[styles.dtPill, showDate && styles.dtPillActive]}
-          onPress={() => { setShowDate(!showDate); setShowTime(false); }}
+          onPress={() => setPickerOpen(!showDate, false)}
         >
           <Ionicons name="calendar-outline" size={14} color={showDate ? CalendarTheme.bg : CalendarTheme.blue} />
           <Text style={[styles.dtPillText, showDate && { color: CalendarTheme.bg }]}>
@@ -472,7 +489,7 @@ function DateTimePickerRow({
         {!allDay && (
           <TouchableOpacity
             style={[styles.dtPill, showTime && styles.dtPillActive]}
-            onPress={() => { setShowTime(!showTime); setShowDate(false); }}
+            onPress={() => setPickerOpen(false, !showTime)}
           >
             <Ionicons name="time-outline" size={14} color={showTime ? CalendarTheme.bg : CalendarTheme.blue} />
             <Text style={[styles.dtPillText, showTime && { color: CalendarTheme.bg }]}>
@@ -485,7 +502,10 @@ function DateTimePickerRow({
       {showDate && (
         <InlineDatePicker
           date={date}
-          onChange={(d) => { onChange(d, hour, minute); setShowDate(false); }}
+          onChange={(d) => {
+            onChange(d, hour, minute);
+            setPickerOpen(false, showTime);
+          }}
         />
       )}
       {showTime && !allDay && (
@@ -493,7 +513,7 @@ function DateTimePickerRow({
           hour={hour}
           minute={minute}
           onChange={(h, m) => onChange(date, h, m)}
-          onDone={() => setShowTime(false)}
+          onDone={() => setPickerOpen(false, false)}
         />
       )}
     </View>
@@ -503,6 +523,7 @@ function DateTimePickerRow({
 function InlineDatePicker({ date, onChange }: { date: Date; onChange: (d: Date) => void }) {
   const [viewMonth, setViewMonth] = useState(new Date(date.getFullYear(), date.getMonth(), 1));
   const days = eachDayOfInterval({ start: startOfMonth(viewMonth), end: endOfMonth(viewMonth) });
+
   return (
     <View style={styles.pickerCard}>
       <View style={styles.pickerHeader}>
@@ -520,30 +541,16 @@ function InlineDatePicker({ date, onChange }: { date: Date; onChange: (d: Date) 
           <Ionicons name="chevron-forward" size={18} color={CalendarTheme.text} />
         </TouchableOpacity>
       </View>
-      <View style={styles.miniDayHeaders}>
-        {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
-          <Text key={d} style={styles.miniDayHeaderText}>{d}</Text>
-        ))}
-      </View>
-      <View style={styles.miniGrid}>
-        {Array(days[0].getDay()).fill(null).map((_, i) => (
-          <View key={`e-${i}`} style={styles.miniDayCell} />
-        ))}
-        {days.map((day) => {
-          const selected = isSameDay(day, date);
-          return (
-            <TouchableOpacity
-              key={day.toISOString()}
-              style={[styles.miniDayCell, selected && styles.miniDayCellSelected]}
-              onPress={() => onChange(day)}
-            >
-              <Text style={[styles.miniDayText, selected && styles.miniDayTextSelected]}>
-                {format(day, 'd')}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      <CalendarMonthGrid
+        compact
+        leadingEmptyCells={days[0].getDay()}
+        days={days.map((day) => ({
+          date: day,
+          selected: isSameDay(day, date),
+          today: isSameDay(day, new Date()),
+        }))}
+        onPressDay={onChange}
+      />
     </View>
   );
 }
@@ -559,41 +566,9 @@ function InlineTimePicker({
   onChange: (h: number, m: number) => void;
   onDone: () => void;
 }) {
-  const minutes = [0, 15, 30, 45];
   return (
     <View style={styles.pickerCard}>
-      <View style={{ flexDirection: 'row', gap: 12 }}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.timeColLabel}>Hour</Text>
-          <ScrollView style={styles.timeCol} showsVerticalScrollIndicator={false}>
-            {Array.from({ length: 24 }, (_, h) => (
-              <TouchableOpacity
-                key={h}
-                style={[styles.timeOption, h === hour && styles.timeOptionSelected]}
-                onPress={() => onChange(h, minute)}
-              >
-                <Text style={[styles.timeOptionText, h === hour && styles.timeOptionTextSelected]}>
-                  {h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h - 12} PM`}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.timeColLabel}>Minute</Text>
-          {minutes.map((m) => (
-            <TouchableOpacity
-              key={m}
-              style={[styles.timeOption, m === minute && styles.timeOptionSelected]}
-              onPress={() => onChange(hour, m)}
-            >
-              <Text style={[styles.timeOptionText, m === minute && styles.timeOptionTextSelected]}>
-                :{String(m).padStart(2, '0')}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
+      <TimeWheelPicker hour={hour} minute={minute} onChange={onChange} />
       <TouchableOpacity style={styles.doneBtn} onPress={onDone}>
         <Text style={styles.doneBtnText}>Done</Text>
       </TouchableOpacity>
@@ -759,25 +734,6 @@ const styles = StyleSheet.create({
   },
   pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   pickerHeaderText: { fontSize: 14, fontWeight: '600', color: CalendarTheme.text },
-  miniDayHeaders: { flexDirection: 'row' },
-  miniDayHeaderText: {
-    flex: 1, textAlign: 'center', fontSize: 10,
-    fontWeight: '600', color: CalendarTheme.textSecondary,
-  },
-  miniGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  miniDayCell: { width: `${100 / 7}%`, alignItems: 'center', paddingVertical: 6 },
-  miniDayCellSelected: { backgroundColor: CalendarTheme.blue, borderRadius: 999 },
-  miniDayText: { fontSize: 12, color: CalendarTheme.text },
-  miniDayTextSelected: { color: CalendarTheme.fabIcon, fontWeight: '700' },
-  timeColLabel: {
-    fontSize: 12, fontWeight: '600', color: CalendarTheme.textSecondary,
-    marginBottom: 4, textAlign: 'center',
-  },
-  timeCol: { maxHeight: 160 },
-  timeOption: { paddingVertical: 8, borderRadius: 6, alignItems: 'center' },
-  timeOptionSelected: { backgroundColor: CalendarTheme.blue },
-  timeOptionText: { fontSize: 13, color: CalendarTheme.text },
-  timeOptionTextSelected: { color: CalendarTheme.fabIcon, fontWeight: '700' },
   doneBtn: {
     backgroundColor: CalendarTheme.blue, borderRadius: 8,
     padding: 10, alignItems: 'center',

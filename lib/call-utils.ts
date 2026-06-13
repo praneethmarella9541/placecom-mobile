@@ -9,8 +9,10 @@ const STATUS_MAP: Record<string, CallStatusStyle> = {
   completed: { bg: CallsTheme.greenLight, text: CallsTheme.green, label: 'Completed' },
   'no-answer': { bg: CallsTheme.redLight, text: CallsTheme.red, label: 'No answer' },
   missed: { bg: CallsTheme.redLight, text: CallsTheme.red, label: 'Missed' },
-  busy: { bg: CallsTheme.amberLight, text: '#E37400', label: 'Busy' },
+  busy: { bg: CallsTheme.redLight, text: CallsTheme.red, label: 'Busy' },
   failed: { bg: CallsTheme.redLight, text: CallsTheme.red, label: 'Failed' },
+  canceled: { bg: CallsTheme.redLight, text: CallsTheme.red, label: 'Canceled' },
+  cancelled: { bg: CallsTheme.redLight, text: CallsTheme.red, label: 'Canceled' },
   'in-progress': { bg: CallsTheme.blueLight, text: CallsTheme.blue, label: 'In progress' },
   pending: { bg: CallsTheme.grayLight, text: CallsTheme.gray, label: 'Pending' },
 };
@@ -60,27 +62,27 @@ export function isAnsweredCall(call: CallLog): boolean {
   if (UNANSWERED_STATUSES.has(call.status)) return false;
   if (call.recording_sid) return true;
   if (call.recording_duration_seconds && call.recording_duration_seconds > 0) return true;
-  // No recording + a "completed"-ish status from the (currently buggy) backend
-  // is not trustworthy → not answered.
+  if (call.conversation_duration_seconds && call.conversation_duration_seconds > 0) return true;
   return false;
 }
 
+/** Missed / no-answer / busy / etc. — for red badge and accent styling. */
+export function isUnansweredCall(call: CallLog): boolean {
+  return !isAnsweredCall(call);
+}
+
 /**
- * Talk time for a call — the duration from when it was ANSWERED, not from when
- * it started ringing. Returns null for calls that were never answered so the UI
- * shows no duration. Exotel's recording only spans the answered portion, so
- * `recording_duration_seconds` is the most accurate "from answer" figure.
+ * Talk time only — answered portion, never total call duration (which includes ringing).
  */
 export function callTalkSeconds(call: CallLog): number | null {
   if (!isAnsweredCall(call)) return null;
   if (call.recording_duration_seconds && call.recording_duration_seconds > 0) {
     return Math.round(call.recording_duration_seconds);
   }
-  if (call.started_at && call.ended_at) {
-    const secs = (new Date(call.ended_at).getTime() - new Date(call.started_at).getTime()) / 1000;
-    if (secs >= 0) return Math.round(secs);
+  if (call.conversation_duration_seconds && call.conversation_duration_seconds > 0) {
+    return Math.round(call.conversation_duration_seconds);
   }
-  return call.duration_seconds ?? null;
+  return null;
 }
 
 export function callDisplayName(

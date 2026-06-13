@@ -10,6 +10,7 @@ import {
   callStatusStyle,
   callTalkSeconds,
   formatCallDuration,
+  isUnansweredCall,
 } from '../../lib/call-utils';
 import { CallsTheme } from '../../constants/callsTheme';
 
@@ -27,12 +28,15 @@ export function CallListRow({ call, contacts, onPress, onCallBack }: Props) {
   const peer = callPeerNumber(call);
   const showPeer = peer && name !== peer;
   const canCallBack = !!peer && !!onCallBack;
-  const accent = isIncoming ? CallsTheme.green : CallsTheme.blue;
+  const unanswered = isUnansweredCall(call);
+  const talkSecs = callTalkSeconds(call);
+  const accent = unanswered ? CallsTheme.red : isIncoming ? CallsTheme.green : CallsTheme.blue;
+  const avatarBg = unanswered ? CallsTheme.redLight : isIncoming ? CallsTheme.greenLight : CallsTheme.blueLight;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.82}>
       <View style={[styles.accent, { backgroundColor: accent }]} />
-      <View style={[styles.avatar, { backgroundColor: isIncoming ? CallsTheme.greenLight : CallsTheme.blueLight }]}>
+      <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
         <Ionicons
           name={isIncoming ? 'arrow-down' : 'arrow-up'}
           size={17}
@@ -57,7 +61,9 @@ export function CallListRow({ call, contacts, onPress, onCallBack }: Props) {
           <View style={[styles.statusPill, { backgroundColor: status.bg }]}>
             <Text style={[styles.statusText, { color: status.text }]}>{status.label}</Text>
           </View>
-          <Text style={styles.duration}>{formatCallDuration(callTalkSeconds(call))}</Text>
+          {talkSecs != null ? (
+            <Text style={styles.duration}>{formatCallDuration(talkSecs)}</Text>
+          ) : null}
           {call.recording_sid ? (
             <View style={styles.recBadge}>
               <Ionicons name="mic" size={11} color={CallsTheme.blue} />

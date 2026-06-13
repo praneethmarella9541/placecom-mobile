@@ -313,6 +313,14 @@ export const whatsappApi = {
         bodyParamCount: number;
         previewExample?: string;
       };
+      templates?: Array<{
+        name: string;
+        languageCode: string;
+        bodyParamCount: number;
+        label: string;
+        preview?: string;
+        previewExample?: string;
+      }>;
       migrationHint?: string;
     }>('/api/whatsapp/status'),
   listContacts: () =>
@@ -520,8 +528,13 @@ export const formsApi = {
     if (opts?.pageToken) params.pageToken = opts.pageToken;
     if (opts?.search) params.search = opts.search;
     if (opts?.pageSize) params.pageSize = String(opts.pageSize);
-    return get<{ forms: FormListRow[]; nextPageToken?: string }>('/api/forms', params);
+    return get<{ forms: FormListRow[]; nextPageToken?: string; connectedEmail?: string | null }>(
+      '/api/forms',
+      params
+    );
   },
+  lookup: (input: string) =>
+    post<{ formId: string }>('/api/forms/lookup', { input }),
   create: (title: string) => post<{ formId: string; responderUri?: string }>('/api/forms', { title }),
   get: (id: string) => get<Record<string, unknown>>(`/api/forms/${encodeURIComponent(id)}`),
   save: (id: string, state: unknown) =>
@@ -529,6 +542,17 @@ export const formsApi = {
       `/api/forms/${encodeURIComponent(id)}/save`,
       { state }
     ),
+  responses: (id: string, opts?: { pageToken?: string; pageSize?: number }) => {
+    const params: Record<string, string> = {};
+    if (opts?.pageToken) params.pageToken = opts.pageToken;
+    if (opts?.pageSize) params.pageSize = String(opts.pageSize ?? 50);
+    return get<{
+      responses: import('./form-responses').FormResponse[];
+      nextPageToken?: string;
+      error?: string;
+      message?: string;
+    }>(`/api/forms/${encodeURIComponent(id)}/responses`, params);
+  },
 };
 
 // Me
@@ -571,13 +595,59 @@ export type BroadcastEmailResult = {
   recipients: number;
 };
 
+export type WaMergeRow = { phone: string; cells: string[] };
+export type WaMergeParseResult = {
+  rows: WaMergeRow[];
+  headers: string[];
+  totalRows: number;
+  skipped: number;
+  truncated: boolean;
+};
+
 export const broadcastApi = {
   sendEmail: (data: BroadcastEmailPayload) =>
     post<BroadcastEmailResult>('/api/broadcast/email', data),
   sendSms: (data: { recipients: string[]; text: string }) =>
     post<{ sent: number; failed: Array<{ phone: string; error: string }> }>('/api/broadcast/sms', data),
-  sendWhatsApp: (data: { recipients: string[]; text: string }) =>
+  sendWhatsApp: (
+    data:
+      | { recipients: string[]; text: string }
+      | {
+          mode: 'template';
+          templateName: string;
+          templateLanguage?: string;
+          rows: Array<{ phone: string; variables: string[] }>;
+        }
+  ) =>
     post<{ sent: number; failed: Array<{ phone: string; error: string }> }>('/api/broadcast/whatsapp', data),
+  parsePhonesFile: async (uri: string, filename: string, mimeType: string) => {
+    const headers = await authHeaders();
+    delete (headers as Record<string, string>)['Content-Type'];
+    const form = new FormData();
+    form.append('file', { uri, name: filename, type: mimeType } as any);
+    const res = await fetchWithTimeout(`${BASE_URL}/api/broadcast/parse-phones`, {
+      method: 'POST',
+      headers,
+      body: form,
+    }, 60000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error ?? `Import failed: ${res.status}`);
+    return data as { phones: string[] };
+  },
+  parseWaMergeFile: async (uri: string, filename: string, mimeType: string) => {
+    const headers = await authHeaders();
+    delete (headers as Record<string, string>)['Content-Type'];
+    const form = new FormData();
+    form.append('file', { uri, name: filename, type: mimeType } as any);
+    const res = await fetchWithTimeout(`${BASE_URL}/api/broadcast/parse-wa-merge`, {
+      method: 'POST',
+      headers,
+      body: form,
+    }, 60000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error ?? `Parse failed: ${res.status}`);
+    return data as WaMergeParseResult;
+  },
 };
 
 // Mail merge

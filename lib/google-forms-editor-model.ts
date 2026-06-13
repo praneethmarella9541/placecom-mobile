@@ -26,6 +26,7 @@ export type EditorBlock =
   | {
       key: string;
       itemId?: string;
+      questionId?: string;
       kind: Exclude<EditorBlockKind, "section" | "text_block" | "unsupported">;
       title: string;
       description: string;
@@ -70,6 +71,7 @@ export type EditorState = {
   description: string;
   isQuiz: boolean;
   emailCollection: EmailCollectionUi;
+  acceptingResponses: boolean;
   blocks: EditorBlock[];
 };
 
@@ -88,8 +90,18 @@ export function emptyEditorState(title = ""): EditorState {
     description: "",
     isQuiz: false,
     emailCollection: "DO_NOT_COLLECT",
+    acceptingResponses: true,
     blocks: [],
   };
+}
+
+/** Copy a block for duplicate — new key, no server ids (creates a new item on save). */
+export function duplicateBlock(block: EditorBlock): EditorBlock {
+  const clone = JSON.parse(JSON.stringify(block)) as EditorBlock;
+  clone.key = newKey();
+  if ("itemId" in clone) delete (clone as { itemId?: string }).itemId;
+  if ("questionId" in clone) delete (clone as { questionId?: string }).questionId;
+  return clone;
 }
 
 export function googleFormToEditorState(form: Record<string, unknown>): EditorState {
@@ -116,11 +128,17 @@ export function googleFormToEditorState(form: Record<string, unknown>): EditorSt
     if (b) blocks.push(b);
   }
 
+  const publish = (form.publishSettings || {}) as {
+    publishState?: { isAcceptingResponses?: boolean };
+  };
+  const acceptingResponses = publish.publishState?.isAcceptingResponses !== false;
+
   return {
     title: String(info.title || ""),
     description: String(info.description || ""),
     isQuiz: Boolean(settings.quizSettings?.isQuiz),
     emailCollection,
+    acceptingResponses,
     blocks,
   };
 }
@@ -164,6 +182,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
   }
 
   const required = Boolean(q.required);
+  const questionId = typeof q.questionId === "string" ? q.questionId : undefined;
 
   const tq = q.textQuestion as { paragraph?: boolean } | undefined;
   if (tq) {
@@ -171,6 +190,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
       kind: tq.paragraph ? "paragraph" : "short_text",
       key,
       itemId,
+      questionId,
       title,
       description,
       required,
@@ -191,6 +211,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
         kind: "multiple_choice",
         key,
         itemId,
+        questionId,
         title,
         description,
         required,
@@ -203,6 +224,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
         kind: "checkboxes",
         key,
         itemId,
+        questionId,
         title,
         description,
         required,
@@ -215,6 +237,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
         kind: "dropdown",
         key,
         itemId,
+        questionId,
         title,
         description,
         required,
@@ -244,6 +267,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
       kind: "linear_scale",
       key,
       itemId,
+      questionId,
       title,
       description,
       required,
@@ -260,6 +284,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
       kind: "date",
       key,
       itemId,
+      questionId,
       title,
       description,
       required,
@@ -274,6 +299,7 @@ function itemToBlock(item: LooseItem): EditorBlock | null {
       kind: "time",
       key,
       itemId,
+      questionId,
       title,
       description,
       required,

@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert, Switch, Modal, Pressable,
+  ActivityIndicator, Alert, Switch, Modal, Pressable, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { WebView } from 'react-native-webview';
 import { FormsTheme } from '../../../../constants/formsTheme';
 import { formsApi } from '../../../../lib/api';
 import { copyFormLink, shareFormLink } from '../../../../lib/forms-actions';
+import { FormResponsesTab } from '../../../../components/forms/FormResponsesTab';
 import {
   defaultChoiceBlock,
   defaultQuestionBlock,
+  duplicateBlock,
   emptyEditorState,
   googleFormToEditorState,
   newSectionBlock,
@@ -20,6 +23,8 @@ import {
   type EditorBlockKind,
   type EditorState,
 } from '../../../../lib/google-forms-editor-model';
+
+type EditorTab = 'questions' | 'responses' | 'settings' | 'preview';
 
 const EMAIL_OPTIONS: { value: EditorState['emailCollection']; label: string }[] = [
   { value: 'DO_NOT_COLLECT', label: 'Do not collect email' },
@@ -61,19 +66,28 @@ function blockLabel(kind: EditorBlockKind): string {
 }
 
 export default function FormEditScreen() {
-  const { formId: rawId } = useLocalSearchParams<{ formId: string }>();
+  const { formId: rawId, tab: tabParam } = useLocalSearchParams<{ formId: string; tab?: string }>();
   const formId = typeof rawId === 'string' ? rawId : '';
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(() => emptyEditorState());
   const [responderUri, setResponderUri] = useState<string | null>(null);
+  const [linkedSheetId, setLinkedSheetId] = useState<string | null>(null);
   const [emailOpen, setEmailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [tab, setTab] = useState<'questions' | 'settings'>('questions');
+  const [tab, setTab] = useState<EditorTab>('questions');
+
+  useEffect(() => {
+    const t = typeof tabParam === 'string' ? tabParam : '';
+    if (t === 'responses' || t === 'settings' || t === 'preview' || t === 'questions') {
+      setTab(t);
+    }
+  }, [tabParam]);
 
   const load = useCallback(async () => {
     if (!formId) return;
@@ -83,6 +97,7 @@ export default function FormEditScreen() {
       const data = await formsApi.get(formId);
       setEditor(googleFormToEditorState(data));
       setResponderUri(typeof data.responderUri === 'string' ? (data.responderUri as string) : null);
+      setLinkedSheetId(typeof data.linkedSheetId === 'string' ? (data.linkedSheetId as string) : null);
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load form');
     } finally {
@@ -105,6 +120,9 @@ export default function FormEditScreen() {
       }
       if (res.form && typeof res.form.responderUri === 'string') {
         setResponderUri(res.form.responderUri as string);
+      }
+      if (res.form && typeof res.form.linkedSheetId === 'string') {
+        setLinkedSheetId(res.form.linkedSheetId as string);
       }
       Alert.alert('Saved', res.noChanges ? 'No changes to save.' : 'Form saved to Google.');
     } catch (e: any) {
@@ -145,6 +163,16 @@ export default function FormEditScreen() {
     setAddOpen(false);
   }
 
+  function duplicateBlockAt(i: number) {
+    setEditor((prev) => {
+      const block = prev.blocks[i];
+      if (!block) return prev;
+      const blocks = [...prev.blocks];
+      blocks.splice(i + 1, 0, duplicateBlock(block));
+      return { ...prev, blocks };
+    });
+  }
+
   async function shareResponderLink() {
     if (!responderUri) return;
     await shareFormLink(responderUri, editor.title?.trim() || 'Form');
@@ -182,20 +210,34 @@ export default function FormEditScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.tabs}>
-        <TouchableOpacity
-          style={[styles.tab, tab === 'questions' && styles.tabActive]}
-          onPress={() => setTab('questions')}
-        >
-          <Text style={[styles.tabText, tab === 'questions' && styles.tabTextActive]}>Questions</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, tab === 'settings' && styles.tabActive]}
-          onPress={() => setTab('settings')}
-        >
-          <Text style={[styles.tabText, tab === 'settings' && styles.tabTextActive]}>Settings</Text>
-        </TouchableOpacity>
-      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.tabsScroll}
+        contentContainerStyle={styles.tabs}
+      >
+        {(
+          [
+            { id: 'questions' as const, label: 'Questions', icon: 'list-outline' as const },
+            { id: 'responses' as const, label: 'Responses', icon: 'mail-open-outline' as const },
+            { id: 'settings' as const, label: 'Settings', icon: 'settings-outline' as const },
+            { id: 'preview' as const, label: 'Preview', icon: 'eye-outline' as const },
+          ]
+        ).map(({ id, label, icon }) => (
+          <TouchableOpacity
+            key={id}
+            style={[styles.tab, tab === id && styles.tabActive]}
+            onPress={() => setTab(id)}
+          >
+            <Ionicons
+              name={icon}
+              size={14}
+              color={tab === id ? FormsTheme.purple : FormsTheme.textMuted}
+            />
+            <Text style={[styles.tabText, tab === id && styles.tabTextActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       <ScrollView
         style={styles.scroll}
@@ -208,7 +250,35 @@ export default function FormEditScreen() {
           </View>
         ) : null}
 
-        {tab === 'questions' ? (
+        {tab === 'responses' ? (
+          <FormResponsesTab
+            formId={formId}
+            editorBlocks={editor.blocks}
+            linkedSheetId={linkedSheetId}
+            formTitle={editor.title}
+            isQuiz={editor.isQuiz}
+          />
+        ) : tab === 'preview' ? (
+          responderUri ? (
+            <View style={styles.previewWrap}>
+              <View style={styles.linkActions}>
+                <TouchableOpacity style={styles.smallBtn} onPress={() => copyFormLink(responderUri)}>
+                  <Ionicons name="copy-outline" size={14} color={FormsTheme.purple} />
+                  <Text style={styles.smallBtnText}>Copy link</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.smallBtn} onPress={shareResponderLink}>
+                  <Ionicons name="share-outline" size={14} color={FormsTheme.purple} />
+                  <Text style={styles.smallBtnText}>Share</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={[styles.previewFrame, { height: Math.min(windowHeight * 0.55, 520) }]}>
+                <WebView source={{ uri: responderUri }} style={{ flex: 1 }} startInLoadingState />
+              </View>
+            </View>
+          ) : (
+            <Text style={styles.hintText}>Save the form to generate a responder link for preview.</Text>
+          )
+        ) : tab === 'questions' ? (
           <>
             <View style={styles.titleCard}>
               <View style={styles.titleCardBand} />
@@ -244,11 +314,27 @@ export default function FormEditScreen() {
                 onChange={(patch) => updateBlock(i, patch)}
                 onRemove={() => removeBlock(i)}
                 onMove={(dir) => moveBlock(i, dir)}
+                onDuplicate={() => duplicateBlockAt(i)}
               />
             ))}
           </>
         ) : (
           <View style={styles.card}>
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldLabel}>Accepting responses</Text>
+                <Text style={styles.fieldHint}>Turn off to close the form to new submissions</Text>
+              </View>
+              <Switch
+                value={editor.acceptingResponses}
+                onValueChange={(v) => setEditor((s) => ({ ...s, acceptingResponses: v }))}
+                trackColor={{ false: FormsTheme.border, true: FormsTheme.purple }}
+                thumbColor={FormsTheme.surface}
+              />
+            </View>
+
+            <View style={styles.divider} />
+
             <View style={styles.switchRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.fieldLabel}>Make this a quiz</Text>
@@ -261,6 +347,10 @@ export default function FormEditScreen() {
                 thumbColor={FormsTheme.surface}
               />
             </View>
+
+            <Text style={styles.fieldHint}>
+              Quiz grading and answer keys are managed in Google Forms. Placecom syncs quiz mode on save.
+            </Text>
 
             <View style={styles.divider} />
 
@@ -352,7 +442,7 @@ export default function FormEditScreen() {
 /* -------- Block card -------- */
 
 function BlockCard({
-  block, index, total, onChange, onRemove, onMove,
+  block, index, total, onChange, onRemove, onMove, onDuplicate,
 }: {
   block: EditorBlock;
   index: number;
@@ -360,6 +450,7 @@ function BlockCard({
   onChange: (patch: Partial<EditorBlock>) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
+  onDuplicate: () => void;
 }) {
   const accentColor =
     block.kind === 'section' || block.kind === 'text_block'
@@ -387,6 +478,11 @@ function BlockCard({
         >
           <Ionicons name="arrow-down" size={16} color={index === total - 1 ? FormsTheme.textMuted : FormsTheme.text} />
         </TouchableOpacity>
+        {block.kind !== 'unsupported' ? (
+          <TouchableOpacity style={styles.iconBtnSmall} onPress={onDuplicate}>
+            <Ionicons name="copy-outline" size={16} color={FormsTheme.text} />
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity style={styles.iconBtnSmall} onPress={onRemove}>
           <Ionicons name="trash-outline" size={16} color="#D93025" />
         </TouchableOpacity>
@@ -618,16 +714,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   saveBtnText: { color: FormsTheme.fabIcon, fontWeight: '600', fontSize: 14 },
-  tabs: {
-    flexDirection: 'row',
+  tabsScroll: {
     backgroundColor: FormsTheme.surface,
     borderBottomWidth: 1,
     borderBottomColor: FormsTheme.border,
+    maxHeight: 48,
   },
-  tab: { flex: 1, paddingVertical: 12, alignItems: 'center' },
+  tabs: {
+    flexDirection: 'row',
+    paddingHorizontal: 8,
+    gap: 4,
+  },
+  tab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
   tabActive: { borderBottomWidth: 3, borderBottomColor: FormsTheme.purple },
-  tabText: { fontSize: 14, fontWeight: '500', color: FormsTheme.textSecondary },
+  tabText: { fontSize: 13, fontWeight: '500', color: FormsTheme.textSecondary },
   tabTextActive: { color: FormsTheme.purple, fontWeight: '600' },
+  previewWrap: { gap: 12 },
+  previewFrame: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: FormsTheme.border,
+    overflow: 'hidden',
+    backgroundColor: FormsTheme.surface,
+  },
   titleCard: {
     backgroundColor: FormsTheme.surface,
     borderRadius: 8,

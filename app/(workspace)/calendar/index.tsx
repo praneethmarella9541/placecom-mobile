@@ -45,6 +45,7 @@ import { CalendarTheme, getEventColor } from '../../../constants/calendarTheme';
 import { CalendarEventRow } from '../../../components/calendar/CalendarEventRow';
 import { CalendarEventDetailSheet } from '../../../components/calendar/CalendarEventDetailSheet';
 import { CalendarEventEditor } from '../../../components/calendar/CalendarEventEditor';
+import { CalendarMonthGrid } from '../../../components/calendar/CalendarMonthGrid';
 import { CalendarNotifySheet } from '../../../components/calendar/CalendarNotifySheet';
 import {
   parseEventDate,
@@ -557,50 +558,34 @@ export default function CalendarScreen() {
       {/* ── Month view ── */}
       {viewMode === 'month' && (
         <View style={{ flex: 1 }}>
-          <View style={styles.dayHeaders}>
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
-              <Text key={`${d}-${i}`} style={styles.dayHeaderText}>{d}</Text>
-            ))}
-          </View>
-          <View style={styles.monthGrid}>
-            {Array(monthDays[0].getDay()).fill(null).map((_, i) => (
-              <View key={`empty-${i}`} style={styles.dayCell} />
-            ))}
-            {monthDays.map((day) => {
+          <View style={styles.monthGridWrap}>
+          <CalendarMonthGrid
+            leadingEmptyCells={monthDays[0].getDay()}
+            days={monthDays.map((day) => {
               const dEvts = eventsForDay(events, day);
               const selected = isSameDay(day, selectedDay);
               const today = isToday(day);
-              return (
-                <TouchableOpacity
-                  key={day.toISOString()}
-                  style={styles.dayCell}
-                  onPress={() => setSelectedDay(day)}
-                  activeOpacity={0.7}
-                >
-                  <View style={[
-                    styles.dayNumCircle,
-                    selected && { backgroundColor: CalendarTheme.blue },
-                    today && !selected && { backgroundColor: CalendarTheme.todayRed },
-                  ]}>
-                    <Text style={[
-                      styles.dayText,
-                      !isSameMonth(day, anchor) && { color: CalendarTheme.textMuted },
-                      (selected || today) && { color: '#fff', fontWeight: '700' },
-                    ]}>
-                      {format(day, 'd')}
-                    </Text>
-                  </View>
-                  {dEvts.slice(0, 2).map((e) => (
-                    <View key={e.id} style={[styles.monthChip, { backgroundColor: getEventColor(e) }]}>
-                      <Text style={styles.monthChipText} numberOfLines={1}>{e.summary || '·'}</Text>
-                    </View>
-                  ))}
-                  {dEvts.length > 2 && (
-                    <Text style={styles.moreText}>+{dEvts.length - 2}</Text>
-                  )}
-                </TouchableOpacity>
-              );
+              return {
+                date: day,
+                muted: !isSameMonth(day, anchor),
+                selected,
+                today,
+                bottom: (
+                  <>
+                    {dEvts.slice(0, 2).map((e) => (
+                      <View key={e.id} style={[styles.monthChip, { backgroundColor: getEventColor(e) }]}>
+                        <Text style={styles.monthChipText} numberOfLines={1}>{e.summary || '·'}</Text>
+                      </View>
+                    ))}
+                    {dEvts.length > 2 ? (
+                      <Text style={styles.moreText}>+{dEvts.length - 2}</Text>
+                    ) : null}
+                  </>
+                ),
+              };
             })}
+            onPressDay={setSelectedDay}
+          />
           </View>
           {/* Selected day events */}
           <View style={styles.dayPanel}>
@@ -767,23 +752,12 @@ const styles = StyleSheet.create({
   viewTabText: { fontSize: 12, fontWeight: '600', color: CalendarTheme.textSecondary },
   viewTabTextActive: { color: '#fff' },
 
-  // Month grid
-  dayHeaders: { flexDirection: 'row', paddingVertical: 4, backgroundColor: CalendarTheme.bg },
-  dayHeaderText: {
-    flex: 1, textAlign: 'center', fontSize: 11,
-    fontWeight: '600', color: CalendarTheme.textSecondary,
-  },
-  monthGrid: {
-    flexDirection: 'row', flexWrap: 'wrap',
+  // Month grid extras (event chips rendered inside CalendarMonthGrid cells)
+  monthGridWrap: {
     backgroundColor: CalendarTheme.bg,
-    borderBottomWidth: 1, borderBottomColor: CalendarTheme.border,
+    borderBottomWidth: 1,
+    borderBottomColor: CalendarTheme.border,
   },
-  dayCell: {
-    width: `${100 / 7}%`, alignItems: 'center',
-    paddingVertical: 4, paddingHorizontal: 1, minHeight: 72, gap: 1,
-  },
-  dayNumCircle: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  dayText: { fontSize: 13, color: CalendarTheme.text },
   monthChip: { width: '90%', borderRadius: 3, paddingHorizontal: 3, paddingVertical: 1 },
   monthChipText: { fontSize: 8.5, color: '#fff', fontWeight: '700' },
   moreText: { fontSize: 8.5, color: CalendarTheme.textMuted, fontWeight: '600' },
