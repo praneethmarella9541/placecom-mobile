@@ -1,52 +1,70 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { supabase } from '../../lib/supabase';
+import * as Linking from 'expo-linking';
+import { completeOAuthFromUrl, parseOAuthCallback } from '../../lib/google-sign-in';
 import { Colors } from '../../constants/colors';
 
 /**
  * Deep-link landing for `thenucleus://auth/callback?code=…`.
- *
- * Most of the time the sign-in flow finishes inside
- * `WebBrowser.openAuthSessionAsync` and never opens this screen — the
- * promise resolves with the redirect URL and the login handler exchanges
- * the code itself. This route is the fallback when the auth browser is
- * dismissed early (some Android variants) or the app is cold-started
- * by the OS opening the deep link.
+ * Fallback when Chrome Custom Tab hands off to the app instead of
+ * resolving openAuthSessionAsync directly.
  */
 export default function AuthCallback() {
   const params = useLocalSearchParams<{ code?: string; error?: string; error_description?: string }>();
   const router = useRouter();
+  const [status, setStatus] = useState<'working' | 'failed'>('working');
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
-      if (params.error) {
-        console.warn('[auth/callback] OAuth error:', params.error, params.error_description);
+      try {
+        if (params.error) {
+          throw new Error(
+            typeof params.error_description === 'string'
+              ? params.error_description
+              : String(params.error)
+          );
+        }
+
+        const codeFromParams = typeof params.code === 'string' ? params.code : null;
+        if (codeFromParams) {
+          await completeOAuthFromUrl(`thenucleus://auth/callback?code=${encodeURIComponent(codeFromParams)}`);
+          return;
+        }
+
+        // Cold start: full URL may only be on Linking, not route params.
+        const initial = await Linking.getInitialURL();
+        if (initial) {
+          const parsed = parseOAuthCallback(initial);
+          if (parsed.error) throw new Error(parsed.errorDescription?.trim() || parsed.error);
+          if (parsed.code || (parsed.accessToken && parsed.refreshToken)) {
+            await completeOAuthFromUrl(initial);
+            return;
+          }
+        }
+
         router.replace('/(auth)/login');
-        return;
+      } catch (e) {
+        if (cancelled) return;
+        console.warn('[auth/callback]', e);
+        setStatus('failed');
+        setTimeout(() => router.replace('/(auth)/login'), 1200);
       }
-      const code = typeof params.code === 'string' ? params.code : undefined;
-      if (!code) {
-        // Nothing to do — either already authed (AuthGuard will route us)
-        // or genuinely missing the code. Bounce back to login as a safe default.
-        router.replace('/(auth)/login');
-        return;
-      }
-      const { error } = await supabase.auth.exchangeCodeForSession(code);
-      if (error) {
-        console.warn('[auth/callback] exchangeCodeForSession failed:', error.message);
-        router.replace('/(auth)/login');
-        return;
-      }
-      // AuthGuard in the root layout will detect the new session and route
-      // us into the workspace — no explicit push needed here.
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [params.code, params.error, params.error_description, router]);
 
   return (
     <View style={styles.container}>
       <ActivityIndicator color={Colors.primary} />
-      <Text style={styles.text}>Signing you in…</Text>
+      <Text style={styles.text}>
+        {status === 'failed' ? 'Sign-in failed — returning to login…' : 'Signing you in…'}
+      </Text>
     </View>
   );
 }

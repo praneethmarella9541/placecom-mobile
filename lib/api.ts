@@ -339,7 +339,8 @@ export const whatsappApi = {
     get<{
       sessionOpen: boolean;
       requiresTemplate: boolean;
-      template?: { name: string; bodyParamCount: number; previewExample?: string };
+      templates?: { name: string; languageCode: string; bodyParamCount: number; label: string; preview: string }[];
+      template?: { name: string; bodyParamCount: number; label?: string; previewExample?: string };
     }>('/api/whatsapp/session', { peer }),
   send: (
     to: string,

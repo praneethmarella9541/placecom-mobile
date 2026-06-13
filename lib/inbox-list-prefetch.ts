@@ -10,7 +10,9 @@ let lastMutationAt = 0;
 let warmAbort: AbortController | null = null;
 let loginWarmAbort: AbortController | null = null;
 
-const PAGE_SIZE = 15;
+/** First-page size for list + login prefetch (all mail categories). */
+export const MAIL_LIST_PAGE_SIZE = 25;
+const PAGE_SIZE = MAIL_LIST_PAGE_SIZE;
 
 /** Delimiter-separated key: folder|labelId|search */
 export function buildMailListCacheKey(

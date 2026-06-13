@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -33,6 +33,7 @@ import { WhatsAppQuotedReply } from './WhatsAppQuotedReply';
 import { WhatsAppTicks } from './WhatsAppTicks';
 
 const FAIL_RED = '#EF4444';
+
 
 function BubbleMetaContent({
   timeLabel,
@@ -316,26 +317,22 @@ export function WhatsAppMessageBubble({
           {/* ── Plain text ────────────────────────────────────────────── */}
           {showTextBody ? (
             <GHPressable onLongPress={onLongPress} delayLongPress={300}>
-            <View>
-              <Text style={[styles.body, isOut && styles.bodyOut]}>
-                {body}
+              <View style={styles.textBodyWrap}>
                 {/*
-                  Transparent spacer reserves space on the last text line so the
-                  visible text never runs under the floating time badge.
-                  Width: 2 non-breaking spaces + time string + tick allowance.
+                  paddingBottom reserves a badge-height slot at the bottom of
+                  the text so the badge never overlaps any text line.
+                  The badge row uses a negative marginTop to pull back up into
+                  that reserved space — no absolute positioning, no invisible
+                  spacer text — works identically on iOS and Android.
                 */}
-                <Text style={styles.bodyTimeSpacer}>
-                  {isOut
-                    ? '\u00A0\u00A0' + timeLabel + '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0'
-                    : '\u00A0\u00A0' + timeLabel + '\u00A0\u00A0'}
+                <Text style={[styles.body, isOut && styles.bodyOut, styles.bodyWithBadge]}>
+                  {body}
                 </Text>
-              </Text>
-              {/* Real badge floats over the spacer area, bottom-right of wrapper */}
-              <View style={styles.bodyFloatMeta}>
-                <Text style={[styles.time, isOut && styles.timeOut]}>{timeLabel}</Text>
-                {isOut ? <WhatsAppTicks deliveryStatus={message.delivery_status} /> : null}
+                <View style={[styles.bodyBadgeRow, isOut && styles.bodyBadgeRowOut]} pointerEvents="none">
+                  <Text style={[styles.time, isOut && styles.timeOut]}>{timeLabel}</Text>
+                  {isOut ? <WhatsAppTicks deliveryStatus={message.delivery_status} /> : null}
+                </View>
               </View>
-            </View>
             </GHPressable>
           ) : null}
 
@@ -453,28 +450,32 @@ const styles = StyleSheet.create({
   },
 
   // ── Plain text body ──────────────────────────────────────────────────────
+  textBodyWrap: {},
   body: {
     fontSize: 15,
     color: Colors.text,
     lineHeight: 21,
     includeFontPadding: false,
   },
-  bodyOut: { color: Colors.text },
-  bodyTimeSpacer: {
-    // Invisible — same font metrics as the real badge so it reserves the
-    // correct amount of space on the last text line.
-    fontSize: 11,
-    lineHeight: 21,
-    color: 'transparent',
-    includeFontPadding: false,
+  // Adds bottom padding equal to the badge height so the badge never overlaps
+  // any text line when pulled up with a negative marginTop.
+  bodyWithBadge: {
+    paddingBottom: 16,
   },
-  bodyFloatMeta: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
+  bodyOut: { color: Colors.text },
+  // Badge row sits directly below the Text in document flow but uses a negative
+  // marginTop to visually occupy the reserved paddingBottom space.
+  bodyBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
+    justifyContent: 'flex-end',
+    alignSelf: 'flex-end',
+    gap: 3,
+    marginTop: -15,
+  },
+  bodyBadgeRowOut: {
+    // outgoing badge needs a little extra right clearance for the ticks
+    paddingRight: 1,
   },
 
   time:      { fontSize: 11, color: Colors.textMuted, lineHeight: 15 },

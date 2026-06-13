@@ -1,7 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { meApi } from '../lib/api';
-import { scheduleLoginPrefetchChain } from '../lib/workspace-feature-prefetch';
+import {
+  scheduleLoginPrefetchChain,
+  startEarlyCallsPrefetch,
+} from '../lib/workspace-feature-prefetch';
 
 /**
  * After auth + mailbox link, warm mail/drive/feature caches once per session.
@@ -13,6 +16,11 @@ export function WorkspacePrefetchSync() {
 
   useEffect(() => {
     if (!user?.id || !session) return;
+
+    if (hasFeature('calls')) {
+      startEarlyCallsPrefetch(user.id, true);
+    }
+
     if (scheduledForRef.current === user.id) return;
 
     let cancelled = false;
@@ -26,6 +34,7 @@ export function WorkspacePrefetchSync() {
           whatsapp: hasFeature('whatsapp'),
           calendar: hasFeature('calendar'),
           forms: hasFeature('forms'),
+          calls: hasFeature('calls'),
         });
       })
       .catch(() => {
@@ -36,6 +45,7 @@ export function WorkspacePrefetchSync() {
           whatsapp: hasFeature('whatsapp'),
           calendar: hasFeature('calendar'),
           forms: hasFeature('forms'),
+          calls: hasFeature('calls'),
         });
       });
 

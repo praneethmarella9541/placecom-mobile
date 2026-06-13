@@ -17,17 +17,41 @@ export function contactsMapFromPrefetch(): Record<string, string> {
   );
 }
 
+export async function loadCachedContactsList(userId: string): Promise<WaContactRow[]> {
+  const pref = getWhatsAppPrefetchCache();
+  const prefRows = (pref?.contacts?.contacts ?? []).map((c) => ({
+    peer_e164: c.peer_e164,
+    name: c.name?.trim() ?? '',
+  }));
+  if (prefRows.length) return prefRows;
+
+  try {
+    const raw = await AsyncStorage.getItem(cacheKey(userId));
+    if (!raw) return [];
+    const rows = JSON.parse(raw) as WaContactRow[];
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function loadCachedContactsMap(userId: string): Promise<Record<string, string>> {
   const fromPrefetch = contactsMapFromPrefetch();
   if (Object.keys(fromPrefetch).length) return fromPrefetch;
 
+  const rows = await loadCachedContactsList(userId);
+  return buildContactsMap(rows);
+}
+
+/** Warm saved contacts for Calls tab — same data as WhatsApp names. */
+export async function prefetchWaContactsList(userId: string): Promise<WaContactRow[]> {
+  const { fetchWaContacts } = await import('./wa-contacts-db');
   try {
-    const raw = await AsyncStorage.getItem(cacheKey(userId));
-    if (!raw) return {};
-    const rows = JSON.parse(raw) as WaContactRow[];
-    return buildContactsMap(rows);
+    const rows = await fetchWaContacts();
+    if (rows.length) await persistContactsCache(userId, rows);
+    return rows;
   } catch {
-    return {};
+    return loadCachedContactsList(userId);
   }
 }
 

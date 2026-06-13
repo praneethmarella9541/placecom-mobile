@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   deleteWaContact,
@@ -6,7 +6,14 @@ import {
   upsertWaContact,
   type WaContactRow,
 } from '../lib/wa-contacts-db';
+import { loadCachedContactsList } from '../lib/wa-contacts-cache';
 import { useAuth } from './useAuth';
+
+function sortContacts(rows: WaContactRow[]): WaContactRow[] {
+  return rows
+    .filter((r) => r.name?.trim())
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
 
 /**
  * Saved contacts as a sorted list — backed by the SAME `wa_contacts` Supabase
@@ -14,22 +21,36 @@ import { useAuth } from './useAuth';
  * across the user's WhatsApp threads, the Calls contacts tab, and the web CRM.
  */
 export function useContacts() {
-  const { session } = useAuth();
+  const { session, user } = useAuth();
+  const userId = user?.id ?? '';
   const [contacts, setContacts] = useState<WaContactRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hasCachedRef = useRef(false);
 
-  const load = useCallback(async () => {
+  useLayoutEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    void loadCachedContactsList(userId).then((rows) => {
+      if (cancelled || !rows.length) return;
+      hasCachedRef.current = true;
+      setContacts(sortContacts(rows));
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!session) return;
+    if (!opts?.silent) setLoading(true);
     setError(null);
     try {
       const rows = await fetchWaContacts();
-      const sorted = rows
-        .filter((r) => r.name?.trim())
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-      setContacts(sorted);
+      setContacts(sortContacts(rows));
     } catch (e: unknown) {
-      setContacts([]);
+      if (!hasCachedRef.current) setContacts([]);
       setError(e instanceof Error ? e.message : 'Failed to load contacts');
     } finally {
       setLoading(false);
@@ -41,13 +62,12 @@ export function useContacts() {
       setLoading(true);
       return;
     }
-    setLoading(true);
-    void load();
+    void load({ silent: hasCachedRef.current });
   }, [session, load]);
 
   useFocusEffect(
     useCallback(() => {
-      if (session) void load();
+      if (session) void load({ silent: true });
     }, [session, load])
   );
 

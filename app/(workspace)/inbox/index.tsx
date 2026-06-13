@@ -23,13 +23,16 @@ import {
   getMailListLastMutationAt,
   invalidateMailListLabel,
   isWithinMailMutationCooldown,
+  MAIL_LIST_PAGE_SIZE,
   mutateAllMailListCaches,
   setMailListCache,
-  startMailListPrefetchWarm,
   syncLabelBucketCaches,
   touchMailListMutation,
 } from '../../../lib/inbox-list-prefetch';
-import { prefetchMailThreadIntent } from '../../../lib/mail-thread-prefetch';
+import {
+  prefetchMailThreadIntent,
+  startMailListAndBodyPrefetchWarm,
+} from '../../../lib/mail-thread-prefetch';
 import {
   decrementSessionInboxUnread,
   mergeInboxUnread,
@@ -54,7 +57,7 @@ type FilterChipItem =
   | { kind: 'divider' }
   | { kind: 'label'; id: string; name: string };
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = MAIL_LIST_PAGE_SIZE;
 
 export default function InboxScreen() {
   const router = useRouter();
@@ -490,7 +493,11 @@ export default function InboxScreen() {
 
       if (warmTimerRef.current) clearTimeout(warmTimerRef.current);
       warmTimerRef.current = setTimeout(() => {
-        startMailListPrefetchWarm({ skipKeys: new Set([cacheKey]), concurrency: 3 });
+        startMailListAndBodyPrefetchWarm(userId, {
+          skipKeys: new Set([cacheKey]),
+          listConcurrency: 3,
+          bodyConcurrency: 2,
+        });
       }, 400);
     } catch (e: any) {
       if (controller.signal.aborted) return;
@@ -873,7 +880,11 @@ export default function InboxScreen() {
                 setRefreshing(true);
                 clearMailListSessionCache();
                 void loadFirstPage(true);
-                startMailListPrefetchWarm({ skipKeys: new Set([listCacheKey]), concurrency: 3 });
+                startMailListAndBodyPrefetchWarm(userId, {
+                  skipKeys: new Set([listCacheKey]),
+                  listConcurrency: 3,
+                  bodyConcurrency: 2,
+                });
               }}
               tintColor={Colors.primary}
             />

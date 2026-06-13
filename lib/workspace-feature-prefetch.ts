@@ -1,8 +1,15 @@
 import { calendarApi, formsApi, gmailApi, whatsappApi } from './api';
 import { persistContactsCache } from './wa-contacts-cache';
 import { clearWhatsAppThreadCache, prefetchWhatsAppThreads } from './whatsapp-thread-cache';
-import { prefetchMailListViews, cancelMailPrefetch } from './inbox-list-prefetch';
+import { cancelMailPrefetch } from './inbox-list-prefetch';
+import { warmMailListsThenThreadBodies } from './mail-thread-prefetch';
 import { prefetchDriveListViews, cancelDrivePrefetch } from './drive-list-prefetch';
+import {
+  bindCallsPrefetchUser,
+  prefetchCallsList,
+  clearCallsListSessionCache,
+} from './calls-list-prefetch';
+import { prefetchWaContactsList } from './wa-contacts-cache';
 import { getCacheWriteGeneration } from './session-cache-core';
 
 const LOGIN_DEBOUNCE_MS = 200;
@@ -15,6 +22,7 @@ export type FeaturePrefetchAccess = {
   whatsapp?: boolean;
   calendar?: boolean;
   forms?: boolean;
+  calls?: boolean;
 };
 
 type FormsCache = { forms: Awaited<ReturnType<typeof formsApi.list>>['forms']; nextPageToken?: string };
@@ -55,6 +63,7 @@ export function clearWorkspaceFeaturePrefetchCaches(): void {
   loginRanForUser = null;
   cancelMailPrefetch();
   cancelDrivePrefetch();
+  clearCallsListSessionCache();
   clearWhatsAppThreadCache();
   whatsappCache = null;
   calendarCache = null;
@@ -125,8 +134,13 @@ async function runLoginPrefetchChainInternal(
 ): Promise<void> {
   const writeGen = getCacheWriteGeneration();
   await Promise.all([
-    prefetchMailListViews({ concurrency: 3, signal }),
+    warmMailListsThenThreadBodies(userId, {
+      listConcurrency: 3,
+      bodyConcurrency: 2,
+      signal,
+    }),
     prefetchDriveListViews({ concurrency: 2, signal }),
+    access.calls ? prefetchCallsList(signal) : Promise.resolve(),
   ]);
   if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
 
@@ -137,6 +151,16 @@ async function runLoginPrefetchChainInternal(
   if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
 
   if (access.forms) await prefetchForms(signal);
+}
+
+/**
+ * Start calls + contacts warm immediately on login — do not wait for mailbox / mail prefetch.
+ */
+export function startEarlyCallsPrefetch(userId: string, callsEnabled: boolean): void {
+  if (!callsEnabled) return;
+  bindCallsPrefetchUser(userId);
+  void prefetchCallsList();
+  void prefetchWaContactsList(userId);
 }
 
 /**
@@ -154,6 +178,7 @@ export function scheduleLoginPrefetchChain(
   loginTimer = setTimeout(() => {
     loginTimer = null;
     loginRanForUser = userId;
+    bindCallsPrefetchUser(userId);
     const controller = new AbortController();
     loginChainAbort = controller;
     void runLoginPrefetchChainInternal(userId, access, controller.signal).catch(() => {});

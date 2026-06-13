@@ -25,6 +25,7 @@ import {
   type PendingAttachment,
 } from './WhatsAppMediaAttachmentPreview';
 import { normalizeOutboundImageAsset } from '../../lib/whatsapp-outbound-media';
+import { WhatsAppTemplatePanel } from './WhatsAppTemplatePanel';
 
 const EMOJI_PANEL_HEIGHT = 280;
 
@@ -42,11 +43,13 @@ async function withNativePickerLock(run: () => Promise<void>) {
 
 type Props = {
   needsTemplate: boolean;
-  templateVar1: string;
-  templateVar2: string;
-  onTemplateVar1Change: (v: string) => void;
-  onTemplateVar2Change: (v: string) => void;
-  templatePreview?: string;
+  forceTemplate: boolean;
+  onForceTemplateChange: (v: boolean) => void;
+  templates: { name: string; languageCode: string; bodyParamCount: number; label: string; preview: string }[];
+  selectedTemplateName: string;
+  onTemplateChange: (name: string) => void;
+  templateVariables: string[];
+  onTemplateVariablesChange: (vars: string[]) => void;
   draft: string;
   onDraftChange: (v: string) => void;
   sending: boolean;
@@ -59,11 +62,13 @@ type Props = {
 
 export function WhatsAppComposerBar({
   needsTemplate,
-  templateVar1,
-  templateVar2,
-  onTemplateVar1Change,
-  onTemplateVar2Change,
-  templatePreview,
+  forceTemplate,
+  onForceTemplateChange,
+  templates,
+  selectedTemplateName,
+  onTemplateChange,
+  templateVariables,
+  onTemplateVariablesChange,
   draft,
   onDraftChange,
   sending,
@@ -394,9 +399,12 @@ export function WhatsAppComposerBar({
     });
   }
 
+  const activeTemplate = templates.find((t) => t.name === selectedTemplateName) ?? templates[0];
+  const varsForSend = templateVariables.slice(0, activeTemplate?.bodyParamCount ?? 2);
+
   function handleSend() {
     if (needsTemplate) {
-      if (!templateVar1.trim() || !templateVar2.trim()) return;
+      if (varsForSend.some((v) => !v.trim())) return;
       void onSend({ messageType: 'template', text: draft.trim() });
       setEmojiPanel(false);
       return;
@@ -421,7 +429,7 @@ export function WhatsAppComposerBar({
   }
 
   const canSend = needsTemplate
-    ? templateVar1.trim() && templateVar2.trim()
+    ? varsForSend.every((v) => v.trim())
     : hasAttachments
       ? true
       : !!draft.trim();
@@ -454,29 +462,17 @@ export function WhatsAppComposerBar({
       ) : null}
 
       <View style={styles.wrap}>
-        {needsTemplate ? (
-          <View style={styles.templateBox}>
-            <Text style={styles.templateTitle}>First message uses approved template</Text>
-            <Text style={styles.templateHint}>
-              {templatePreview ?? 'Hi [name], this is [you] from PlaceCom'}
-            </Text>
-            <View style={styles.templateRow}>
-              <TextInput
-                style={styles.templateInput}
-                value={templateVar1}
-                onChangeText={onTemplateVar1Change}
-                placeholder="Recipient name"
-                placeholderTextColor={Colors.textMuted}
-              />
-              <TextInput
-                style={styles.templateInput}
-                value={templateVar2}
-                onChangeText={onTemplateVar2Change}
-                placeholder="Your name"
-                placeholderTextColor={Colors.textMuted}
-              />
-            </View>
-          </View>
+        {(needsTemplate || forceTemplate) && templates.length > 0 ? (
+          <WhatsAppTemplatePanel
+            needsTemplate={needsTemplate}
+            templates={templates}
+            selectedTemplateName={selectedTemplateName}
+            onTemplateChange={onTemplateChange}
+            templateVariables={templateVariables}
+            onTemplateVariablesChange={onTemplateVariablesChange}
+            forceTemplate={forceTemplate}
+            onForceTemplateChange={onForceTemplateChange}
+          />
         ) : null}
 
         <View style={styles.bar}>
@@ -585,27 +581,6 @@ const styles = StyleSheet.create({
   wrap: {
     paddingHorizontal: 4,
     paddingBottom: 0,
-  },
-  templateBox: {
-    marginHorizontal: 4,
-    marginBottom: 8,
-    marginTop: 6,
-    padding: 10,
-    backgroundColor: '#FFF8E1',
-    borderRadius: 8,
-    gap: 6,
-  },
-  templateTitle: { fontSize: 12, fontWeight: '700', color: '#92400E' },
-  templateHint: { fontSize: 11, color: '#B45309' },
-  templateRow: { flexDirection: 'row', gap: 8 },
-  templateInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 8,
-    padding: 8,
-    fontSize: 14,
-    backgroundColor: Colors.surface,
   },
   bar: {
     flexDirection: 'row',

@@ -23,6 +23,7 @@ import { whatsappApi } from '../../../lib/api';
 import { isValidE164, normalizePhone } from '../../../lib/phone';
 import { useWhatsAppContacts } from '../../../hooks/useWhatsAppContacts';
 import { useAuth } from '../../../hooks/useAuth';
+import { useKeyboardHeight } from '../../../hooks/useKeyboardHeight';
 import type { WhatsAppMessage, WhatsAppSendPayload } from '../../../lib/whatsapp-types';
 import {
   displayNameForPeer,
@@ -111,6 +112,7 @@ export default function WhatsAppConversationScreen() {
   const { peer } = useLocalSearchParams<{ peer: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const keyboardHeight = useKeyboardHeight();
   const flatListRef = useRef<FlatList>(null);
   const stickToBottomRef = useRef(true);
   const pendingScrollIndexRef = useRef<number | null>(null);
@@ -123,10 +125,12 @@ export default function WhatsAppConversationScreen() {
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
+  const [sessionOpen, setSessionOpen] = useState<boolean | null>(null);
   const [needsTemplate, setNeedsTemplate] = useState(false);
-  const [templateVar1, setTemplateVar1] = useState('');
-  const [templateVar2, setTemplateVar2] = useState('');
-  const [templatePreview, setTemplatePreview] = useState<string | undefined>();
+  const [forceTemplate, setForceTemplate] = useState(false);
+  const [templates, setTemplates] = useState<{ name: string; languageCode: string; bodyParamCount: number; label: string; preview: string }[]>([]);
+  const [selectedTemplateName, setSelectedTemplateName] = useState('');
+  const [templateVariables, setTemplateVariables] = useState(['', '']);
   const [renameOpen, setRenameOpen] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
@@ -142,7 +146,6 @@ export default function WhatsAppConversationScreen() {
   const [replyingTo, setReplyingTo] = useState<WhatsAppMessage | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<WhatsAppMessage | null>(null);
   const [forwardModalOpen, setForwardModalOpen] = useState(false);
-  const [kbVisible, setKbVisible] = useState(false);
   const [flashMessageId, setFlashMessageId] = useState<string | null>(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [listAnchored, setListAnchored] = useState(false);
@@ -289,12 +292,32 @@ export default function WhatsAppConversationScreen() {
   const refreshSession = useCallback(async () => {
     try {
       const d = await whatsappApi.session(peerDecoded);
-      setNeedsTemplate(d.requiresTemplate ?? !d.sessionOpen);
-      setTemplatePreview(d.template?.previewExample);
+      const open = d.sessionOpen ?? true;
+      setSessionOpen(open);
+      const required = d.requiresTemplate ?? !open;
+      setNeedsTemplate(required);
+
+      const tplList = d.templates?.length
+        ? d.templates
+        : d.template
+        ? [{
+            name: d.template.name,
+            languageCode: '',
+            bodyParamCount: d.template.bodyParamCount ?? 2,
+            label: d.template.label ?? d.template.name,
+            preview: d.template.previewExample ?? '',
+          }]
+        : [];
+      setTemplates(tplList);
+      if (tplList.length > 0 && !selectedTemplateName) {
+        setSelectedTemplateName(tplList[0].name);
+        setTemplateVariables(Array(tplList[0].bodyParamCount ?? 2).fill(''));
+      }
     } catch {
+      setSessionOpen(null);
       setNeedsTemplate(false);
     }
-  }, [peerDecoded]);
+  }, [peerDecoded, selectedTemplateName]);
 
   useEffect(() => {
     if (!isValidE164(peerDecoded)) {
@@ -378,23 +401,20 @@ export default function WhatsAppConversationScreen() {
     return () => sub.remove();
   }, [loadMessages]);
 
-  // Track keyboard visibility and keep the latest message visible when keyboard opens.
+  // Keep the latest message visible when the keyboard opens.
   useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, () => {
-      setKbVisible(true);
-      if (stickToBottomRef.current && !chatSearchQuery.trim()) {
-        setTimeout(() => scrollToLatest(true), 80);
-      }
-    });
-    const hideSub = Keyboard.addListener(hideEvent, () => setKbVisible(false));
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, [chatSearchQuery, scrollToLatest]);
+    if (keyboardHeight > 0 && stickToBottomRef.current && !chatSearchQuery.trim()) {
+      const t = setTimeout(() => scrollToLatest(true), 80);
+      return () => clearTimeout(t);
+    }
+  }, [keyboardHeight, chatSearchQuery, scrollToLatest]);
+
+  const activeTemplate = templates.find((t) => t.name === selectedTemplateName) ?? templates[0];
 
   function sendMessage(payload: WhatsAppSendPayload) {
-    if (needsTemplate && (!templateVar1.trim() || !templateVar2.trim())) {
-      Alert.alert('Template required', 'Enter recipient name and your name.');
+    const varsForSend = templateVariables.slice(0, activeTemplate?.bodyParamCount ?? 2);
+    if (needsTemplate && varsForSend.some((v) => !v.trim())) {
+      Alert.alert('Template required', 'Please fill in all template fields.');
       return;
     }
 
@@ -402,8 +422,8 @@ export default function WhatsAppConversationScreen() {
     const previewBody = previewOutboundBody(
       payload,
       needsTemplate,
-      templateVar1,
-      templateVar2,
+      templateVariables[0] ?? '',
+      templateVariables[1] ?? '',
       draft
     );
     const contentType = needsTemplate
@@ -438,7 +458,7 @@ export default function WhatsAppConversationScreen() {
           messageType: needsTemplate ? 'template' : payload.messageType,
           text: needsTemplate ? undefined : payload.text ?? draft.trim(),
           templateVariables: needsTemplate
-            ? [templateVar1.trim(), templateVar2.trim()]
+            ? varsForSend.map((v) => v.trim())
             : undefined,
           mediaUrl: payload.mediaUrl,
           mediaCaption: payload.mediaCaption,
@@ -639,7 +659,7 @@ export default function WhatsAppConversationScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { paddingTop: insets.top }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={0}
     >
       <View style={styles.header}>
@@ -653,11 +673,21 @@ export default function WhatsAppConversationScreen() {
           <Text style={styles.headerTitle} numberOfLines={1}>
             {displayName}
           </Text>
-          <Text style={styles.headerSub} numberOfLines={1}>
-            {displayName !== formatWhatsAppPhone(peerDecoded)
-              ? formatWhatsAppPhone(peerDecoded)
-              : 'Tap for media & info'}
-          </Text>
+          <View style={styles.headerSubRow}>
+            <Text style={styles.headerSub} numberOfLines={1}>
+              {displayName !== formatWhatsAppPhone(peerDecoded)
+                ? formatWhatsAppPhone(peerDecoded)
+                : 'Tap for media & info'}
+            </Text>
+            {sessionOpen !== null ? (
+              <View style={[styles.sessionPill, sessionOpen ? styles.sessionPillOpen : styles.sessionPillClosed]}>
+                <View style={[styles.sessionDot, sessionOpen ? styles.sessionDotOpen : styles.sessionDotClosed]} />
+                <Text style={[styles.sessionPillText, sessionOpen ? styles.sessionPillTextOpen : styles.sessionPillTextClosed]}>
+                  {sessionOpen ? 'Session open' : 'Template required'}
+                </Text>
+              </View>
+            ) : null}
+          </View>
         </TouchableOpacity>
         {!chatSearchOpen ? (
           <TouchableOpacity
@@ -891,17 +921,23 @@ export default function WhatsAppConversationScreen() {
 
       <WhatsAppComposerBar
         needsTemplate={needsTemplate}
-        templateVar1={templateVar1}
-        templateVar2={templateVar2}
-        onTemplateVar1Change={setTemplateVar1}
-        onTemplateVar2Change={setTemplateVar2}
-        templatePreview={templatePreview}
+        forceTemplate={forceTemplate}
+        onForceTemplateChange={setForceTemplate}
+        templates={templates}
+        selectedTemplateName={selectedTemplateName}
+        onTemplateChange={(name) => {
+          setSelectedTemplateName(name);
+          const tpl = templates.find((t) => t.name === name);
+          setTemplateVariables(Array(tpl?.bodyParamCount ?? 2).fill(''));
+        }}
+        templateVariables={templateVariables}
+        onTemplateVariablesChange={setTemplateVariables}
         draft={draft}
         onDraftChange={setDraft}
         sending={false}
         onSend={sendWithReply}
         onSendAttachments={sendAttachments}
-        bottomInset={Platform.OS === 'ios' && kbVisible ? 0 : insets.bottom}
+        bottomInset={keyboardHeight > 0 ? 0 : insets.bottom}
         onEmojiOpenChange={setEmojiOpen}
       />
 
@@ -989,7 +1025,24 @@ const styles = StyleSheet.create({
   headerAvatarText: { fontSize: 14, fontWeight: '700', color: '#fff' },
   headerInfo: { flex: 1, minWidth: 0 },
   headerTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  headerSubRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.85)' },
+  sessionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 100,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  sessionPillOpen: { backgroundColor: 'rgba(37,211,102,0.22)' },
+  sessionPillClosed: { backgroundColor: 'rgba(255,190,0,0.22)' },
+  sessionDot: { width: 6, height: 6, borderRadius: 3 },
+  sessionDotOpen: { backgroundColor: '#25D366' },
+  sessionDotClosed: { backgroundColor: '#FFBE00' },
+  sessionPillText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.2 },
+  sessionPillTextOpen: { color: '#25D366' },
+  sessionPillTextClosed: { color: '#FFBE00' },
   headerMenu: {
     backgroundColor: Colors.surface,
     borderBottomWidth: 1,

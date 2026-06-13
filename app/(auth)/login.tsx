@@ -12,14 +12,12 @@ import {
   ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as WebBrowser from 'expo-web-browser';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
-import { getMobileOAuthRedirect } from '../../lib/auth-redirect';
+import { signInWithGoogle } from '../../lib/google-sign-in';
+import { getMobileOAuthRedirect, isExpoGo } from '../../lib/auth-redirect';
 import { Colors } from '../../constants/colors';
 import { BrandLogo } from '../../components/BrandLogo';
-
-WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -28,10 +26,7 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
-  // Captures the OAuth redirect URI on first Google-sign-in attempt so it can
-  // be displayed and copy-pasted into the Supabase Redirect URLs allowlist.
-  // Once sign-in works end-to-end this debug strip can be removed.
-  const [oauthRedirect, setOauthRedirect] = useState<string | null>(null);
+  const expoGoRedirect = isExpoGo() ? getMobileOAuthRedirect() : null;
 
   async function handleEmailAuth() {
     if (!email || !password) {
@@ -53,61 +48,7 @@ export default function LoginScreen() {
   async function handleGoogleSignIn() {
     setGoogleLoading(true);
     try {
-      // HTTPS /auth/mobile-callback — add to Supabase Redirect URLs (with www if used).
-      // Custom thenucleus:// schemes are flaky in Android in-app browser; /auth/callback
-      // on the website logs users into the web app instead.
-      const redirectTo = getMobileOAuthRedirect();
-      console.log('[OAuth] redirectTo =', redirectTo);
-      setOauthRedirect(redirectTo);
-
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo,
-          skipBrowserRedirect: true,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-            scope:
-              'openid email profile https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/forms',
-          },
-        },
-      });
-      if (error) throw error;
-      if (!data.url) throw new Error('Supabase did not return an OAuth URL.');
-
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-      if (result.type !== 'success' || !result.url) {
-        return; // user cancelled or the browser didn't return a URL
-      }
-
-      if (!result.url.includes('/auth/mobile-callback') && /\/auth\/callback|\/inbox/i.test(result.url)) {
-        throw new Error(
-          'Google sign-in opened the website inbox instead of the app. In Supabase → Redirect URLs add:\n\n' +
-            `${redirectTo}\n\n` +
-            'Deploy placecom (needs /auth/mobile-callback), rebuild the APK, then try again.'
-        );
-      }
-
-      // PKCE: returned URL has ?code=…
-      const url = new URL(result.url);
-      const code = url.searchParams.get('code');
-      if (!code) {
-        // Some configurations (implicit/legacy) still put tokens in the hash.
-        // Fall back to hash parsing so old sessions don't get stuck.
-        const hash = result.url.split('#')[1] ?? '';
-        const hashParams = new URLSearchParams(hash);
-        const accessToken = hashParams.get('access_token');
-        const refreshToken = hashParams.get('refresh_token');
-        if (accessToken && refreshToken) {
-          await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
-          return;
-        }
-        throw new Error('No code or tokens returned from Supabase.');
-      }
-
-      const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(code);
-      if (exchangeErr) throw exchangeErr;
+      await signInWithGoogle();
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Google sign-in failed');
     } finally {
@@ -188,14 +129,17 @@ export default function LoginScreen() {
             )}
           </TouchableOpacity>
 
-          {/* Debug strip — shows the redirect URI Supabase needs allowlisted.
-              Remove (or hide behind a long-press) once sign-in is working. */}
-          {oauthRedirect && (
-            <View style={styles.debugStrip}>
-              <Text style={styles.debugLabel}>OAuth redirect URI (add to Supabase):</Text>
-              <Text style={styles.debugValue} selectable>{oauthRedirect}</Text>
+          {expoGoRedirect ? (
+            <View style={styles.expoGoBox}>
+              <Text style={styles.expoGoTitle}>Expo Go uses HTTPS callback</Text>
+              <Text style={styles.expoGoHint}>
+                Ensure this is in Supabase Redirect URLs (you already have it):
+              </Text>
+              <Text style={styles.expoGoUrl} selectable>
+                {expoGoRedirect}
+              </Text>
             </View>
-          )}
+          ) : null}
 
           <TouchableOpacity onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')} style={styles.switchMode}>
             <Text style={styles.switchModeText}>
@@ -267,17 +211,22 @@ const styles = StyleSheet.create({
     minHeight: 46,
   },
   googleBtnText: { fontSize: 15, fontWeight: '600', color: Colors.text },
-  debugStrip: {
-    marginTop: 8,
+  expoGoBox: {
     padding: 10,
-    backgroundColor: '#FFFBEB',
+    backgroundColor: '#EFF6FF',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#FCD34D',
+    borderColor: '#BFDBFE',
     gap: 4,
   },
-  debugLabel: { fontSize: 10, fontWeight: '700', color: '#92400E' },
-  debugValue: { fontSize: 11, color: '#78350F', fontFamily: 'monospace' },
+  expoGoTitle: { fontSize: 11, fontWeight: '700', color: '#1E40AF' },
+  expoGoHint: { fontSize: 10, color: '#3B82F6' },
+  expoGoCode: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontWeight: '700' },
+  expoGoUrl: {
+    fontSize: 10,
+    color: '#1E3A8A',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
   switchMode: { alignItems: 'center' },
   switchModeText: { fontSize: 13, color: Colors.textSecondary },
   switchModeLink: { color: Colors.primary, fontWeight: '700' },

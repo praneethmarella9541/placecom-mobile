@@ -17,22 +17,26 @@ type Props = {
   call: CallLog;
   contacts?: Record<string, string>;
   onPress: () => void;
+  onCallBack?: (peerNumber: string) => void;
 };
 
-export function CallListRow({ call, contacts, onPress }: Props) {
+export function CallListRow({ call, contacts, onPress, onCallBack }: Props) {
   const isIncoming = call.direction === 'incoming';
   const status = callStatusStyle(callDisplayStatus(call));
   const name = callDisplayName(call, contacts);
   const peer = callPeerNumber(call);
   const showPeer = peer && name !== peer;
+  const canCallBack = !!peer && !!onCallBack;
+  const accent = isIncoming ? CallsTheme.green : CallsTheme.blue;
 
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.75}>
+    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.82}>
+      <View style={[styles.accent, { backgroundColor: accent }]} />
       <View style={[styles.avatar, { backgroundColor: isIncoming ? CallsTheme.greenLight : CallsTheme.blueLight }]}>
         <Ionicons
           name={isIncoming ? 'arrow-down' : 'arrow-up'}
-          size={18}
-          color={isIncoming ? CallsTheme.green : CallsTheme.blue}
+          size={17}
+          color={accent}
         />
       </View>
       <View style={styles.body}>
@@ -53,46 +57,86 @@ export function CallListRow({ call, contacts, onPress }: Props) {
           <View style={[styles.statusPill, { backgroundColor: status.bg }]}>
             <Text style={[styles.statusText, { color: status.text }]}>{status.label}</Text>
           </View>
-          <Text style={styles.metaDot}>·</Text>
           <Text style={styles.duration}>{formatCallDuration(callTalkSeconds(call))}</Text>
           {call.recording_sid ? (
-            <>
-              <Text style={styles.metaDot}>·</Text>
-              <Ionicons name="mic" size={12} color={CallsTheme.blue} />
-            </>
+            <View style={styles.recBadge}>
+              <Ionicons name="mic" size={11} color={CallsTheme.blue} />
+            </View>
           ) : null}
         </View>
       </View>
+      {canCallBack ? (
+        <TouchableOpacity
+          style={styles.callBtn}
+          onPress={() => onCallBack(peer)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityLabel={`Call back ${name}`}
+        >
+          <Ionicons name="call" size={18} color={CallsTheme.green} />
+        </TouchableOpacity>
+      ) : null}
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  row: {
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
     backgroundColor: CallsTheme.surface,
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 16,
+    marginHorizontal: 16,
+    paddingVertical: 14,
+    paddingRight: 12,
+    paddingLeft: 0,
+    gap: 12,
     borderWidth: 1,
     borderColor: CallsTheme.border,
+    shadowColor: '#1a2b4a',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+    overflow: 'hidden',
+  },
+  accent: {
+    width: 4,
+    alignSelf: 'stretch',
+    borderTopLeftRadius: 16,
+    borderBottomLeftRadius: 16,
   },
   avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  body: { flex: 1, gap: 4, minWidth: 0 },
+  body: { flex: 1, gap: 3, minWidth: 0 },
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  name: { flex: 1, fontSize: 16, fontWeight: '500', color: CallsTheme.text },
+  name: { flex: 1, fontSize: 16, fontWeight: '600', color: CallsTheme.text, letterSpacing: -0.2 },
   time: { fontSize: 12, color: CallsTheme.textMuted },
-  peer: { fontSize: 13, color: CallsTheme.textSecondary },
-  meta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  statusPill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-  statusText: { fontSize: 11, fontWeight: '600' },
-  metaDot: { fontSize: 12, color: CallsTheme.textMuted },
-  duration: { fontSize: 12, color: CallsTheme.textSecondary },
+  peer: { fontSize: 13, color: CallsTheme.textSecondary, fontVariant: ['tabular-nums'] },
+  meta: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  statusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  statusText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
+  duration: { fontSize: 12, color: CallsTheme.textSecondary, fontVariant: ['tabular-nums'] },
+  recBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: CallsTheme.blueLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  callBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: CallsTheme.greenLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(24,128,56,0.15)',
+  },
 });

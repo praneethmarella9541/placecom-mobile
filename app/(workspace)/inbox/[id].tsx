@@ -22,7 +22,12 @@ import { Colors } from '../../../constants/colors';
 import { Gmail, avatarColorForName } from '../../../constants/gmailTheme';
 import { LabelChip } from '../../../components/LabelChip';
 import { LabelPickerModal } from '../../../components/LabelPickerModal';
-import { wrapEmailHtmlBody, wrapPlainTextAsEmailDocument, looksLikeHtml } from '../../../lib/html-email';
+import {
+  EMAIL_FIT_WIDTH_JS,
+  wrapEmailHtmlBody,
+  wrapPlainTextAsEmailDocument,
+  looksLikeHtml,
+} from '../../../lib/html-email';
 import { getAttachmentUri } from '../../../lib/gmail-attachments';
 import { buildAttachmentPreviewContent } from '../../../lib/attachment-preview';
 import { shareCachedAttachment } from '../../../lib/share-attachment';
@@ -700,14 +705,14 @@ function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => 
 // ─── Message rendering ────────────────────────────────────────────────────────
 
 type MessageBodyContent =
-  | { mode: 'html'; document: string }
+  | { mode: 'html'; html: string }
   | { mode: 'plain'; text: string };
 
 function getMessageBody(msg: GmailMessage): MessageBodyContent {
   const html = (msg.bodyHtml ?? '').trim();
   const body = (msg.body ?? '').trim();
-  if (html) return { mode: 'html', document: wrapEmailHtmlBody(html) };
-  if (body && looksLikeHtml(body)) return { mode: 'html', document: wrapEmailHtmlBody(body) };
+  if (html) return { mode: 'html', html };
+  if (body && looksLikeHtml(body)) return { mode: 'html', html: body };
   if (body) return { mode: 'plain', text: body };
   return { mode: 'plain', text: '(No message body)' };
 }
@@ -738,7 +743,23 @@ const SIZE_REPORT_JS = `
     return h + 6;
   }
   function report() {
+    var root = document.getElementById('email-root');
     var h = contentHeight();
+    if (root) {
+      var boxH = root.getBoundingClientRect().height;
+      if (boxH > 40) {
+        h = Math.ceil(boxH);
+      } else {
+        var tr = window.getComputedStyle(root).transform;
+        if (tr && tr !== 'none') {
+          var m = tr.match(/matrix\\(([^)]+)\\)/);
+          if (m) {
+            var scale = parseFloat(m[1].split(',')[0]) || 1;
+            if (scale > 0 && scale < 1) h = Math.ceil(h * scale);
+          }
+        }
+      }
+    }
     if (h < 40) h = 40;
     if (Math.abs(h - lastH) < 2) return;
     lastH = h;
@@ -751,6 +772,7 @@ const SIZE_REPORT_JS = `
   setTimeout(report, 50);
   setTimeout(report, 250);
   setTimeout(report, 700);
+  setTimeout(report, 1200);
   if (document.getElementById('email-root')) {
     new MutationObserver(report).observe(document.getElementById('email-root'), {
       childList: true, subtree: true, attributes: true
@@ -785,7 +807,13 @@ function MessageBubble({
 }) {
   const { width: screenWidth } = useWindowDimensions();
   const bodyContent = useMemo(() => getMessageBody(msg), [msg.id, msg.body, msg.bodyHtml]);
-  const webViewWidth = screenWidth - 32;
+  const webViewWidth = Math.floor(screenWidth - 52);
+  const htmlSource = useMemo(() => {
+    if (bodyContent.mode === 'html') {
+      return wrapEmailHtmlBody(bodyContent.html, webViewWidth);
+    }
+    return wrapPlainTextAsEmailDocument(bodyContent.text, webViewWidth);
+  }, [bodyContent, webViewWidth]);
   const [bodyContentHeight, setBodyContentHeight] = useState(200);
   const [bodyLoading, setBodyLoading] = useState(true);
   const webViewDisplayHeight = Math.min(
@@ -806,8 +834,7 @@ function MessageBubble({
   const date = msg.date && !Number.isNaN(new Date(msg.date).getTime())
     ? format(new Date(msg.date), 'MMM d, yyyy, h:mm a') : '';
   const snippet = plainSnippet(msg);
-  const htmlSource =
-    bodyContent.mode === 'html' ? bodyContent.document : wrapPlainTextAsEmailDocument(bodyContent.text);
+  const webViewRef = useRef<WebView>(null);
 
   useEffect(() => {
     if (!expanded) return;
@@ -826,6 +853,7 @@ function MessageBubble({
   }
 
   function onWebViewLoadEnd() {
+    webViewRef.current?.injectJavaScript(`${EMAIL_FIT_WIDTH_JS}\n${SIZE_REPORT_JS}`);
     setBodyLoading(false);
     setBodyContentHeight((h) => (h < 100 ? 240 : h));
   }
@@ -952,33 +980,33 @@ function MessageBubble({
             />
           ) : null}
 
-          {bodyContent.mode === 'plain' && !looksLikeHtml(bodyContent.text) ? (
-            <Text style={styles.plainBody} selectable>
-              {bodyContent.text}
-            </Text>
-          ) : (
-            <View style={[styles.msgWebViewWrap, { width: webViewWidth }]}>
+          <View style={styles.msgWebViewWrap}>
               {bodyLoading && (
                 <View style={styles.bodyLoading}>
                   <ActivityIndicator color={Gmail.blue} size="small" />
                 </View>
               )}
+              <View style={[styles.msgWebViewFrame, { height: webViewDisplayHeight }]}>
               {bodyScrollsInside ? (
-                <Text style={styles.bodyScrollHint}>Scroll message for more</Text>
+                <View style={styles.bodyScrollFade} pointerEvents="none">
+                  <View style={styles.bodyScrollFadeTop} />
+                  <Text style={styles.bodyScrollHint}>Scroll for more</Text>
+                </View>
               ) : null}
               <WebView
-                key={`${msg.id}-${expanded ? 'open' : 'closed'}`}
+                ref={webViewRef}
+                key={`${msg.id}-${expanded ? 'open' : 'closed'}-${webViewWidth}`}
                 style={{
-                  width: webViewWidth,
+                  width: '100%',
                   height: webViewDisplayHeight,
                   opacity: bodyLoading ? 0.01 : 1,
+                  backgroundColor: 'transparent',
                 }}
                 originWhitelist={['*']}
                 source={{ html: htmlSource, baseUrl: 'about:blank' }}
                 scrollEnabled={bodyScrollsInside}
                 nestedScrollEnabled={bodyScrollsInside}
-                injectedJavaScript={SIZE_REPORT_JS}
-                injectedJavaScriptBeforeContentLoaded={SIZE_REPORT_JS}
+                injectedJavaScript={`${EMAIL_FIT_WIDTH_JS}\n${SIZE_REPORT_JS}`}
                 onMessage={onMessage}
                 onLoadEnd={onWebViewLoadEnd}
                 onShouldStartLoadWithRequest={(req) => {
@@ -998,9 +1026,12 @@ function MessageBubble({
                 domStorageEnabled
                 mixedContentMode="always"
                 androidLayerType="hardware"
+                textZoom={100}
+                setBuiltInZoomControls={false}
+                showsHorizontalScrollIndicator={false}
               />
+              </View>
             </View>
-          )}
         </View>
       )}
 
@@ -1043,10 +1074,8 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: Gmail.text,
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingBottom: 10,
     backgroundColor: Gmail.bg,
-    borderBottomWidth: 1,
-    borderBottomColor: Gmail.border,
   },
   previewFrom: {
     fontSize: 14,
@@ -1160,15 +1189,22 @@ const styles = StyleSheet.create({
   attachBadgeText: { fontSize: 10, fontWeight: '700', color: Colors.surface },
 
   messageCard: {
-    backgroundColor: Gmail.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Gmail.divider,
+    marginHorizontal: 12,
+    marginBottom: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#1a2b4a',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 1,
   },
   msgCollapsedHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 14,
   },
   msgAvatar: {
@@ -1194,19 +1230,48 @@ const styles = StyleSheet.create({
   msgTo: { fontSize: 13, color: Gmail.textMuted },
   msgWebViewWrap: {
     minHeight: 80,
-    marginTop: 4,
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'hidden',
+  },
+  msgWebViewFrame: {
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'hidden',
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+  },
+  bodyScrollFade: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 2,
+    paddingBottom: 4,
+    alignItems: 'center',
+  },
+  bodyScrollFadeTop: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 36,
+    backgroundColor: '#FFFFFF',
+    opacity: 0.94,
   },
   bodyScrollHint: {
     fontSize: 11,
     color: Gmail.textMuted,
-    marginBottom: 4,
+    fontWeight: '500',
   },
   msgExpandedBody: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    gap: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 12,
+    gap: 10,
+    backgroundColor: '#FFFFFF',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Gmail.divider,
+    borderTopColor: Gmail.border,
   },
   errorText: { fontSize: 14, color: Colors.error, textAlign: 'center' },
   backLink: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: Gmail.blue, borderRadius: 20 },

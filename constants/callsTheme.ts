@@ -16,6 +16,9 @@ export const CallsTheme = {
   textSecondary: '#5F6368',
   textMuted: '#80868B',
   border: '#E8EAED',
-  fab: '#1A73E8',
+  divider: '#F1F3F4',
+  heroGradientStart: '#E8F0FE',
+  heroGradientEnd: '#F6F8FC',
+  fab: '#188038',
   fabIcon: '#FFFFFF',
 };

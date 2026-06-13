@@ -24,6 +24,13 @@ import { CallListRow } from '../../../components/calls/CallListRow';
 import { CallsDialerSheet } from '../../../components/calls/CallsDialerSheet';
 import { CallsContactsTab } from '../../../components/calls/CallsContactsTab';
 import { groupCallsByDate, normalisePhone } from '../../../lib/call-utils';
+import {
+  bindCallsPrefetchUser,
+  loadPersistedCallsList,
+  peekCallsPrefetchCache,
+  prefetchCallsList,
+  setCallsPrefetchCache,
+} from '../../../lib/calls-list-prefetch';
 import type { CallLog } from '../../../lib/types';
 
 type CallsTab = 'history' | 'contacts';
@@ -34,11 +41,13 @@ const AGENT_PHONE_KEY_LEGACY = 'placecom:agent_phone';
 export default function CallsScreen() {
   const router = useRouter();
   const { openDrawer } = useDrawer();
-  const { profile } = useAuth();
+  const { profile, user } = useAuth();
+  const userId = user?.id ?? '';
   const { contacts } = useWhatsAppContacts();
   const insets = useSafeAreaInsets();
-  const [calls, setCalls] = useState<CallLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialCache = peekCallsPrefetchCache();
+  const [calls, setCalls] = useState<CallLog[]>(() => initialCache?.logs ?? []);
+  const [loading, setLoading] = useState(() => !initialCache);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialerOpen, setDialerOpen] = useState(false);
@@ -89,11 +98,25 @@ export default function CallsScreen() {
     }
   }
 
-  const loadCalls = useCallback(async () => {
-    setError(null);
-    try {
-      const data = await callsApi.list();
-      setCalls(data.logs ?? []);
+  const applyCallsPayload = useCallback(
+    (data: {
+      logs?: CallLog[];
+      telephony?: { mobilePhone: string | null; exotelVirtualNumber: string | null };
+    }) => {
+      const logs = (data.logs ?? []) as CallLog[];
+      setCalls(logs);
+      setCallsPrefetchCache(
+        {
+          logs,
+          telephony: data.telephony
+            ? {
+                mobilePhone: data.telephony.mobilePhone ?? null,
+                exotelVirtualNumber: data.telephony.exotelVirtualNumber ?? null,
+              }
+            : null,
+        },
+        { userId: userId || undefined }
+      );
       if (data.telephony?.mobilePhone) {
         setAgentPhone(data.telephony.mobilePhone);
         setTelephonyFromServer(true);
@@ -101,18 +124,76 @@ export default function CallsScreen() {
       if (data.telephony?.exotelVirtualNumber) {
         setVirtualNumber(data.telephony.exotelVirtualNumber);
       }
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load calls');
-      setCalls([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+    },
+    [userId]
+  );
+
+  const loadCalls = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setLoading(true);
+      setError(null);
+      try {
+        const data = await callsApi.list();
+        applyCallsPayload(data);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : 'Failed to load calls');
+        if (!peekCallsPrefetchCache()) setCalls([]);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [applyCallsPayload]
+  );
 
   useEffect(() => {
-    loadCalls();
-  }, [loadCalls]);
+    if (!userId) return;
+    bindCallsPrefetchUser(userId);
+
+    const mem = peekCallsPrefetchCache();
+    if (mem) {
+      applyCallsPayload({
+        logs: mem.logs,
+        telephony: mem.telephony ?? undefined,
+      });
+      setLoading(false);
+      void loadCalls({ silent: true });
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const disk = await loadPersistedCallsList(userId);
+      if (cancelled) return;
+      if (disk) {
+        setCallsPrefetchCache(
+          { logs: disk.logs, telephony: disk.telephony },
+          { userId, fetchedAt: disk.fetchedAt }
+        );
+        applyCallsPayload({
+          logs: disk.logs,
+          telephony: disk.telephony ?? undefined,
+        });
+        setLoading(false);
+      }
+
+      const entry = await prefetchCallsList();
+      if (cancelled) return;
+      if (entry) {
+        applyCallsPayload({
+          logs: entry.logs,
+          telephony: entry.telephony ?? undefined,
+        });
+        setLoading(false);
+      }
+
+      void loadCalls({ silent: !!(disk || entry) });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyCallsPayload, loadCalls, userId]);
 
   async function placeCall(destinationRaw: string) {
     const to = normalisePhone(destinationRaw.trim());
@@ -228,14 +309,25 @@ export default function CallsScreen() {
               call={item}
               contacts={contacts}
               onPress={() => router.push(`/(workspace)/calls/${item.id}` as any)}
+              onCallBack={(number) => void placeCall(number)}
             />
           )}
+          ListHeaderComponent={
+            calls.length > 0 ? (
+              <View style={styles.listHeader}>
+                <Text style={styles.listHeaderTitle}>{calls.length} recent calls</Text>
+                <Text style={styles.listHeaderSub}>Tap a row for details · green button to call back</Text>
+              </View>
+            ) : null
+          }
           renderSectionHeader={({ section: { title } }) => (
-            <Text style={styles.sectionTitle}>{title}</Text>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>{title}</Text>
+            </View>
           )}
           stickySectionHeadersEnabled={false}
-          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-          SectionSeparatorComponent={() => <View style={{ height: 16 }} />}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          SectionSeparatorComponent={() => <View style={{ height: 8 }} />}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -323,22 +415,44 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   retryText: { color: CallsTheme.fabIcon, fontWeight: '600', fontSize: 14 },
-  listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 100 },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: CallsTheme.textSecondary,
+  listContent: { paddingTop: 8, paddingBottom: 100 },
+  listHeader: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: CallsTheme.blueLight,
+    borderWidth: 1,
+    borderColor: 'rgba(26,115,232,0.12)',
+    gap: 4,
+  },
+  listHeaderTitle: { fontSize: 15, fontWeight: '700', color: CallsTheme.text },
+  listHeaderSub: { fontSize: 13, color: CallsTheme.textSecondary, lineHeight: 18 },
+  sectionHeader: {
+    marginHorizontal: 16,
     marginBottom: 8,
+    marginTop: 4,
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: CallsTheme.textSecondary,
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.6,
+    backgroundColor: CallsTheme.divider,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    overflow: 'hidden',
   },
   fab: {
     position: 'absolute',
     right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: CallsTheme.green,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: CallsTheme.fab,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 4,

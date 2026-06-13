@@ -6,6 +6,7 @@ import { clearGmailAttachmentCaches } from './gmail-attachments';
 import { getLastRegisteredPushToken, unregisterPushToken } from './push-notifications';
 import { clearMailListSessionCache } from './inbox-list-prefetch';
 import { clearDriveListSessionCache } from './drive-list-prefetch';
+import { clearCallsListSessionCache } from './calls-list-prefetch';
 import { clearMailThreadPrefetchCache } from './mail-thread-prefetch';
 import { clearWorkspaceFeaturePrefetchCaches } from './workspace-feature-prefetch';
 import {
@@ -24,6 +25,7 @@ export async function resetAppSessionCaches(userId?: string): Promise<void> {
   cacheClearAll();
   clearMailListSessionCache();
   clearDriveListSessionCache();
+  clearCallsListSessionCache();
   clearMailThreadPrefetchCache();
   clearWorkspaceFeaturePrefetchCaches();
   clearSessionInboxUnread();
