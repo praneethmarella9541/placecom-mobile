@@ -10,7 +10,7 @@ import { useAuth } from '../../../../hooks/useAuth';
 import { adminApi, type AdminUserAnalytics } from '../../../../lib/api';
 import { analyticsRangeEndingToday, ALL_TIME_RANGE } from '../../../../lib/analytics-range';
 import { formatInr } from '../../../../lib/format-inr';
-import { Colors } from '../../../../constants/colors';
+import { AnalyticsTheme as T } from '../../../../constants/analyticsTheme';
 
 const RANGES = [7, 14, 30, 'all'] as const;
 type RangeKey = (typeof RANGES)[number];
@@ -48,16 +48,19 @@ export default function AdminMemberAnalyticsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [userId, range.from, range.to]);
+  }, [userId, range.from, range.to, range.allTime]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const title = user?.displayUsername || user?.email || 'Member Analytics';
+  const initial = title.charAt(0).toUpperCase();
 
   if (profile?.role !== 'admin') {
     return (
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
-            <Ionicons name="arrow-back" size={24} color={Colors.text} />
+            <Ionicons name="arrow-back" size={24} color={T.ink} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Member Analytics</Text>
           <View style={styles.headerBtn} />
@@ -67,25 +70,28 @@ export default function AdminMemberAnalyticsScreen() {
     );
   }
 
-  const title = user?.displayUsername || user?.email || 'Member Analytics';
-
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
-          <Ionicons name="arrow-back" size={24} color={Colors.text} />
+          <Ionicons name="arrow-back" size={22} color={T.ink} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle} numberOfLines={1}>{title}</Text>
-        <View style={styles.headerBtn} />
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle} numberOfLines={1}>{title}</Text>
+          {user ? (
+            <Text style={styles.headerSub} numberOfLines={1}>{user.email ?? '—'} · {range.label}</Text>
+          ) : null}
+        </View>
+        <View style={[styles.headerAvatar, { backgroundColor: T.copper }]}>
+          <Text style={styles.headerAvatarText}>{initial}</Text>
+        </View>
       </View>
-      <ScrollView
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} tintColor={Colors.primary} />}
-        contentContainerStyle={styles.content}
-      >
-        {user ? (
-          <Text style={styles.subtitle}>{user.email ?? '—'} · {user.role} · {range.label}</Text>
-        ) : null}
 
+      <ScrollView
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} tintColor={T.copper} />}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.rangeRow}>
           {RANGES.map((d) => (
             <TouchableOpacity
@@ -101,7 +107,7 @@ export default function AdminMemberAnalyticsScreen() {
         </View>
 
         {loading ? (
-          <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+          <View style={styles.center}><ActivityIndicator color={T.copper} /></View>
         ) : error ? (
           <Text style={styles.error}>{error}</Text>
         ) : !user ? (
@@ -109,35 +115,41 @@ export default function AdminMemberAnalyticsScreen() {
         ) : (
           <>
             <View style={styles.heroCard}>
-              <Text style={styles.heroLabel}>Telephony total</Text>
+              <Text style={styles.heroEyebrow}>Telephony total</Text>
               <Text style={styles.heroValue}>{formatInr(user.totals.costs.totalInr)}</Text>
+              <Text style={styles.heroSub}>
+                Calls {formatInr(user.totals.costs.callsInr)} · WA {formatInr(user.totals.costs.whatsappInr)}
+              </Text>
             </View>
 
-            <Text style={styles.sectionTitle}>Calls</Text>
-            <View style={styles.grid}>
-              <StatCard label="Total calls" value={String(user.totals.callsIn + user.totals.callsOut)} sub={`${user.totals.callsIn} in · ${user.totals.callsOut} out`} />
-              <StatCard label="Billable min" value={String(user.totals.costs.callBillableMinutes)} />
-              <StatCard label="Call cost" value={formatInr(user.totals.costs.callsInr)} sub="₹0.60/min, rounded up" accent="#1a73e8" />
-              <StatCard label="Failed" value={String(user.totals.callsFailed)} />
-            </View>
+            <Section title="Calls" icon="call-outline">
+              <View style={styles.grid}>
+                <StatCard label="Total calls" value={String(user.totals.callsIn + user.totals.callsOut)} sub={`${user.totals.callsIn} in · ${user.totals.callsOut} out`} accent={T.callBlue} />
+                <StatCard label="Billable min" value={String(user.totals.costs.callBillableMinutes)} accent={T.callBlue} />
+                <StatCard label="Call cost" value={formatInr(user.totals.costs.callsInr)} sub="₹0.60/min" accent={T.callBlue} />
+                <StatCard label="Failed" value={String(user.totals.callsFailed)} accent="#DC2626" />
+              </View>
+            </Section>
 
-            <Text style={styles.sectionTitle}>WhatsApp</Text>
-            <View style={styles.grid}>
-              <StatCard label="Sent" value={String(user.totals.whatsappSent)} />
-              <StatCard label="Received" value={String(user.totals.whatsappReceived)} />
-              <StatCard label="WA cost" value={formatInr(user.totals.costs.whatsappInr)} accent="#25d366" />
-              <StatCard
-                label="Breakdown"
-                value={`${user.totals.costs.whatsappUtilityMsgs + user.totals.costs.whatsappPromotionalMsgs + user.totals.costs.whatsappSessionMsgs} msgs`}
-                sub={`${user.totals.costs.whatsappUtilityMsgs} utility · ${user.totals.costs.whatsappPromotionalMsgs} promo · ${user.totals.costs.whatsappSessionMsgs} session`}
-              />
-            </View>
+            <Section title="WhatsApp" icon="logo-whatsapp">
+              <View style={styles.grid}>
+                <StatCard label="Sent" value={String(user.totals.whatsappSent)} accent={T.waGreen} />
+                <StatCard label="Received" value={String(user.totals.whatsappReceived)} accent={T.waGreen} />
+                <StatCard label="WA cost" value={formatInr(user.totals.costs.whatsappInr)} accent={T.waGreen} />
+                <StatCard
+                  label="Breakdown"
+                  value={`${user.totals.costs.whatsappUtilityMsgs + user.totals.costs.whatsappPromotionalMsgs + user.totals.costs.whatsappSessionMsgs}`}
+                  sub={`${user.totals.costs.whatsappUtilityMsgs} util · ${user.totals.costs.whatsappPromotionalMsgs} promo · ${user.totals.costs.whatsappSessionMsgs} session`}
+                  accent={T.waGreen}
+                />
+              </View>
+            </Section>
 
-            <Text style={styles.sectionTitle}>Other</Text>
-            <View style={styles.grid}>
-              <StatCard label="Emails" value={String(user.totals.emailsSent)} />
-              <StatCard label="AI cost" value={`$${user.totals.costUsd.toFixed(2)}`} sub="OpenAI extraction" />
-            </View>
+            <Section title="AI usage" icon="sparkles-outline">
+              <View style={styles.grid}>
+                <StatCard label="AI cost" value={`$${user.totals.costUsd.toFixed(2)}`} sub="OpenAI extraction" accent={T.aiRed} />
+              </View>
+            </Section>
           </>
         )}
       </ScrollView>
@@ -145,68 +157,115 @@ export default function AdminMemberAnalyticsScreen() {
   );
 }
 
+function Section({ title, icon, children }: { title: string; icon: keyof typeof Ionicons.glyphMap; children: React.ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHead}>
+        <Ionicons name={icon} size={14} color={T.muted} />
+        <Text style={styles.sectionTitle}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+}
+
 function StatCard({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: string }) {
+  const color = accent ?? T.ink;
   return (
     <View style={styles.statCard}>
+      <View style={[styles.statAccent, { backgroundColor: color }]} />
       <Text style={styles.statLabel}>{label}</Text>
-      <Text style={[styles.statValue, accent ? { color: accent } : null]}>{value}</Text>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
       {sub ? <Text style={styles.statSub}>{sub}</Text> : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
+  container: { flex: 1, backgroundColor: T.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.surface,
-    paddingHorizontal: 16,
+    backgroundColor: T.surface,
+    paddingHorizontal: 14,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    gap: 12,
+    borderBottomColor: T.border,
+    gap: 10,
   },
   headerBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: Colors.text },
-  content: { padding: 12, paddingBottom: 32, gap: 10 },
-  center: { paddingVertical: 40, alignItems: 'center' },
-  subtitle: { fontSize: 13, color: Colors.textSecondary },
+  headerCenter: { flex: 1, gap: 2 },
+  headerTitle: { fontSize: 17, fontWeight: '800', color: T.ink },
+  headerSub: { fontSize: 11, color: T.muted },
+  headerAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerAvatarText: { fontSize: 15, fontWeight: '800', color: '#fff' },
+  content: { padding: 16, paddingBottom: 36, gap: 14 },
+  center: { paddingVertical: 48, alignItems: 'center' },
   rangeRow: { flexDirection: 'row', gap: 8 },
   rangeBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
     borderRadius: 20,
-    backgroundColor: Colors.surface,
+    backgroundColor: T.surface,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: T.border,
   },
-  rangeBtnActive: { backgroundColor: Colors.primaryLight, borderColor: Colors.primary },
-  rangeBtnText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
-  rangeBtnTextActive: { color: Colors.primary },
+  rangeBtnActive: { backgroundColor: T.copperLight, borderColor: T.copper },
+  rangeBtnText: { fontSize: 13, fontWeight: '700', color: T.muted },
+  rangeBtnTextActive: { color: T.copperDark },
   heroCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 14,
-    padding: 16,
-    gap: 4,
+    backgroundColor: T.copperLight,
+    borderRadius: 18,
+    padding: 20,
+    gap: 6,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: 'rgba(196,92,26,0.18)',
   },
-  heroLabel: { fontSize: 12, fontWeight: '600', color: Colors.textSecondary, textTransform: 'uppercase' },
-  heroValue: { fontSize: 30, fontWeight: '800', color: '#e37400' },
-  sectionTitle: { fontSize: 14, fontWeight: '700', color: Colors.text, marginTop: 4 },
+  heroEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: T.copperDark,
+    textTransform: 'uppercase',
+    letterSpacing: 1.4,
+  },
+  heroValue: { fontSize: 34, fontWeight: '900', color: T.copper, letterSpacing: -0.5 },
+  heroSub: { fontSize: 12, color: T.inkSoft },
+  section: { gap: 10 },
+  sectionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: T.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+  },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   statCard: {
     width: '47%',
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
+    backgroundColor: T.surface,
+    borderRadius: 14,
     padding: 12,
+    paddingLeft: 14,
     gap: 4,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: T.border,
+    overflow: 'hidden',
   },
-  statLabel: { fontSize: 11, fontWeight: '600', color: Colors.textMuted, textTransform: 'uppercase' },
-  statValue: { fontSize: 18, fontWeight: '800', color: Colors.text },
-  statSub: { fontSize: 11, color: Colors.textSecondary, lineHeight: 15 },
-  error: { color: Colors.error, fontSize: 14, textAlign: 'center', padding: 16 },
+  statAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+  },
+  statLabel: { fontSize: 10, fontWeight: '700', color: T.muted, textTransform: 'uppercase' },
+  statValue: { fontSize: 18, fontWeight: '800', color: T.ink },
+  statSub: { fontSize: 11, color: T.inkSoft, lineHeight: 15 },
+  error: { color: '#DC2626', fontSize: 14, textAlign: 'center', padding: 16 },
 });

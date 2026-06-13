@@ -1,0 +1,21 @@
+/** Warm editorial palette aligned with placecom web analytics. */
+export const AnalyticsTheme = {
+  bg: '#F5F3EF',
+  surface: '#FFFFFF',
+  ink: '#1A1612',
+  inkSoft: '#4A443C',
+  muted: '#8C857B',
+  border: '#E8E4DE',
+  copper: '#C45C1A',
+  copperLight: '#FDF4EC',
+  copperDark: '#9A4510',
+  callBlue: '#1A73E8',
+  callBlueLight: '#E8F1FD',
+  waGreen: '#128C7E',
+  waGreenLight: '#E6F7F2',
+  emailAmber: '#D97706',
+  emailAmberLight: '#FEF3C7',
+  aiRed: '#DC2626',
+  heroBg: '#1A1612',
+  heroAccent: '#E8A04C',
+};
