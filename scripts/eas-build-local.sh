@@ -20,4 +20,15 @@ if [ "$PLATFORM" = "android" ]; then
 fi
 
 cd "$ROOT"
-exec npx eas-cli build --platform "$PLATFORM" --profile "$PROFILE" --local "${@:3}"
+npx eas-cli build --platform "$PLATFORM" --profile "$PROFILE" --local "${@:3}"
+
+if [ "$PLATFORM" = "android" ]; then
+  LATEST_BUILD="$(ls -t "$ROOT"/build-*.apk 2>/dev/null | head -1 || true)"
+  if [ -n "$LATEST_BUILD" ]; then
+    APP_VERSION="$("$ROOT/scripts/read-app-version.sh")"
+    OUTPUT_APK="$ROOT/thenucleus_${APP_VERSION}.apk"
+    mv -f "$LATEST_BUILD" "$OUTPUT_APK"
+    echo ""
+    echo "Release APK: $OUTPUT_APK"
+  fi
+fi
