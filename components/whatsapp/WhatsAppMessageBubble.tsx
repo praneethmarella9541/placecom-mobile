@@ -19,6 +19,7 @@ import type { WhatsAppMessage } from '../../lib/whatsapp-types';
 import { Colors } from '../../constants/colors';
 import { getDeliveryFailureAdvice, showWhatsAppFailureDetail } from '../../lib/whatsapp-delivery';
 import { isEmojiOnlyMessage, isImageMessage } from '../../lib/whatsapp-message-display';
+import { mediaFilenameFromMessage } from '../../lib/whatsapp-media-helpers';
 
 // Placeholder bodies that Twilio inserts when media arrives without a stored URL
 const MEDIA_PLACEHOLDER_RE = /^\[(Image|Video|Audio|Voice|Document|Sticker|Location)\]$/i;
@@ -124,6 +125,7 @@ export function WhatsAppMessageBubble({
   const isOrphanPlaceholder = !showMedia && MEDIA_PLACEHOLDER_RE.test(bodyTrimmed);
   const caption = showMedia && isImage && bodyTrimmed && bodyTrimmed !== '[Image]' ? body : '';
   const showTextBody = !showMedia && !!bodyTrimmed && !emojiOnly && !isOrphanPlaceholder;
+  const attachmentLabel = mediaFilenameFromMessage(message);
 
   const timeLabel = message.created_at
     ? format(new Date(message.created_at), 'h:mm a')
@@ -253,7 +255,7 @@ export function WhatsAppMessageBubble({
                 delayLongPress={300}
               >
                 <Ionicons name="play-circle" size={22} color={isOut ? '#075E54' : Colors.primary} />
-                <Text style={styles.fileText} numberOfLines={1}>Video — tap to open</Text>
+                <Text style={styles.fileText} numberOfLines={1}>{attachmentLabel}</Text>
               </GHPressable>
               <BubbleMetaRow {...metaProps} />
             </>
@@ -274,7 +276,7 @@ export function WhatsAppMessageBubble({
                   color={isOut ? '#075E54' : Colors.primary}
                 />
                 <Text style={styles.fileText} numberOfLines={1}>
-                  {body.startsWith('[') ? body : 'Attachment'}
+                  {attachmentLabel}
                 </Text>
               </GHPressable>
               <BubbleMetaRow {...metaProps} />

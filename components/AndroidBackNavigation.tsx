@@ -6,6 +6,7 @@ import { showAppToast } from '../lib/app-toast';
 
 const EXIT_CONFIRM_MS = 2000;
 const INBOX_HREF = '/(workspace)/inbox' as const;
+const WHATSAPP_LIST_HREF = '/(workspace)/whatsapp' as const;
 
 type ParsedPath = {
   module: string;
@@ -66,6 +67,27 @@ function isInboxComposeScreen(pathname: string, routeName: string | null): boole
   return routeName === 'inbox/compose' || isInboxComposePath(pathname);
 }
 
+function isWhatsAppListScreen(pathname: string, routeName: string | null): boolean {
+  if (routeName === 'whatsapp/index') return true;
+  const { module, rest } = parseAppPathname(pathname);
+  if (module !== 'whatsapp') return false;
+  return rest.length === 0 || rest[0] === 'index';
+}
+
+function isWhatsAppContactScreen(pathname: string, routeName: string | null): boolean {
+  if (routeName === 'whatsapp/contact/[peer]') return true;
+  const { module, rest } = parseAppPathname(pathname);
+  return module === 'whatsapp' && rest[0] === 'contact';
+}
+
+function isWhatsAppPeerChatScreen(pathname: string, routeName: string | null): boolean {
+  if (routeName === 'whatsapp/[peer]') return true;
+  const { module, rest } = parseAppPathname(pathname);
+  if (module !== 'whatsapp') return false;
+  if (rest.length !== 1) return false;
+  return rest[0] !== 'index' && rest[0] !== 'contact';
+}
+
 type Props = {
   drawerOpen: boolean;
   closeDrawer: () => void;
@@ -76,7 +98,10 @@ type Props = {
 
 /**
  * Android hardware back (registered once — screen handlers run first):
- * - Non-inbox → inbox (single back, no exit toast)
+ * - WhatsApp chat → WhatsApp list
+ * - WhatsApp contact info → previous chat screen
+ * - WhatsApp list → inbox
+ * - Other non-inbox → inbox (single back, no exit toast)
  * - Inbox thread → back to inbox list
  * - Mail sub-views (Drafts, Starred, Sent, labels, …) → main Inbox
  * - Inbox main list only → double-back to exit
@@ -125,6 +150,24 @@ export function AndroidBackNavigation({
 
       if (isInboxComposeScreen(path, route)) {
         return false;
+      }
+
+      if (isWhatsAppContactScreen(path, route)) {
+        lastBackAtRef.current = 0;
+        routerRef.current.back();
+        return true;
+      }
+
+      if (isWhatsAppPeerChatScreen(path, route)) {
+        lastBackAtRef.current = 0;
+        routerRef.current.replace(WHATSAPP_LIST_HREF);
+        return true;
+      }
+
+      if (isWhatsAppListScreen(path, route)) {
+        lastBackAtRef.current = 0;
+        routerRef.current.replace(INBOX_HREF);
+        return true;
       }
 
       if (isNonInboxModule(path, route)) {

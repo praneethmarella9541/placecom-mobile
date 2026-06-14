@@ -12,13 +12,67 @@ export function categorizeWhatsAppMedia(message: WhatsAppMessage): WhatsAppMedia
   return 'document';
 }
 
+const MEDIA_PLACEHOLDER_RE = /^\[(Image|Video|Audio|Voice|Document|Sticker)(?::|\])/i;
+const UUID_PREFIX_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i;
+
+function isCacheLikeFilename(name: string): boolean {
+  const n = name.trim();
+  if (!n || n === 'upload') return true;
+  if (/^(file|document|audio|photo|video|image)(-\d+)?(\.[a-z0-9]+)?$/i.test(n)) return true;
+  if (/^[0-9a-f]{8,}(\.[a-z0-9]+)?$/i.test(n)) return true;
+  if (/^\d+(\.[a-z0-9]+)?$/i.test(n)) return true;
+  return false;
+}
+
+/** Best-effort original filename from a picked asset URI when the picker omits `name`. */
+export function filenameFromAssetUri(uri: string, fallback: string): string {
+  try {
+    const path = decodeURIComponent(uri.split('?')[0].split('#')[0]);
+    const base = path.split('/').pop()?.trim();
+    if (base && base.includes('.')) return base;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+function filenameFromStoragePath(objectPath: string): string | null {
+  const segment = decodeURIComponent(objectPath).split('/').pop()?.trim();
+  if (!segment) return null;
+  const withoutUuid = segment.replace(UUID_PREFIX_RE, '');
+  return withoutUuid.includes('.') ? withoutUuid : null;
+}
+
 export function mediaFilenameFromMessage(message: WhatsAppMessage): string {
-  const url = message.media_url ?? '';
-  const fromUrl = url.split('/').pop()?.split('?')[0];
-  if (fromUrl && fromUrl.includes('.')) return decodeURIComponent(fromUrl);
+  const stored = message.media_filename?.trim();
+  if (stored) return stored;
 
   const body = message.body?.trim() ?? '';
-  if (body && !body.startsWith('[')) return body.slice(0, 120);
+  const docMatch = body.match(/^\[Document:\s*(.+)\]$/i);
+  if (docMatch?.[1]?.trim()) return docMatch[1].trim();
+
+  const url = message.media_url ?? '';
+  try {
+    const parsed = new URL(url, 'https://local');
+    const storagePath = parsed.searchParams.get('p');
+    if (storagePath) {
+      const fromStorage = filenameFromStoragePath(storagePath);
+      if (fromStorage && !isCacheLikeFilename(fromStorage)) return fromStorage;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const fromUrl = url.split('/').pop()?.split('?')[0];
+  if (fromUrl && fromUrl.includes('.') && fromUrl !== 'serve-media') {
+    const decoded = decodeURIComponent(fromUrl);
+    if (!isCacheLikeFilename(decoded)) return decoded;
+  }
+
+  if (body && !MEDIA_PLACEHOLDER_RE.test(body) && !body.startsWith('[')) {
+    return body.slice(0, 120);
+  }
 
   const cat = categorizeWhatsAppMedia(message);
   if (cat === 'image') return 'image.jpg';

@@ -534,7 +534,7 @@ export default function WhatsAppConversationScreen() {
                 ? '[Video]'
                 : messageType === 'audio'
                   ? '[Audio]'
-                  : `[Document: ${att.filename ?? att.name}]`,
+                  : `[Document: ${att.name ?? att.filename}]`,
         created_at: new Date().toISOString(),
         delivery_status: 'pending',
         message_sid: null,
@@ -577,7 +577,7 @@ export default function WhatsAppConversationScreen() {
             messageType: kind,
             mediaUrl: remoteUrl,
             mediaCaption: isLast ? caption || undefined : undefined,
-            mediaFilename: att.filename ?? att.name,
+            mediaFilename: att.name ?? att.filename,
             replyToId: isLast ? replyToId : undefined,
           });
           setMessages((prev) =>

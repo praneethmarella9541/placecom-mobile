@@ -20,6 +20,7 @@ export type WhatsAppMessage = {
   delivery_status?: string | null;
   media_url?: string | null;
   content_type?: string | null;
+  media_filename?: string | null;
   created_at: string;
   reply_to_id?: string | null;
   is_starred?: boolean;

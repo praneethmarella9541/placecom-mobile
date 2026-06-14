@@ -390,10 +390,16 @@ export const whatsappApi = {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     const form = new FormData();
-    form.append('file', { uri, name, type: mimeType } as unknown as Blob);
+    const safeName = name.trim() || 'upload';
+    form.append('file', { uri, name: safeName, type: mimeType } as unknown as Blob);
+    // React Native sends a Blob-like part, not a File — server reads this field for the name.
+    form.append('filename', safeName);
     const res = await fetchWithTimeout(`${BASE_URL}/api/whatsapp/upload`, {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-Original-Filename': encodeURIComponent(safeName),
+      },
       body: form,
     }, 120000);
     if (!res.ok) {

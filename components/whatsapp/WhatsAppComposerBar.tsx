@@ -25,6 +25,7 @@ import {
   type PendingAttachment,
 } from './WhatsAppMediaAttachmentPreview';
 import { normalizeOutboundImageAsset } from '../../lib/whatsapp-outbound-media';
+import { filenameFromAssetUri } from '../../lib/whatsapp-media-helpers';
 import { WhatsAppTemplatePanel } from './WhatsAppTemplatePanel';
 
 const EMOJI_PANEL_HEIGHT = 280;
@@ -154,7 +155,7 @@ export function WhatsAppComposerBar({
                   status: 'ready',
                   remoteUrl: data.url,
                   kind: data.kind,
-                  filename: data.filename,
+                  filename: data.filename?.trim() && data.filename !== 'upload' ? data.filename : name,
                   error: undefined,
                 }
               : a
@@ -290,7 +291,7 @@ export function WhatsAppComposerBar({
           const mime = a.mimeType ?? 'application/octet-stream';
           return {
             localUri: a.uri,
-            name: a.name ?? 'file',
+            name: a.name?.trim() || filenameFromAssetUri(a.uri, 'file'),
             mimeType: mime,
             isImage: mime.startsWith('image/'),
             sizeBytes: a.size ?? null,
@@ -327,9 +328,10 @@ export function WhatsAppComposerBar({
           // Use asset.type ("image"|"video") as the source of truth — mimeType can be null on some devices.
           const isVideo = a.type === 'video' || (a.mimeType ?? '').startsWith('video/');
           const mime = a.mimeType ?? (isVideo ? 'video/mp4' : 'image/jpeg');
+          const fallback = isVideo ? `video-${i + 1}.mp4` : `photo-${i + 1}.jpg`;
           return {
             localUri: a.uri,
-            name: a.fileName ?? (isVideo ? `video-${i + 1}.mp4` : `photo-${i + 1}.jpg`),
+            name: a.fileName?.trim() || filenameFromAssetUri(a.uri, fallback),
             mimeType: mime,
             isImage: !isVideo,
             sizeBytes: a.fileSize ?? null,
@@ -362,7 +364,7 @@ export function WhatsAppComposerBar({
       queueAttachments([
         {
           localUri: a.uri,
-          name: a.fileName ?? 'photo.jpg',
+          name: a.fileName?.trim() || filenameFromAssetUri(a.uri, 'photo.jpg'),
           mimeType: 'image/jpeg',
           isImage: true,
           fromCamera: true,
@@ -387,7 +389,7 @@ export function WhatsAppComposerBar({
       queueAttachments(
         res.assets.map((a) => ({
           localUri: a.uri,
-          name: a.name ?? 'audio',
+          name: a.name?.trim() || filenameFromAssetUri(a.uri, 'audio'),
           mimeType: a.mimeType ?? 'audio/mpeg',
           isImage: false,
           sizeBytes: a.size ?? null,
