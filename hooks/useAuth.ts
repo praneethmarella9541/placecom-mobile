@@ -10,7 +10,17 @@ function normalizeRole(role: unknown): UserRole {
   return 'staff';
 }
 
-function mapSupabaseProfile(row: Record<string, unknown>, user: User): Profile {
+async function fetchGroupName(groupId: string | null | undefined): Promise<string | null> {
+  if (!groupId) return null;
+  const { data } = await supabase.from('team_groups').select('name').eq('id', groupId).maybeSingle();
+  return (data?.name as string | null) ?? null;
+}
+
+function mapSupabaseProfile(
+  row: Record<string, unknown>,
+  user: User,
+  groupName: string | null,
+): Profile {
   return {
     id: user.id,
     email: user.email ?? '',
@@ -19,6 +29,7 @@ function mapSupabaseProfile(row: Record<string, unknown>, user: User): Profile {
       (row.display_name as string | null) ??
       null,
     role: normalizeRole(row.role),
+    group_name: groupName,
     restricted_features: (row.restricted_features as string[] | undefined) ?? [],
     mobile_phone: (row.mobile_phone as string | null) ?? null,
     exotel_virtual_number: (row.exotel_virtual_number as string | null) ?? null,
@@ -94,7 +105,13 @@ export function useAuthState(): AuthCtx {
         .eq('id', user.id)
         .single();
 
-      const fromDb = row ? mapSupabaseProfile(row as Record<string, unknown>, user) : null;
+      const fromDb = row
+        ? mapSupabaseProfile(
+            row as Record<string, unknown>,
+            user,
+            await fetchGroupName((row as Record<string, unknown>).group_id as string | null),
+          )
+        : null;
 
       try {
         const me = await meApi.mailbox();
@@ -104,6 +121,7 @@ export function useAuthState(): AuthCtx {
             email: user.email ?? '',
             display_name: null,
             role: normalizeRole(me.role),
+            group_name: me.groupName ?? null,
             restricted_features: me.restrictedFeatures ?? [],
             mobile_phone: null,
             exotel_virtual_number: me.exotelVirtualNumber ?? null,
@@ -111,6 +129,7 @@ export function useAuthState(): AuthCtx {
           email: me.sessionEmail ?? fromDb?.email ?? user.email ?? '',
           display_name: me.displayUsername ?? fromDb?.display_name ?? null,
           role: fromDb?.role ?? normalizeRole(me.role),
+          group_name: me.groupName ?? fromDb?.group_name ?? null,
           restricted_features: fromDb?.restricted_features ?? me.restrictedFeatures ?? [],
           exotel_virtual_number: me.exotelVirtualNumber ?? fromDb?.exotel_virtual_number ?? null,
         });

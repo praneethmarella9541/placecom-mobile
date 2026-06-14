@@ -5,6 +5,7 @@ export interface Profile {
   email: string;
   display_name: string | null;
   role: UserRole;
+  group_name: string | null;
   restricted_features: string[];
   mobile_phone: string | null;
   exotel_virtual_number: string | null;

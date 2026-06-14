@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo } from 'react';
-import { View, Text, TextInput, StyleSheet } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { AdminSelectField } from './AdminSelectField';
 import type { AdminTeamGroup } from '../../lib/admin-team';
 import { phoneMatches } from '../../lib/phone';
@@ -33,6 +34,7 @@ export function TeamMemberFormFields({
   exotelNumbers,
   tokensUsed,
 }: Props) {
+  const [showPassword, setShowPassword] = useState(false);
   const groupOptions = [
     { value: '', label: 'Full access (no group)' },
     ...groups.map((g) => ({ value: g.id, label: g.name })),
@@ -83,15 +85,30 @@ export function TeamMemberFormFields({
       )}
 
       <Field label={mode === 'create' ? 'Initial password (min. 8 characters)' : 'Set new password (optional)'}>
-        <TextInput
-          style={styles.input}
-          value={values.password}
-          onChangeText={(password) => onChange({ password })}
-          placeholder={mode === 'create' ? '••••••••' : '••••••••'}
-          placeholderTextColor={Colors.textMuted}
-          secureTextEntry
-          autoCapitalize="none"
-        />
+        <View style={styles.passwordWrap}>
+          <TextInput
+            style={styles.passwordInput}
+            value={values.password}
+            onChangeText={(password) => onChange({ password })}
+            placeholder={mode === 'create' ? '••••••••' : '••••••••'}
+            placeholderTextColor={Colors.textMuted}
+            secureTextEntry={!showPassword}
+            autoCapitalize="none"
+          />
+          <TouchableOpacity
+            style={styles.passwordToggle}
+            onPress={() => setShowPassword((v) => !v)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+          >
+            <Ionicons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={20}
+              color={Colors.textMuted}
+            />
+          </TouchableOpacity>
+        </View>
         {mode === 'edit' ? (
           <Text style={styles.hint}>
             Leave blank to keep their current password. If you enter one and save, it replaces the old password.
@@ -217,6 +234,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.text,
     backgroundColor: Colors.surface,
+  },
+  passwordWrap: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  passwordInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingLeft: 12,
+    paddingRight: 44,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: Colors.text,
+    backgroundColor: Colors.surface,
+  },
+  passwordToggle: {
+    position: 'absolute',
+    right: 8,
+    height: 36,
+    width: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   hint: { fontSize: 12, color: Colors.textMuted, lineHeight: 17 },
 });

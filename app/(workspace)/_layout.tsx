@@ -7,12 +7,13 @@ import { useRouter, usePathname, useNavigation } from 'expo-router';
 import type { NavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/colors';
+import { APP_VERSION } from '../../constants/app-version';
 import { useAuth } from '../../hooks/useAuth';
 import { meApi, type MeMailbox } from '../../lib/api';
 import { MailboxSessionSync } from '../../components/MailboxSessionSync';
 import { WorkspacePrefetchSync } from '../../components/WorkspacePrefetchSync';
 import { AndroidBackNavigation, getFocusedStackRouteName } from '../../components/AndroidBackNavigation';
-import { resolveDisplayRole, isAdminUser } from '../../lib/user-role';
+import { resolveSidebarRoleLabel, isAdminUser } from '../../lib/user-role';
 import { BrandLogo } from '../../components/BrandLogo';
 import { MAILBOX_VIEWS, type MailViewKey } from '../../lib/mail-views';
 import type { LabelCount } from '../../lib/gmail-label-counts';
@@ -132,7 +133,10 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
             (emailName ? emailName.replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '') ||
             'User';
           const avatarLetter = (friendlyName || sessionEmail || '?').charAt(0).toUpperCase();
-          const role = resolveDisplayRole(profile?.role);
+          const role = resolveSidebarRoleLabel(
+            profile?.role,
+            me?.groupName ?? profile?.group_name,
+          );
           // Mailbox email — for staff this is the admin's Gmail being used to send/read mail.
           // For admin role it's the same as their own connected Gmail.
           const mailboxEmail = me?.mailboxEmail || '';
@@ -306,6 +310,10 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
           );
         })}
       </ScrollView>
+
+      <View style={[styles.sidebarFooter, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        <Text style={styles.versionText}>v{APP_VERSION}</Text>
+      </View>
 
       <TouchableOpacity
         style={styles.signOutBtn}
@@ -527,13 +535,24 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
     opacity: 0.9,
   },
+  sidebarFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+  },
+  versionText: {
+    color: Colors.sidebarText,
+    fontSize: 11,
+    opacity: 0.55,
+    letterSpacing: 0.3,
+  },
   signOutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
   },
   signOutText: {
     color: Colors.sidebarText,
