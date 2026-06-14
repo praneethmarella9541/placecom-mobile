@@ -67,6 +67,7 @@ export default function InboxScreen() {
     setLabelCounts: setContextLabelCounts,
     setUserLabels: setContextUserLabels,
     filterLabelId, setFilterLabelId: setContextFilterLabelId,
+    mailInboxBackRef,
   } = useMailView();
   const { session, user } = useAuth();
   const userId = user?.id ?? '';
@@ -111,6 +112,54 @@ export default function InboxScreen() {
 
   // Label picker modal state
   const [labelPickerOpen, setLabelPickerOpen] = useState(false);
+
+  useEffect(() => {
+    mailInboxBackRef.current = () => {
+      if (selection.size > 0) {
+        setSelection(new Set());
+        return true;
+      }
+      if (search.trim() || searchFocused) {
+        setSearch('');
+        setSearchFocused(false);
+        return true;
+      }
+      if (chipMenuOpen) {
+        setChipMenuOpen(false);
+        return true;
+      }
+      if (labelPickerOpen) {
+        setLabelPickerOpen(false);
+        return true;
+      }
+
+      const onMainInbox =
+        mailView === 'inbox' && !filterLabelId && category === 'primary';
+      if (!onMainInbox) {
+        if (filterLabelId) setFilterLabelId(null);
+        if (category !== 'primary') setCategory('primary');
+        if (mailView !== 'inbox') setMailView('inbox');
+        return true;
+      }
+
+      return false;
+    };
+    return () => {
+      mailInboxBackRef.current = null;
+    };
+  }, [
+    mailInboxBackRef,
+    selection,
+    search,
+    searchFocused,
+    chipMenuOpen,
+    labelPickerOpen,
+    mailView,
+    filterLabelId,
+    category,
+    setFilterLabelId,
+    setMailView,
+  ]);
 
   // Folder + label counts
   const [labelCounts, setLabelCounts] = useState<Record<string, { total: number; unread: number }>>({});

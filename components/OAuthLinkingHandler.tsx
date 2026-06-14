@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import * as Linking from 'expo-linking';
 import { AppState } from 'react-native';
+import { useRouter } from 'expo-router';
 import { isMobileOAuthCallbackUrl } from '../lib/auth-redirect';
-import { completeOAuthFromUrl } from '../lib/google-sign-in';
+import { completeOAuthFromUrl, finishOAuthBrowser } from '../lib/google-sign-in';
 import { supabase } from '../lib/supabase';
 
 /**
@@ -10,6 +11,8 @@ import { supabase } from '../lib/supabase';
  * to the app outside openAuthSessionAsync (common on Android).
  */
 export function OAuthLinkingHandler() {
+  const router = useRouter();
+
   useEffect(() => {
     let busy = false;
 
@@ -18,8 +21,15 @@ export function OAuthLinkingHandler() {
       busy = true;
       try {
         const { data } = await supabase.auth.getSession();
-        if (data.session) return;
+        if (data.session) {
+          finishOAuthBrowser();
+          router.replace('/(workspace)/inbox');
+          return;
+        }
         await completeOAuthFromUrl(url);
+        finishOAuthBrowser();
+        const { data: after } = await supabase.auth.getSession();
+        if (after.session) router.replace('/(workspace)/inbox');
       } catch (e) {
         console.warn('[OAuthLinkingHandler]', e);
       } finally {
@@ -42,7 +52,7 @@ export function OAuthLinkingHandler() {
       sub.remove();
       appSub.remove();
     };
-  }, []);
+  }, [router]);
 
   return null;
 }

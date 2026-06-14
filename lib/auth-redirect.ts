@@ -1,66 +1,51 @@
-import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import * as AuthSession from 'expo-auth-session';
+import * as Linking from 'expo-linking';
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? '').replace(/\/$/, '');
+const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://www.rideasy.co.in').replace(
+  /\/$/,
+  ''
+);
 
-/** Deep-link callback for standalone / dev-client builds. */
 export const MOBILE_OAUTH_REDIRECT_SCHEME = 'thenucleus://auth/callback';
 
-export function mobileHttpsCallback(): string | null {
-  if (!API_BASE) return null;
-  return `${API_BASE}/auth/mobile-callback`;
-}
-
-/** True when running inside Expo Go (custom URL schemes are unavailable). */
 export function isExpoGo(): boolean {
   return Constants.appOwnership === 'expo';
 }
 
-function nativeRedirectUri(): string {
-  return AuthSession.makeRedirectUri({
-    scheme: 'thenucleus',
-    path: 'auth/callback',
-  });
+export function getMobileOAuthRedirect(): string {
+  if (isExpoGo()) {
+    return `${API_BASE}/auth/mobile-callback`;
+  }
+  return MOBILE_OAUTH_REDIRECT_SCHEME;
 }
 
-/**
- * OAuth redirect passed to Supabase + openAuthSessionAsync.
- *
- * Expo Go: HTTPS /auth/mobile-callback (stable; exp:// is unreliable).
- * iOS dev/prod: thenucleus://auth/callback.
- * Android dev/prod: HTTPS /auth/mobile-callback when API_BASE is set.
- */
-export function getMobileOAuthRedirect(): string {
-  const httpsCallback = mobileHttpsCallback();
+export function getOAuthBridgeUrl(supabaseAuthUrl: string): string {
+  const expReturn = getExpoGoReturnUri();
+  return `${API_BASE}/auth/mobile-bridge?return=${encodeURIComponent(expReturn)}&auth=${encodeURIComponent(supabaseAuthUrl)}`;
+}
 
-  // Expo Go cannot open thenucleus:// — use HTTPS so the auth sheet returns ?code=.
-  if (isExpoGo() && httpsCallback) {
-    return httpsCallback;
-  }
-
-  if (Platform.OS === 'ios') {
-    return MOBILE_OAUTH_REDIRECT_SCHEME;
-  }
-  if (httpsCallback) return httpsCallback;
-  return MOBILE_OAUTH_REDIRECT_SCHEME;
+export function getExpoGoReturnUri(): string {
+  return Linking.createURL('auth/callback');
 }
 
 export function isMobileOAuthCallbackUrl(url: string): boolean {
   const bare = url.split('#')[0]!;
-  if (/\/auth\/mobile-callback(\?|$)/.test(bare)) {
-    return true;
-  }
-  if (/auth\/callback(\?|$)/.test(bare) || /--\/auth\/callback(\?|$)/.test(bare)) {
-    return true;
-  }
-  if (bare.startsWith('exp://') && bare.includes('callback')) {
-    return true;
-  }
+  if (/\/auth\/mobile-callback(\?|$)/.test(bare)) return true;
+  if (bare.startsWith('exp://') && bare.includes('callback')) return true;
+  if (bare.startsWith('thenucleus://') && bare.includes('auth/callback')) return true;
   return false;
 }
 
-/** True when Supabase OAuth URL is pointing at the web app instead of mobile. */
-export function isWebSiteOAuthRedirect(redirectParam: string): boolean {
-  return /rideasy\.co\.in/i.test(redirectParam) && !redirectParam.includes('/auth/mobile-callback');
+export function supabaseRedirectIsMobile(redirectParam: string): boolean {
+  const p = redirectParam.trim();
+  return (
+    p.includes('/auth/mobile-callback') ||
+    p.startsWith('exp://') ||
+    p.includes('thenucleus://auth/callback')
+  );
+}
+
+/** Match https mobile-callback on www or non-www. */
+export function isHttpsMobileCallback(url: string): boolean {
+  return /https:\/\/(www\.)?rideasy\.co\.in\/auth\/mobile-callback(\?|$)/.test(url.split('#')[0]!);
 }

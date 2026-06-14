@@ -1,15 +1,17 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Stack } from 'expo-router';
 import { Drawer } from 'react-native-drawer-layout';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, usePathname } from 'expo-router';
+import { useRouter, usePathname, useNavigation } from 'expo-router';
+import type { NavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/colors';
 import { useAuth } from '../../hooks/useAuth';
 import { meApi, type MeMailbox } from '../../lib/api';
 import { MailboxSessionSync } from '../../components/MailboxSessionSync';
 import { WorkspacePrefetchSync } from '../../components/WorkspacePrefetchSync';
+import { AndroidBackNavigation, getFocusedStackRouteName } from '../../components/AndroidBackNavigation';
 import { BrandLogo } from '../../components/BrandLogo';
 import { MAILBOX_VIEWS, type MailViewKey } from '../../lib/mail-views';
 import type { LabelCount } from '../../lib/gmail-label-counts';
@@ -50,6 +52,8 @@ interface MailViewCtx {
   setFilterLabelId: (id: string | null) => void;
   /** Instant draft count delta — called from ComposeScreen on create/discard. */
   bumpDraftCount: (delta: number) => void;
+  /** InboxScreen registers Android back steps (drafts → inbox, label → inbox, etc.). */
+  mailInboxBackRef: React.MutableRefObject<(() => boolean) | null>;
 }
 export const MailViewContext = createContext<MailViewCtx>({
   mailView: 'inbox',
@@ -61,6 +65,7 @@ export const MailViewContext = createContext<MailViewCtx>({
   filterLabelId: null,
   setFilterLabelId: () => {},
   bumpDraftCount: () => {},
+  mailInboxBackRef: { current: null },
 });
 export function useMailView() { return useContext(MailViewContext); }
 
@@ -317,6 +322,7 @@ export default function WorkspaceLayout() {
   const [labelCounts, setLabelCounts] = useState<Record<string, LabelCount>>({});
   const [userLabels, setUserLabels] = useState<GmailLabel[]>([]);
   const [filterLabelId, setFilterLabelId] = useState<string | null>(null);
+  const mailInboxBackRef = useRef<(() => boolean) | null>(null);
 
   const bumpDraftCount = useCallback((delta: number) => {
     setLabelCounts((prev) => {
@@ -327,12 +333,30 @@ export default function WorkspaceLayout() {
 
   const openDrawer = () => setOpen(true);
   const closeDrawer = () => setOpen(false);
+  const pathname = usePathname();
+  const navigation = useNavigation();
+  const [focusedRoute, setFocusedRoute] = useState<string | null>('inbox/index');
+
+  useEffect(() => {
+    const syncRoute = () => {
+      setFocusedRoute(getFocusedStackRouteName(navigation.getState() as NavigationState));
+    };
+    syncRoute();
+    return navigation.addListener('state', syncRoute);
+  }, [navigation]);
 
   return (
-    <MailViewContext.Provider value={{ mailView, setMailView, labelCounts, setLabelCounts, userLabels, setUserLabels, filterLabelId, setFilterLabelId, bumpDraftCount }}>
+    <MailViewContext.Provider value={{ mailView, setMailView, labelCounts, setLabelCounts, userLabels, setUserLabels, filterLabelId, setFilterLabelId, bumpDraftCount, mailInboxBackRef }}>
     <DrawerContext.Provider value={{ openDrawer, closeDrawer }}>
       <MailboxSessionSync />
       <WorkspacePrefetchSync />
+      <AndroidBackNavigation
+        drawerOpen={open}
+        closeDrawer={closeDrawer}
+        pathname={pathname}
+        routeName={focusedRoute}
+        mailInboxBackRef={mailInboxBackRef}
+      />
       <Drawer
         open={open}
         onOpen={() => setOpen(true)}

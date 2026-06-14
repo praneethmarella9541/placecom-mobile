@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
 import { completeOAuthFromUrl, parseOAuthCallback } from '../../lib/google-sign-in';
+import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/colors';
 
 /**
@@ -14,6 +16,16 @@ export default function AuthCallback() {
   const params = useLocalSearchParams<{ code?: string; error?: string; error_description?: string }>();
   const router = useRouter();
   const [status, setStatus] = useState<'working' | 'failed'>('working');
+
+  async function finishSignIn() {
+    WebBrowser.maybeCompleteAuthSession();
+    const { data } = await supabase.auth.getSession();
+    if (data.session) {
+      router.replace('/(workspace)/inbox');
+      return true;
+    }
+    return false;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -30,8 +42,11 @@ export default function AuthCallback() {
 
         const codeFromParams = typeof params.code === 'string' ? params.code : null;
         if (codeFromParams) {
-          await completeOAuthFromUrl(`thenucleus://auth/callback?code=${encodeURIComponent(codeFromParams)}`);
-          return;
+          const callbackUrl = Linking.createURL(
+            `auth/callback?code=${encodeURIComponent(codeFromParams)}`
+          );
+          await completeOAuthFromUrl(callbackUrl);
+          if (!cancelled && (await finishSignIn())) return;
         }
 
         // Cold start: full URL may only be on Linking, not route params.
@@ -39,13 +54,13 @@ export default function AuthCallback() {
         if (initial) {
           const parsed = parseOAuthCallback(initial);
           if (parsed.error) throw new Error(parsed.errorDescription?.trim() || parsed.error);
-          if (parsed.code || (parsed.accessToken && parsed.refreshToken)) {
+          if (parsed.code) {
             await completeOAuthFromUrl(initial);
-            return;
+            if (!cancelled && (await finishSignIn())) return;
           }
         }
 
-        router.replace('/(auth)/login');
+        if (!cancelled) router.replace('/(auth)/login');
       } catch (e) {
         if (cancelled) return;
         console.warn('[auth/callback]', e);

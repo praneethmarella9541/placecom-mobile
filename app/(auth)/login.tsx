@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { signInWithGoogle } from '../../lib/google-sign-in';
 import { BrandLogo } from '../../components/BrandLogo';
@@ -27,24 +28,34 @@ const FEATURES = [
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [showPassword, setShowPassword] = useState(false);
 
-  async function handleEmailAuth() {
+  useEffect(() => {
+    if (!googleLoading) return;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        setGoogleLoading(false);
+        router.replace('/(workspace)/inbox');
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [googleLoading, router]);
+
+  async function handleSignIn() {
     if (!email || !password) {
       Alert.alert('Error', 'Please enter email and password.');
       return;
     }
     setLoading(true);
     try {
-      const { error } =
-        mode === 'signin'
-          ? await supabase.auth.signInWithPassword({ email, password })
-          : await supabase.auth.signUp({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) Alert.alert('Error', error.message);
     } finally {
       setLoading(false);
@@ -55,8 +66,17 @@ export default function LoginScreen() {
     setGoogleLoading(true);
     try {
       await signInWithGoogle();
-    } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Google sign-in failed');
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        router.replace('/(workspace)/inbox');
+      }
+    } catch (err: unknown) {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        router.replace('/(workspace)/inbox');
+        return;
+      }
+      Alert.alert('Error', err instanceof Error ? err.message : 'Google sign-in failed');
     } finally {
       setGoogleLoading(false);
     }
@@ -101,11 +121,9 @@ export default function LoginScreen() {
         <View style={styles.formSection}>
           <View style={styles.card}>
             <Text style={styles.cardEyebrow}>Workspace access</Text>
-            <Text style={styles.cardTitle}>{mode === 'signin' ? 'Sign in' : 'Create account'}</Text>
+            <Text style={styles.cardTitle}>Sign in</Text>
             <Text style={styles.cardSubtitle}>
-              {mode === 'signin'
-                ? 'Use credentials from your admin, or continue with Google.'
-                : 'Create an account with email and password.'}
+              Use credentials from your admin, or continue with Google.
             </Text>
 
             <View style={styles.inputGroup}>
@@ -153,16 +171,14 @@ export default function LoginScreen() {
 
             <TouchableOpacity
               style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
-              onPress={handleEmailAuth}
-              disabled={loading}
+              onPress={handleSignIn}
+              disabled={loading || googleLoading}
               activeOpacity={0.85}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.primaryBtnText}>
-                  {mode === 'signin' ? 'Sign in' : 'Create account'}
-                </Text>
+                <Text style={styles.primaryBtnText}>Sign in</Text>
               )}
             </TouchableOpacity>
 
@@ -175,7 +191,7 @@ export default function LoginScreen() {
             <TouchableOpacity
               style={styles.googleBtn}
               onPress={handleGoogleSignIn}
-              disabled={googleLoading}
+              disabled={googleLoading || loading}
               activeOpacity={0.85}
             >
               {googleLoading ? (
@@ -186,18 +202,6 @@ export default function LoginScreen() {
                   <Text style={styles.googleBtnText}>Continue with Google</Text>
                 </>
               )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
-              style={styles.switchMode}
-            >
-              <Text style={styles.switchModeText}>
-                {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
-                <Text style={styles.switchModeLink}>
-                  {mode === 'signin' ? 'Sign up' : 'Sign in'}
-                </Text>
-              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -391,7 +395,4 @@ const styles = StyleSheet.create({
     backgroundColor: T.surface,
   },
   googleBtnText: { fontSize: 15, fontWeight: '600', color: T.ink },
-  switchMode: { alignItems: 'center', marginTop: 4 },
-  switchModeText: { fontSize: 13, color: T.inkSoft },
-  switchModeLink: { color: T.copper, fontWeight: '700' },
 });
