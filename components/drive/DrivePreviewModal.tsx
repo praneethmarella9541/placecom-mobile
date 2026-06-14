@@ -153,7 +153,7 @@ export function DrivePreviewModal({
 
         {phase === 'ready' && content?.type === 'html' && (
           <WebView
-            source={{ html: content.html }}
+            source={{ html: content.html, baseUrl: 'about:blank' }}
             style={styles.web}
             originWhitelist={['*']}
             allowFileAccess

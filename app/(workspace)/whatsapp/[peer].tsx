@@ -43,6 +43,8 @@ import { WhatsAppComposerBar } from '../../../components/whatsapp/WhatsAppCompos
 import type { PendingAttachment } from '../../../components/whatsapp/WhatsAppMediaAttachmentPreview';
 import { WhatsAppChatSearchBar } from '../../../components/whatsapp/WhatsAppChatSearchBar';
 import { WhatsAppMediaViewer } from '../../../components/whatsapp/WhatsAppMediaViewer';
+import { WhatsAppImageViewer } from '../../../components/whatsapp/WhatsAppImageViewer';
+import { openWhatsAppMessageInNativeApp, whatsAppMediaOpenTarget } from '../../../lib/whatsapp-open-media';
 import { WhatsAppReplyBar } from '../../../components/whatsapp/WhatsAppReplyBar';
 import { ForwardChatModal } from '../../../components/whatsapp/ForwardChatModal';
 import {
@@ -139,6 +141,28 @@ export default function WhatsAppConversationScreen() {
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [searchMatchCursor, setSearchMatchCursor] = useState(0);
   const [viewerMessage, setViewerMessage] = useState<WhatsAppMessage | null>(null);
+  const [imageViewerMessage, setImageViewerMessage] = useState<WhatsAppMessage | null>(null);
+  const [openingMedia, setOpeningMedia] = useState(false);
+  async function handleMediaPress(message: WhatsAppMessage) {
+    const target = whatsAppMediaOpenTarget(message);
+    if (target === 'fullscreen-image') {
+      setImageViewerMessage(message);
+      return;
+    }
+    if (target === 'inline-video') {
+      setViewerMessage(message);
+      return;
+    }
+    try {
+      setOpeningMedia(true);
+      await openWhatsAppMessageInNativeApp(message, authToken);
+    } catch (e: unknown) {
+      Alert.alert('Cannot open file', e instanceof Error ? e.message : 'Could not open attachment');
+    } finally {
+      setOpeningMedia(false);
+    }
+  }
+
   const peerDecoded = normalizePhone(decodeURIComponent(peer ?? ''));
   const displayName = displayNameForPeer(peerDecoded, contacts);
 
@@ -785,7 +809,7 @@ export default function WhatsAppConversationScreen() {
                 quotedMessage={quoted}
                 onQuotedPress={quoted ? () => scrollToMessage(quoted.id) : undefined}
                 onSwipeReply={() => startReply(item.data)}
-                onImagePress={() => setViewerMessage(item.data)}
+                onMediaPress={(msg) => void handleMediaPress(msg)}
                 onLongPress={() => setContextMenu({ message: item.data })}
               />
             );
@@ -941,11 +965,23 @@ export default function WhatsAppConversationScreen() {
         onEmojiOpenChange={setEmojiOpen}
       />
 
+      <WhatsAppImageViewer
+        message={imageViewerMessage}
+        authToken={authToken}
+        onClose={() => setImageViewerMessage(null)}
+      />
+
       <WhatsAppMediaViewer
         message={viewerMessage}
         authToken={authToken}
         onClose={() => setViewerMessage(null)}
       />
+
+      {openingMedia ? (
+        <View style={styles.openingOverlay} pointerEvents="none">
+          <ActivityIndicator size="large" color="#25D366" />
+        </View>
+      ) : null}
 
       <ForwardChatModal
         visible={forwardModalOpen}
@@ -1151,4 +1187,11 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.borderLight,
   },
   ctxLabel: { fontSize: 16, color: Colors.text },
+  openingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+  },
 });

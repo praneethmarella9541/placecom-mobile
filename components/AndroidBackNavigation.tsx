@@ -51,6 +51,21 @@ function isNonInboxModule(pathname: string, routeName: string | null): boolean {
   return false;
 }
 
+/** Detail / nested screens should pop the stack; module roots go to inbox. */
+export function isNestedStackRoute(routeName: string | null, pathname: string): boolean {
+  if (routeName) {
+    if (routeName.includes('[')) return true;
+    const segments = routeName.split('/');
+    if (segments.length > 2) return true;
+    if (segments.length === 2 && segments[1] !== 'index') return true;
+    return false;
+  }
+  const { rest } = parseAppPathname(pathname);
+  if (rest.length === 0) return false;
+  if (rest.length === 1 && rest[0] === 'index') return false;
+  return true;
+}
+
 function isInboxListScreen(pathname: string, routeName: string | null): boolean {
   if (isNonInboxModule(pathname, routeName)) return false;
   if (routeName === 'inbox/index') return true;
@@ -101,7 +116,8 @@ type Props = {
  * - WhatsApp chat → WhatsApp list
  * - WhatsApp contact info → previous chat screen
  * - WhatsApp list → inbox
- * - Other non-inbox → inbox (single back, no exit toast)
+ * - Other non-inbox module roots → inbox (single back, no exit toast)
+ * - Nested sub-pages (detail screens, admin/add, analytics, etc.) → router.back()
  * - Inbox thread → back to inbox list
  * - Mail sub-views (Drafts, Starred, Sent, labels, …) → main Inbox
  * - Inbox main list only → double-back to exit
@@ -172,6 +188,14 @@ export function AndroidBackNavigation({
 
       if (isNonInboxModule(path, route)) {
         lastBackAtRef.current = 0;
+        if (isNestedStackRoute(route, path)) {
+          if (routerRef.current.canGoBack()) {
+            routerRef.current.back();
+          } else {
+            routerRef.current.replace(INBOX_HREF);
+          }
+          return true;
+        }
         routerRef.current.replace(INBOX_HREF);
         return true;
       }

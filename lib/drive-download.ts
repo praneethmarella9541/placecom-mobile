@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { safeDriveCacheName, isGoogleWorkspaceFile, getFileExtension } from './drive-utils';
+import { isGoogleWorkspaceFile, getFileExtension } from './drive-utils';
 import { canExportDriveFileToPdf } from './drive-export-direct';
 import { downloadUrlToCacheFile } from './file-cache-download';
 
@@ -28,7 +28,13 @@ export async function fetchDriveFileToCache(
   const token = await getBearerToken();
   if (!token) throw new Error('Not signed in');
 
-  const params = new URLSearchParams({ mode });
+  const ext = getFileExtension(fileName);
+  const isCsv =
+    ext === 'csv' || mimeType === 'text/csv' || mimeType === 'application/csv';
+  // Preview endpoint may return an HTML wrapper for CSV — always fetch raw bytes.
+  const effectiveMode = mode === 'preview' && isCsv ? 'download' : mode;
+
+  const params = new URLSearchParams({ mode: effectiveMode });
   if (mode === 'preview' && needsPdfExportForPreview(fileName, mimeType)) {
     params.set('exportMime', 'application/pdf');
   }
@@ -36,7 +42,7 @@ export async function fetchDriveFileToCache(
   const remoteUrl = `${BASE_URL}/api/drive/file/${encodeURIComponent(fileId)}?${params.toString()}`;
   const suffix =
     mode === 'preview' && needsPdfExportForPreview(fileName, mimeType) ? '.pdf' : '';
-  const cacheName = `drive_${safeDriveCacheName(fileName)}${suffix}`;
+  const cacheName = `${fileId}${suffix}`;
 
   const { uri } = await downloadUrlToCacheFile(remoteUrl, 'drive_files', cacheName, {
     Authorization: `Bearer ${token}`,

@@ -7,6 +7,7 @@ import {
   driveFolderQuery,
 } from './drive-list-direct';
 import type { DriveFile } from './types';
+import { decodeDisplayFilename } from './filename-utils';
 import { bumpCacheWriteGeneration, getCacheWriteGeneration } from './session-cache-core';
 import { PREFETCH_IN_FLIGHT } from './inbox-list-prefetch';
 
@@ -27,7 +28,7 @@ const INFLIGHT_TTL_MS = 60_000;
 function normalizeFiles(raw: unknown[]): DriveFile[] {
   return (raw ?? []).map((f: any) => ({
     id: f.id,
-    name: f.name,
+    name: decodeDisplayFilename(String(f.name ?? 'Untitled')),
     mimeType: f.mimeType,
     size: f.size,
     modifiedTime: f.modifiedTime,

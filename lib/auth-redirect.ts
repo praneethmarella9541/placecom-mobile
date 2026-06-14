@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://www.rideasy.co.in').replace(
+const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://www.thenucleus.in').replace(
   /\/$/,
   ''
 );
@@ -47,5 +47,5 @@ export function supabaseRedirectIsMobile(redirectParam: string): boolean {
 
 /** Match https mobile-callback on www or non-www. */
 export function isHttpsMobileCallback(url: string): boolean {
-  return /https:\/\/(www\.)?rideasy\.co\.in\/auth\/mobile-callback(\?|$)/.test(url.split('#')[0]!);
+  return /https:\/\/(www\.)?thenucleus\.in\/auth\/mobile-callback(\?|$)/.test(url.split('#')[0]!);
 }

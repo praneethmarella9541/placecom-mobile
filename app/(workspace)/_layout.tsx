@@ -12,6 +12,7 @@ import { meApi, type MeMailbox } from '../../lib/api';
 import { MailboxSessionSync } from '../../components/MailboxSessionSync';
 import { WorkspacePrefetchSync } from '../../components/WorkspacePrefetchSync';
 import { AndroidBackNavigation, getFocusedStackRouteName } from '../../components/AndroidBackNavigation';
+import { resolveDisplayRole, isAdminUser } from '../../lib/user-role';
 import { BrandLogo } from '../../components/BrandLogo';
 import { MAILBOX_VIEWS, type MailViewKey } from '../../lib/mail-views';
 import type { LabelCount } from '../../lib/gmail-label-counts';
@@ -25,8 +26,7 @@ const MODULES = [
   { key: 'forms',        label: 'Forms',     icon: 'document-text-outline' as const,   path: '/(workspace)/forms',        feature: 'forms',        googleOnly: false },
   { key: 'broadcasting', label: 'Broadcast', icon: 'megaphone-outline' as const,       path: '/(workspace)/broadcasting', feature: 'broadcasting', googleOnly: false },
   { key: 'whatsapp',     label: 'WhatsApp',  icon: 'logo-whatsapp' as const,           path: '/(workspace)/whatsapp',     feature: 'whatsapp',     googleOnly: false },
-  // Dashboard and Team are admin-only: only visible when signed in via Google OAuth
-  { key: 'dashboard',   label: 'Dashboard', icon: 'analytics-outline' as const,       path: '/(workspace)/dashboard',    feature: 'dashboard',    googleOnly: true  },
+  // Team is admin-only (Google OAuth sign-in)
   { key: 'admin',        label: 'Team',      icon: 'shield-checkmark-outline' as const, path: '/(workspace)/admin',       feature: null,           googleOnly: true  },
 ] as const;
 
@@ -132,7 +132,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
             (emailName ? emailName.replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '') ||
             'User';
           const avatarLetter = (friendlyName || sessionEmail || '?').charAt(0).toUpperCase();
-          const role = me?.role || profile?.role;
+          const role = resolveDisplayRole(profile?.role);
           // Mailbox email — for staff this is the admin's Gmail being used to send/read mail.
           // For admin role it's the same as their own connected Gmail.
           const mailboxEmail = me?.mailboxEmail || '';
@@ -165,7 +165,9 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
 
       <ScrollView style={styles.navList} showsVerticalScrollIndicator={false}>
         {MODULES.map((mod) => {
-          // googleOnly modules (Dashboard, Team) are hidden for email-login users
+          // Team is visible to Google OAuth admins only
+          if (mod.key === 'admin' && !isAdminUser(profile?.role)) return null;
+          // googleOnly modules are hidden for email-login users
           if (mod.googleOnly && !isGoogleUser) return null;
           const allowed = mod.feature === null || hasFeature(mod.feature);
           if (!allowed) return null;
@@ -382,6 +384,8 @@ export default function WorkspaceLayout() {
           <Stack.Screen name="broadcasting/index" />
           <Stack.Screen name="dashboard/index" />
           <Stack.Screen name="admin/index" />
+          <Stack.Screen name="admin/add" />
+          <Stack.Screen name="admin/member/[userId]" />
           <Stack.Screen name="admin/analytics/index" />
           <Stack.Screen name="admin/analytics/[userId]" />
         </Stack>

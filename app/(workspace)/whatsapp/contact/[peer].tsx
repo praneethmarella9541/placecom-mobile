@@ -8,6 +8,7 @@ import {
   Image,
   ActivityIndicator,
   useWindowDimensions,
+  Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,6 +32,11 @@ import {
 } from '../../../../lib/whatsapp-media-helpers';
 import { resolveWhatsAppMediaUrl, whatsAppMediaSource } from '../../../../lib/whatsapp-media';
 import { WhatsAppMediaViewer } from '../../../../components/whatsapp/WhatsAppMediaViewer';
+import { WhatsAppImageViewer } from '../../../../components/whatsapp/WhatsAppImageViewer';
+import {
+  openWhatsAppMessageInNativeApp,
+  whatsAppMediaOpenTarget,
+} from '../../../../lib/whatsapp-open-media';
 import { Colors } from '../../../../constants/colors';
 
 const TABS: { id: WhatsAppMediaCategory; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -55,6 +61,28 @@ export default function WhatsAppContactMediaScreen() {
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewerMessage, setViewerMessage] = useState<WhatsAppMessage | null>(null);
+  const [imageViewerMessage, setImageViewerMessage] = useState<WhatsAppMessage | null>(null);
+  const [openingMedia, setOpeningMedia] = useState(false);
+
+  async function handleMediaPress(message: WhatsAppMessage) {
+    const target = whatsAppMediaOpenTarget(message);
+    if (target === 'fullscreen-image') {
+      setImageViewerMessage(message);
+      return;
+    }
+    if (target === 'inline-video') {
+      setViewerMessage(message);
+      return;
+    }
+    try {
+      setOpeningMedia(true);
+      await openWhatsAppMessageInNativeApp(message, authToken);
+    } catch (e: unknown) {
+      Alert.alert('Cannot open file', e instanceof Error ? e.message : 'Could not open attachment');
+    } finally {
+      setOpeningMedia(false);
+    }
+  }
 
   const tileSize = Math.floor((width - 6) / 3);
 
@@ -146,7 +174,7 @@ export default function WhatsAppContactMediaScreen() {
 
             if (tab === 'document') {
               return (
-                <TouchableOpacity style={styles.docRow} onPress={() => setViewerMessage(item)}>
+                <TouchableOpacity style={styles.docRow} onPress={() => void handleMediaPress(item)}>
                   <Ionicons name="document-text-outline" size={28} color="#075E54" />
                   <View style={styles.docBody}>
                     <Text style={styles.docName} numberOfLines={2}>
@@ -162,7 +190,7 @@ export default function WhatsAppContactMediaScreen() {
             return (
               <TouchableOpacity
                 style={[styles.tile, { width: tileSize, height: tileSize }]}
-                onPress={() => setViewerMessage(item)}
+                onPress={() => void handleMediaPress(item)}
               >
                 {tab === 'image' && source ? (
                   <Image source={source} style={styles.tileImage} resizeMode="cover" />
@@ -177,11 +205,21 @@ export default function WhatsAppContactMediaScreen() {
         />
       )}
 
+      <WhatsAppImageViewer
+        message={imageViewerMessage}
+        authToken={authToken}
+        onClose={() => setImageViewerMessage(null)}
+      />
       <WhatsAppMediaViewer
         message={viewerMessage}
         authToken={authToken}
         onClose={() => setViewerMessage(null)}
       />
+      {openingMedia ? (
+        <View style={styles.openingOverlay} pointerEvents="none">
+          <ActivityIndicator size="large" color="#25D366" />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -250,4 +288,11 @@ const styles = StyleSheet.create({
   docBody: { flex: 1, minWidth: 0 },
   docName: { fontSize: 15, fontWeight: '600', color: Colors.text },
   docSub: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+  openingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+  },
 });

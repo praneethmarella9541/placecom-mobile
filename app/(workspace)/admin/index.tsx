@@ -2,21 +2,24 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Alert, Modal, TextInput, Switch, ScrollView,
+  RefreshControl, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import ScreenHeader from '../../../components/ScreenHeader';
 import EmptyState from '../../../components/EmptyState';
 import Badge from '../../../components/Badge';
+import { AdminGroupsPanel } from '../../../components/AdminGroupsPanel';
 import { useDrawer } from '../_layout';
 import { adminApi } from '../../../lib/api';
+import {
+  teamMemberLabel,
+  teamMemberSubtitle,
+  type AdminTeamGroup,
+  type AdminTeamMember,
+} from '../../../lib/admin-team';
+import { isAdminUser } from '../../../lib/user-role';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
-
-const FEATURES = [
-  'inbox', 'drive', 'forms', 'broadcasting', 'dashboard',
-  'crm', 'calendar', 'calls', 'meetings', 'sms', 'whatsapp',
-];
 
 const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   admin: { bg: '#EDE9FE', text: Colors.primary },
@@ -28,135 +31,38 @@ export default function AdminScreen() {
   const router = useRouter();
   const { openDrawer } = useDrawer();
   const { profile } = useAuth();
-  const [members, setMembers] = useState<any[]>([]);
+  const [members, setMembers] = useState<AdminTeamMember[]>([]);
+  const [groups, setGroups] = useState<AdminTeamGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
-  const [editMember, setEditMember] = useState<any | null>(null);
-
-  const [newEmail, setNewEmail] = useState('');
-  const [newName, setNewName] = useState('');
-  const [newRole, setNewRole] = useState<'admin' | 'staff' | 'committee'>('staff');
-  const [newPassword, setNewPassword] = useState('');
-  const [restrictedFeatures, setRestrictedFeatures] = useState<string[]>([]);
-  const [mobilePhone, setMobilePhone] = useState('');
-  const [exotelNumber, setExotelNumber] = useState('');
-  const [exotelNumbers, setExotelNumbers] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadMembers = useCallback(async () => {
+    setLoadError(null);
     try {
-      const data = await adminApi.listTeam();
-      setMembers(
-        (data.members ?? []).filter((m) => m.role === 'staff' || m.role === 'committee')
-      );
-    } catch {
+      const [teamData, groupsData] = await Promise.all([
+        adminApi.listTeam(),
+        adminApi.listGroups().catch(() => ({ groups: [] as AdminTeamGroup[] })),
+      ]);
+      setMembers((teamData.members ?? []).filter((m) => m.role !== 'admin'));
+      setGroups(groupsData.groups ?? []);
+    } catch (e: unknown) {
       setMembers([]);
+      setLoadError(e instanceof Error ? e.message : 'Could not load team members');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { loadMembers(); }, [loadMembers]);
+  useEffect(() => { void loadMembers(); }, [loadMembers]);
 
-  useEffect(() => {
-    adminApi.listExotelNumbers().then((d) => setExotelNumbers(d.numbers ?? [])).catch(() => setExotelNumbers([]));
-  }, []);
-
-  if (profile?.role !== 'admin') {
+  if (!isAdminUser(profile?.role)) {
     return (
       <View style={styles.container}>
         <ScreenHeader title="Team" onMenuPress={openDrawer} />
         <EmptyState icon="lock-closed-outline" title="Admin Access Required" subtitle="Only admins can manage team members." />
       </View>
-    );
-  }
-
-  function openAdd() {
-    setNewEmail('');
-    setNewName('');
-    setNewRole('staff');
-    setNewPassword('');
-    setRestrictedFeatures([]);
-    setMobilePhone('');
-    setExotelNumber('');
-    setEditMember(null);
-    setShowAdd(true);
-  }
-
-  function openEdit(member: any) {
-    setNewEmail(member.email ?? '');
-    setNewName(member.displayUsername ?? member.display_name ?? '');
-    setNewRole(member.role ?? 'staff');
-    setNewPassword('');
-    setRestrictedFeatures(member.restrictedFeatures ?? member.restricted_features ?? []);
-    setMobilePhone(member.mobilePhone ?? member.mobile_phone ?? '');
-    setExotelNumber(member.exotelVirtualNumber ?? member.exotel_virtual_number ?? '');
-    setEditMember(member);
-    setShowAdd(true);
-  }
-
-  async function save() {
-    setSaving(true);
-    try {
-      if (editMember) {
-        if (newRole === 'admin') {
-          Alert.alert('Error', 'Use the web app to manage admin accounts.');
-          return;
-        }
-        await adminApi.updateMember(editMember.id, {
-          email: newEmail.trim().toLowerCase(),
-          role: newRole as 'staff' | 'committee',
-          restrictedFeatures: newRole === 'committee' ? restrictedFeatures : [],
-          mobilePhone: mobilePhone.trim() || null,
-          exotelVirtualNumber: exotelNumber.trim() || null,
-          ...(newPassword ? { password: newPassword } : {}),
-        });
-      } else {
-        if (newRole === 'admin') {
-          Alert.alert('Error', 'New admins must be created on the web app.');
-          return;
-        }
-        await adminApi.createMember({
-          email: newEmail.trim().toLowerCase(),
-          role: newRole as 'staff' | 'committee',
-          password: newPassword,
-          restrictedFeatures: newRole === 'committee' ? restrictedFeatures : [],
-          mobilePhone: mobilePhone.trim() || null,
-          exotelVirtualNumber: exotelNumber.trim() || null,
-        });
-      }
-      setShowAdd(false);
-      await loadMembers();
-    } catch (e: any) {
-      Alert.alert('Error', e.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function deleteMember(id: string, name: string) {
-    Alert.alert('Delete Member', `Remove ${name} from the team?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await adminApi.deleteMember(id);
-            await loadMembers();
-          } catch (e: any) {
-            Alert.alert('Error', e.message);
-          }
-        },
-      },
-    ]);
-  }
-
-  function toggleFeature(feature: string) {
-    setRestrictedFeatures((prev) =>
-      prev.includes(feature) ? prev.filter((f) => f !== feature) : [...prev, feature]
     );
   }
 
@@ -167,205 +73,120 @@ export default function AdminScreen() {
         onMenuPress={openDrawer}
         rightAction={{ icon: 'stats-chart-outline', onPress: () => router.push('/(workspace)/admin/analytics' as any) }}
       />
-      <View style={styles.toolbar}>
-        <TouchableOpacity style={styles.toolbarBtn} onPress={openAdd}>
-          <Ionicons name="person-add-outline" size={16} color={Colors.primary} />
-          <Text style={styles.toolbarBtnText}>Add member</Text>
-        </TouchableOpacity>
-      </View>
-      {loading ? (
-        <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
-      ) : (
-        <FlatList
-          data={members}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <MemberRow
-              member={item}
-              onEdit={() => openEdit(item)}
-              onDelete={() => deleteMember(item.id, item.displayUsername ?? item.display_name ?? item.email)}
+
+      <FlatList
+        data={members}
+        keyExtractor={(item) => item.id}
+        ListHeaderComponent={
+          <>
+            <AdminGroupsPanel
+              groups={groups}
+              loading={loading}
+              onRefresh={loadMembers}
             />
-          )}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadMembers(); }} tintColor={Colors.primary} />}
-          ListEmptyComponent={<EmptyState icon="people-outline" title="No team members" subtitle="Add your first team member" />}
-          contentContainerStyle={members.length === 0 ? { flex: 1 } : { padding: 12, gap: 10 }}
-        />
-      )}
-
-      <Modal visible={showAdd} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <ScrollView>
-            <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>{editMember ? 'Edit Member' : 'Add Team Member'}</Text>
-
-              {!editMember && (
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Email *</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={newEmail}
-                    onChangeText={setNewEmail}
-                    placeholder="team@company.com"
-                    placeholderTextColor={Colors.textMuted}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                  />
-                </View>
-              )}
-
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Name</Text>
-                <TextInput style={styles.input} value={newName} onChangeText={setNewName} placeholder="Full name" placeholderTextColor={Colors.textMuted} />
-              </View>
-
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Role</Text>
-                <View style={styles.roleRow}>
-                  {(['admin', 'staff', 'committee'] as const).map((r) => (
-                    <TouchableOpacity
-                      key={r}
-                      style={[styles.roleBtn, newRole === r && styles.roleBtnActive]}
-                      onPress={() => setNewRole(r)}
-                    >
-                      <Text style={[styles.roleBtnText, newRole === r && styles.roleBtnTextActive]}>
-                        {r.charAt(0).toUpperCase() + r.slice(1)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>{editMember ? 'New Password (optional)' : 'Password *'}</Text>
-                <TextInput style={styles.input} value={newPassword} onChangeText={setNewPassword} placeholder="Password" placeholderTextColor={Colors.textMuted} secureTextEntry />
-              </View>
-
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Personal mobile</Text>
-                <Text style={styles.sublabel}>Incoming Exotel calls transfer to this number</Text>
-                <TextInput
-                  style={styles.input}
-                  value={mobilePhone}
-                  onChangeText={setMobilePhone}
-                  placeholder="+919876543210"
-                  placeholderTextColor={Colors.textMuted}
-                  keyboardType="phone-pad"
-                />
-              </View>
-
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Exotel number</Text>
-                <Text style={styles.sublabel}>Which virtual line this member uses for calls</Text>
-                {exotelNumbers.length > 0 ? (
-                  <View style={styles.roleRow}>
-                    <TouchableOpacity
-                      style={[styles.roleBtn, !exotelNumber && styles.roleBtnActive]}
-                      onPress={() => setExotelNumber('')}
-                    >
-                      <Text style={[styles.roleBtnText, !exotelNumber && styles.roleBtnTextActive]}>None</Text>
-                    </TouchableOpacity>
-                    {exotelNumbers.map((n) => (
-                      <TouchableOpacity
-                        key={n}
-                        style={[styles.roleBtn, exotelNumber === n && styles.roleBtnActive]}
-                        onPress={() => setExotelNumber(n)}
-                      >
-                        <Text style={[styles.roleBtnText, exotelNumber === n && styles.roleBtnTextActive]} numberOfLines={1}>
-                          {n.replace('+91', '+91 ')}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                ) : (
-                  <TextInput
-                    style={styles.input}
-                    value={exotelNumber}
-                    onChangeText={setExotelNumber}
-                    placeholder="+91…"
-                    placeholderTextColor={Colors.textMuted}
-                    keyboardType="phone-pad"
-                  />
-                )}
-              </View>
-
-              {newRole === 'committee' && (
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Restricted Features</Text>
-                  <Text style={styles.sublabel}>Toggle features to RESTRICT access for this committee member</Text>
-                  {FEATURES.map((feature) => (
-                    <View key={feature} style={styles.featureRow}>
-                      <Text style={styles.featureLabel}>{feature.charAt(0).toUpperCase() + feature.slice(1)}</Text>
-                      <Switch
-                        value={restrictedFeatures.includes(feature)}
-                        onValueChange={() => toggleFeature(feature)}
-                        trackColor={{ true: Colors.error, false: Colors.border }}
-                        thumbColor={Colors.surface}
-                      />
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              <View style={styles.modalActions}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAdd(false)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.saveBtn} onPress={save} disabled={saving}>
-                  {saving ? <ActivityIndicator size="small" color={Colors.surface} /> : <Text style={styles.saveText}>{editMember ? 'Save' : 'Add'}</Text>}
-                </TouchableOpacity>
-              </View>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Team & shared mailbox</Text>
+              <TouchableOpacity
+                style={styles.addBtn}
+                onPress={() => router.push('/(workspace)/admin/add' as any)}
+              >
+                <Ionicons name="person-add-outline" size={16} color={Colors.primary} />
+                <Text style={styles.addBtnText}>Add staff member</Text>
+              </TouchableOpacity>
             </View>
-          </ScrollView>
-        </View>
-      </Modal>
+            <Text style={styles.sectionSubtitle}>Existing members</Text>
+          </>
+        }
+        renderItem={({ item }) => (
+          <MemberRow
+            member={item}
+            onPress={() => router.push(`/(workspace)/admin/member/${item.id}` as any)}
+            onAnalytics={() => router.push(`/(workspace)/admin/analytics/${item.id}` as any)}
+          />
+        )}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => { setRefreshing(true); void loadMembers(); }}
+            tintColor={Colors.primary}
+          />
+        }
+        ListEmptyComponent={
+          loading ? (
+            <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+          ) : loadError ? (
+            <View style={styles.center}>
+              <EmptyState icon="cloud-offline-outline" title="Could not load team" subtitle={loadError} />
+              <TouchableOpacity style={styles.retryBtn} onPress={() => { setLoading(true); void loadMembers(); }}>
+                <Text style={styles.retryBtnText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <EmptyState icon="people-outline" title="No members added yet." subtitle="Add your first team member" />
+          )
+        }
+        contentContainerStyle={styles.listContent}
+      />
     </View>
   );
 }
 
-function MemberRow({ member, onEdit, onDelete }: { member: any; onEdit: () => void; onDelete: () => void }) {
+function MemberRow({
+  member,
+  onPress,
+  onAnalytics,
+}: {
+  member: AdminTeamMember;
+  onPress: () => void;
+  onAnalytics: () => void;
+}) {
   const rc = ROLE_COLORS[member.role] ?? { bg: Colors.border, text: Colors.textSecondary };
+  const label = teamMemberLabel(member);
+  const subtitle = teamMemberSubtitle(member);
+
   return (
-    <View style={styles.memberCard}>
+    <TouchableOpacity style={styles.memberCard} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.memberAvatar}>
-        <Text style={styles.memberAvatarText}>
-          {(member.display_name ?? member.email ?? '?').charAt(0).toUpperCase()}
-        </Text>
+        <Text style={styles.memberAvatarText}>{label.charAt(0).toUpperCase()}</Text>
       </View>
       <View style={styles.memberInfo}>
-        <Text style={styles.memberName}>{member.displayUsername ?? member.display_name ?? 'No name'}</Text>
-        <Text style={styles.memberEmail}>{member.email}</Text>
-        {(member.exotelVirtualNumber ?? member.exotel_virtual_number) ? (
-          <Text style={styles.memberMeta}>
-            Exotel: {member.exotelVirtualNumber ?? member.exotel_virtual_number}
-          </Text>
+        <Text style={styles.memberName} numberOfLines={1}>{label}</Text>
+        <Text style={styles.memberEmail} numberOfLines={2}>{subtitle}</Text>
+        {member.jobTitle ? (
+          <Text style={styles.memberMeta} numberOfLines={1}>{member.jobTitle}</Text>
         ) : null}
-        <Badge label={member.role} bgColor={rc.bg} color={rc.text} />
+        <Badge label={member.groupName ?? 'Full access'} bgColor={rc.bg} color={rc.text} />
       </View>
-      <View style={styles.memberActions}>
-        <TouchableOpacity onPress={onEdit} style={styles.actionBtn}>
-          <Ionicons name="pencil-outline" size={18} color={Colors.primary} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={onDelete} style={styles.actionBtn}>
-          <Ionicons name="trash-outline" size={18} color={Colors.error} />
-        </TouchableOpacity>
-      </View>
-    </View>
+      <TouchableOpacity onPress={onAnalytics} style={styles.actionBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Ionicons name="stats-chart-outline" size={18} color={Colors.textSecondary} />
+      </TouchableOpacity>
+      <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+    </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  toolbar: {
+  center: { paddingVertical: 32, alignItems: 'center', justifyContent: 'center' },
+  listContent: { paddingBottom: 24, flexGrow: 1 },
+  sectionHeader: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 4,
     paddingBottom: 8,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    gap: 12,
   },
-  toolbarBtn: {
+  sectionTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: Colors.text },
+  sectionSubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  addBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -374,7 +195,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.primaryLight,
   },
-  toolbarBtnText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  addBtnText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
   memberCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -382,6 +203,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderRadius: 12,
     padding: 14,
+    marginHorizontal: 12,
+    marginBottom: 10,
     shadowColor: Colors.shadow,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 1,
@@ -399,49 +222,15 @@ const styles = StyleSheet.create({
   memberAvatarText: { fontSize: 18, fontWeight: '700', color: Colors.primary },
   memberInfo: { flex: 1, gap: 3 },
   memberName: { fontSize: 14, fontWeight: '700', color: Colors.text },
-  memberEmail: { fontSize: 12, color: Colors.textSecondary },
+  memberEmail: { fontSize: 12, color: Colors.textSecondary, lineHeight: 17 },
   memberMeta: { fontSize: 11, color: Colors.textMuted },
-  memberActions: { flexDirection: 'row', gap: 4 },
-  actionBtn: { padding: 6 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalCard: {
-    backgroundColor: Colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 24,
-    gap: 16,
-    paddingBottom: 40,
+  actionBtn: { padding: 4 },
+  retryBtn: {
+    marginTop: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: Colors.primary,
   },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  fieldGroup: { gap: 6 },
-  label: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
-  sublabel: { fontSize: 12, color: Colors.textMuted },
-  input: { borderWidth: 1, borderColor: Colors.border, borderRadius: 10, padding: 12, fontSize: 14, color: Colors.text },
-  roleRow: { flexDirection: 'row', gap: 8 },
-  roleBtn: {
-    flex: 1,
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    backgroundColor: Colors.background,
-  },
-  roleBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  roleBtnText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
-  roleBtnTextActive: { color: Colors.surface },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
-  },
-  featureLabel: { fontSize: 14, color: Colors.text, textTransform: 'capitalize' },
-  modalActions: { flexDirection: 'row', gap: 12 },
-  cancelBtn: { flex: 1, padding: 13, borderRadius: 10, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },
-  cancelText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
-  saveBtn: { flex: 1, padding: 13, borderRadius: 10, backgroundColor: Colors.primary, alignItems: 'center' },
-  saveText: { fontSize: 15, fontWeight: '700', color: Colors.surface },
+  retryBtnText: { color: Colors.surface, fontWeight: '600', fontSize: 14 },
 });

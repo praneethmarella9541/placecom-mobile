@@ -16,12 +16,12 @@ import {
 import { useFocusEffect, useNavigation } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import EmptyState from '../../../components/EmptyState';
 import { useDrawer } from '../_layout';
 import { driveApi } from '../../../lib/api';
 import { fetchDriveFileToCache } from '../../../lib/drive-download';
+import { shareCachedAttachment } from '../../../lib/share-attachment';
 import {
   applyDriveMoveOverrides,
   syncDriveMoveAcrossCaches,
@@ -50,7 +50,7 @@ import { DriveListSkeleton, DriveGridSkeleton } from '../../../components/drive/
 import { DrivePreviewModal } from '../../../components/drive/DrivePreviewModal';
 import { DriveActionSheet } from '../../../components/drive/DriveActionSheet';
 import { DriveMoveSheet } from '../../../components/drive/DriveMoveSheet';
-import { copyDriveFileLink, shareDriveFileLink } from '../../../lib/drive-file-actions';
+import { normalizeUploadFilename } from '../../../lib/filename-utils';
 import { DriveCreateSheet } from '../../../components/drive/DriveCreateSheet';
 
 type LayoutMode = 'list' | 'grid';
@@ -343,14 +343,7 @@ export default function DriveScreen() {
     setFileActionLoading(file.id);
     try {
       const localUri = await fetchDriveFileToCache(file.id, file.name, 'download', file.mimeType);
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(localUri, {
-          dialogTitle: `Save "${file.name}"`,
-          mimeType: file.mimeType,
-        });
-      } else {
-        Alert.alert('Saved', `File saved to app cache.`);
-      }
+      await shareCachedAttachment(localUri, file.name, file.mimeType);
     } catch (e: any) {
       Alert.alert('Download failed', e?.message ?? 'Could not download');
     } finally {
@@ -363,14 +356,12 @@ export default function DriveScreen() {
     setUploading(true);
     try {
       for (const asset of assets) {
-        const formData = new FormData();
-        formData.append('file', {
+        await driveApi.uploadFile({
           uri: asset.uri,
-          name: asset.name,
-          type: asset.mimeType ?? 'application/octet-stream',
-        } as any);
-        if (currentFolderId && tab === 'my-drive') formData.append('parent', currentFolderId);
-        await driveApi.uploadFile(formData);
+          name: normalizeUploadFilename(asset.name),
+          mimeType: asset.mimeType ?? 'application/octet-stream',
+          parent: currentFolderId && tab === 'my-drive' ? currentFolderId : undefined,
+        });
       }
       await loadFiles();
     } catch (e: any) {

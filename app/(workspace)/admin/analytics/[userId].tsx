@@ -6,6 +6,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { isAdminUser } from '../../../../lib/user-role';
 import { useAuth } from '../../../../hooks/useAuth';
 import { adminApi, type AdminUserAnalytics } from '../../../../lib/api';
 import { analyticsRangeEndingToday, ALL_TIME_RANGE } from '../../../../lib/analytics-range';
@@ -55,7 +56,7 @@ export default function AdminMemberAnalyticsScreen() {
   const title = user?.displayUsername || user?.email || 'Member Analytics';
   const initial = title.charAt(0).toUpperCase();
 
-  if (profile?.role !== 'admin') {
+  if (!isAdminUser(profile?.role)) {
     return (
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>

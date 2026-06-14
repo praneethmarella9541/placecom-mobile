@@ -97,6 +97,19 @@ export function mimeTypeFromMessage(message: WhatsAppMessage): string {
     if (name.endsWith('.docx')) {
       return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     }
+    if (name.endsWith('.xls')) return 'application/vnd.ms-excel';
+    if (name.endsWith('.xlsx')) {
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+    if (name.endsWith('.csv')) return 'text/csv';
+    if (name.endsWith('.ppt')) return 'application/vnd.ms-powerpoint';
+    if (name.endsWith('.pptx')) {
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    }
+    if (name.endsWith('.txt')) return 'text/plain';
+    if (name.endsWith('.mp3')) return 'audio/mpeg';
+    if (name.endsWith('.m4a')) return 'audio/mp4';
+    if (name.endsWith('.wav')) return 'audio/wav';
     return 'application/octet-stream';
   }
   return 'application/octet-stream';

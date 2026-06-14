@@ -13,9 +13,10 @@ function fmt(seconds: number): string {
 type Props = {
   source: { uri: string; headers?: Record<string, string> };
   outbound?: boolean;
+  onOpenExternal?: () => void;
 };
 
-export function WhatsAppAudioBubble({ source, outbound }: Props) {
+export function WhatsAppAudioBubble({ source, outbound, onOpenExternal }: Props) {
   const player = useAudioPlayer(source);
   const status = useAudioPlayerStatus(player);
 
@@ -63,12 +64,18 @@ export function WhatsAppAudioBubble({ source, outbound }: Props) {
             : 'Loading…'}
         </Text>
       </View>
-      <Ionicons
-        name="mic"
-        size={16}
-        color={outbound ? '#7E9B7A' : '#8696A0'}
-        style={styles.micIcon}
-      />
+      <TouchableOpacity
+        onPress={onOpenExternal}
+        disabled={!onOpenExternal}
+        hitSlop={8}
+        style={styles.openBtn}
+      >
+        <Ionicons
+          name="open-outline"
+          size={16}
+          color={outbound ? '#7E9B7A' : '#8696A0'}
+        />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -109,5 +116,5 @@ const styles = StyleSheet.create({
     marginLeft: -5,
   },
   time: { fontSize: 11, color: '#54656F' },
-  micIcon: { alignSelf: 'flex-end', marginBottom: 2 },
+  openBtn: { alignSelf: 'flex-end', marginBottom: 2, padding: 2 },
 });

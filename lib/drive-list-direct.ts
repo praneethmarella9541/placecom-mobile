@@ -1,5 +1,6 @@
 import { gmailApi } from './api';
 import type { DriveFile } from './types';
+import { decodeDisplayFilename } from './filename-utils';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 
@@ -9,7 +10,7 @@ const FILE_FIELDS =
 function mapDriveFile(f: Record<string, unknown>): DriveFile {
   return {
     id: String(f.id ?? ''),
-    name: String(f.name ?? 'Untitled'),
+    name: decodeDisplayFilename(String(f.name ?? 'Untitled')),
     mimeType: String(f.mimeType ?? 'application/octet-stream'),
     size: f.size != null ? String(f.size) : null,
     modifiedTime: String(f.modifiedTime ?? new Date().toISOString()),

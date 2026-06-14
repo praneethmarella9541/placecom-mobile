@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { normalizeUploadFilename } from './filename-utils';
+import { normalizeAdminTeamMember, type AdminTeamGroup, type AdminTeamMember } from './admin-team';
 
 export const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
@@ -524,12 +526,29 @@ export const driveApi = {
       signal: opts?.signal,
     });
   },
-  uploadFile: async (formData: FormData) => {
+  uploadFile: async (file: {
+    uri: string;
+    name: string;
+    mimeType: string;
+    parent?: string;
+  }) => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
+    const safeName = normalizeUploadFilename(file.name);
+    const formData = new FormData();
+    formData.append('file', {
+      uri: file.uri,
+      name: safeName,
+      type: file.mimeType,
+    } as unknown as Blob);
+    formData.append('filename', safeName);
+    if (file.parent) formData.append('parent', file.parent);
     const res = await fetchWithTimeout(`${BASE_URL}/api/drive/upload`, {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-Original-Filename': encodeURIComponent(safeName),
+      },
       body: formData,
     }, 60000);
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
@@ -589,10 +608,12 @@ export type MeMailbox = {
   sessionEmail: string | null;
   displayUsername: string | null;
   role: string;
+  groupName?: string | null;
   restrictedFeatures: string[];
   mailboxOwnerId: string | null;
   mailboxEmail: string | null;
   hasStoredMailbox: boolean;
+  exotelVirtualNumber?: string | null;
 };
 
 export const meApi = {
@@ -779,14 +800,29 @@ export type AdminAnalyticsResponse = {
 // Admin
 export const adminApi = {
   listExotelNumbers: () => get<{ numbers: string[] }>('/api/admin/exotel-numbers'),
-  listTeam: () => get<{ members: any[] }>('/api/admin/team-members'),
+  /** Unassigned Exotel lines for this admin's team (from Supabase profiles). */
+  listAvailableExotelNumbers: (forMemberId?: string) => {
+    const qs = new URLSearchParams({ available: '1' });
+    if (forMemberId) qs.set('forMemberId', forMemberId);
+    return get<{ numbers: string[] }>(`/api/admin/exotel-numbers?${qs.toString()}`);
+  },
+  listGroups: () => get<{ groups: AdminTeamGroup[] }>('/api/admin/groups'),
+  listTeam: async () => {
+    const data = await get<{ members?: Record<string, unknown>[] }>('/api/admin/team-members');
+    const members = (data.members ?? []).map((m) => normalizeAdminTeamMember(m));
+    return { members };
+  },
   createMember: (data: {
     email: string;
     password: string;
-    role: 'staff' | 'committee';
+    role?: 'staff' | 'committee';
     restrictedFeatures?: string[];
     mobilePhone?: string | null;
     exotelVirtualNumber?: string | null;
+    displayUsername?: string | null;
+    jobTitle?: string | null;
+    groupId?: string | null;
+    openaiTokenLimit?: number | null;
   }) => post('/api/admin/staff-users', data),
   updateMember: async (
     userId: string,
@@ -797,6 +833,11 @@ export const adminApi = {
       restrictedFeatures?: string[];
       mobilePhone?: string | null;
       exotelVirtualNumber?: string | null;
+      displayUsername?: string | null;
+      jobTitle?: string | null;
+      bio?: string | null;
+      groupId?: string | null;
+      openaiTokenLimit?: number | null;
     }
   ) => {
     const res = await fetchWithTimeout(`${BASE_URL}/api/admin/team-members`, {
@@ -813,6 +854,28 @@ export const adminApi = {
       method: 'DELETE',
       headers: await authHeaders(),
       body: JSON.stringify({ userId }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
+    return body;
+  },
+  createGroup: (data: { name: string; restrictedFeatures: string[] }) =>
+    post('/api/admin/groups', data),
+  updateGroup: async (data: { groupId: string; name?: string; restrictedFeatures?: string[] }) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/groups`, {
+      method: 'PATCH',
+      headers: await authHeaders(),
+      body: JSON.stringify(data),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
+    return body;
+  },
+  deleteGroup: async (groupId: string) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/groups`, {
+      method: 'DELETE',
+      headers: await authHeaders(),
+      body: JSON.stringify({ groupId }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);

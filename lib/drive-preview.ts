@@ -3,7 +3,11 @@ import { Platform } from 'react-native';
 import { File } from 'expo-file-system';
 import type { DriveFile } from './types';
 import { getFileExtension } from './drive-utils';
-import { isLocalPdfFile, readLocalFileAsBase64 } from './drive-file-read';
+import {
+  isLocalPdfFile,
+  readLocalFileAsBase64,
+  readLocalFileText,
+} from './drive-file-read';
 import { exportDriveFileToPdfCache, canExportDriveFileToPdf } from './drive-export-direct';
 
 export type DrivePreviewKind = 'pdf' | 'image' | 'csv' | 'office' | 'unsupported';
@@ -62,12 +66,6 @@ export function canPreviewDriveFile(file: DriveFile): boolean {
   return getDrivePreviewKind(file) !== 'unsupported';
 }
 
-async function readFileAsText(uri: string): Promise<string> {
-  const res = await fetch(uri);
-  if (!res.ok) throw new Error('Could not read file');
-  return res.text();
-}
-
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -84,10 +82,10 @@ function wrapDocumentHtml(inner: string, title: string): string {
 <style>
 body{margin:0;font-family:Roboto,Arial,sans-serif;font-size:13px;background:#fff;color:#202124;}
 .wrap{overflow:auto;padding:12px;-webkit-overflow-scrolling:touch;}
-table{border-collapse:collapse;width:100%;min-width:max-content;}
-th,td{border:1px solid #e8eaed;padding:8px 10px;text-align:left;white-space:nowrap;}
-th{background:#f6f8fc;font-weight:600;position:sticky;top:0;}
-tr:nth-child(even) td{background:#fafafa;}
+table,#sheet table{border-collapse:collapse;width:100%;min-width:max-content;}
+th,td,#sheet th,#sheet td{border:1px solid #e8eaed;padding:8px 10px;text-align:left;white-space:nowrap;}
+th,#sheet th{background:#f6f8fc;font-weight:600;position:sticky;top:0;}
+tr:nth-child(even) td,#sheet tr:nth-child(even) td{background:#fafafa;}
 </style></head><body><div class="wrap">${inner}</div></body></html>`;
 }
 
@@ -151,58 +149,32 @@ function wrapImageHtml(base64: string, mime: string): string {
   );
 }
 
-function parseCsvRow(line: string): string[] {
-  const cells: string[] = [];
-  let cur = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        cur += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === ',' && !inQuotes) {
-      cells.push(cur);
-      cur = '';
-    } else {
-      cur += ch;
-    }
+async function readSpreadsheetFromUri(uri: string): Promise<XLSX.WorkBook> {
+  const head = await readLocalFileText(uri).then((t) => t.trimStart().slice(0, 256).toLowerCase());
+  if (head.startsWith('<!doctype') || head.startsWith('<html')) {
+    throw new Error('Downloaded file is not a spreadsheet. Try Download instead.');
   }
-  cells.push(cur);
-  return cells;
-}
 
-function wrapCsvHtml(csv: string): string {
-  const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0).slice(0, 200);
-  const rows = lines.map(parseCsvRow);
-  const tableRows = rows
-    .map(
-      (cells, ri) =>
-        `<tr>${cells
-          .map(
-            (c) =>
-              `<${ri === 0 ? 'th' : 'td'}>${escapeHtml(c.trim())}</${ri === 0 ? 'th' : 'td'}>`
-          )
-          .join('')}</tr>`
-    )
-    .join('');
-  return wrapDocumentHtml(`<table>${tableRows}</table>`, 'CSV');
-}
-
-async function xlsxUriToHtml(uri: string): Promise<string | null> {
   try {
     const file = new File(uri);
     const buf = await file.arrayBuffer();
-    const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+    return XLSX.read(new Uint8Array(buf), { type: 'array' });
+  } catch {
+    const text = await readLocalFileText(uri);
+    return XLSX.read(text, { type: 'string' });
+  }
+}
+
+async function spreadsheetUriToHtml(uri: string, title: string): Promise<string | null> {
+  try {
+    const wb = await readSpreadsheetFromUri(uri);
     const sheetName = wb.SheetNames[0];
-    if (!sheetName) return null;
+    if (!sheetName) return wrapDocumentHtml('<p>Empty file</p>', title);
     const sheet = wb.Sheets[sheetName];
     const table = XLSX.utils.sheet_to_html(sheet, { header: '', id: 'sheet' });
-    return wrapDocumentHtml(table, sheetName);
-  } catch {
+    return wrapDocumentHtml(table, title);
+  } catch (e: unknown) {
+    if (e instanceof Error && e.message.includes('not a spreadsheet')) throw e;
     return null;
   }
 }
@@ -243,14 +215,15 @@ export async function buildDrivePreviewContent(
   }
 
   if (kind === 'csv') {
-    const text = await readFileAsText(localUri);
-    return { type: 'html', html: wrapCsvHtml(text) };
+    const sheetHtml = await spreadsheetUriToHtml(localUri, file.name);
+    if (sheetHtml) return { type: 'html', html: sheetHtml };
+    return { type: 'unavailable' };
   }
 
   if (kind === 'office') {
     const ext = getFileExtension(file.name);
-    if (ext === 'xlsx' || ext === 'xls') {
-      const sheetHtml = await xlsxUriToHtml(localUri);
+    if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') {
+      const sheetHtml = await spreadsheetUriToHtml(localUri, file.name);
       if (sheetHtml) return { type: 'html', html: sheetHtml };
     }
     return { type: 'unavailable' };

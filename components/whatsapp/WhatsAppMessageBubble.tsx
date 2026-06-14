@@ -86,7 +86,7 @@ type Props = {
   authToken?: string | null;
   peerName?: string;
   quotedMessage?: WhatsAppMessage | null;
-  onImagePress?: (uri: string) => void;
+  onMediaPress?: (message: WhatsAppMessage) => void;
   onQuotedPress?: () => void;
   onSwipeReply?: () => void;
   onLongPress?: () => void;
@@ -98,7 +98,7 @@ export function WhatsAppMessageBubble({
   authToken,
   peerName = 'Contact',
   quotedMessage,
-  onImagePress,
+  onMediaPress,
   onQuotedPress,
   onSwipeReply,
   onLongPress,
@@ -192,7 +192,7 @@ export function WhatsAppMessageBubble({
           {/* ── Image ─────────────────────────────────────────────────── */}
           {showMedia && isImage && mediaUri && !imageFailed ? (
             <GHPressable
-              onPress={() => onImagePress?.(mediaUri)}
+              onPress={() => onMediaPress?.(message)}
               onLongPress={onLongPress}
               delayLongPress={300}
               style={styles.imagePressable}
@@ -226,7 +226,7 @@ export function WhatsAppMessageBubble({
             <>
               <GHPressable
                 style={styles.fileChip}
-                onPress={() => mediaUri && onImagePress?.(mediaUri)}
+                onPress={() => onMediaPress?.(message)}
                 onLongPress={onLongPress}
                 delayLongPress={300}
               >
@@ -240,7 +240,11 @@ export function WhatsAppMessageBubble({
           {/* ── Audio / voice note ────────────────────────────────────── */}
           {showMedia && !isImage && isAudio && mediaSource ? (
             <GHPressable onLongPress={onLongPress} delayLongPress={300}>
-              <WhatsAppAudioBubble source={mediaSource} outbound={isOut} />
+              <WhatsAppAudioBubble
+                source={mediaSource}
+                outbound={isOut}
+                onOpenExternal={onMediaPress ? () => onMediaPress(message) : undefined}
+              />
               <BubbleMetaRow {...metaProps} />
             </GHPressable>
           ) : null}
@@ -250,7 +254,7 @@ export function WhatsAppMessageBubble({
             <>
               <GHPressable
                 style={styles.fileChip}
-                onPress={() => mediaUri && onImagePress?.(mediaUri)}
+                onPress={() => onMediaPress?.(message)}
                 onLongPress={onLongPress}
                 delayLongPress={300}
               >
@@ -266,7 +270,7 @@ export function WhatsAppMessageBubble({
             <>
               <GHPressable
                 style={styles.fileChip}
-                onPress={() => mediaUri && onImagePress?.(mediaUri)}
+                onPress={() => onMediaPress?.(message)}
                 onLongPress={onLongPress}
                 delayLongPress={300}
               >

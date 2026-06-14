@@ -12,9 +12,9 @@ import {
   Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
 import { Colors } from '../constants/colors';
 import { broadcastApi, whatsappApi, type WaMergeParseResult } from '../lib/api';
+import { pickSpreadsheetFile } from '../lib/pick-spreadsheet-file';
 import { normalizePhoneList } from '../lib/broadcast-phones';
 import {
   applyTemplatePreview,
@@ -182,16 +182,8 @@ export function WhatsAppBroadcastPanel() {
 
   async function pickMergeFile() {
     setParseError(null);
-    const result = await DocumentPicker.getDocumentAsync({
-      type: [
-        'text/csv',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ],
-      copyToCacheDirectory: true,
-    });
-    if (result.canceled) return;
-    const asset = result.assets[0];
+    const asset = await pickSpreadsheetFile();
+    if (!asset) return;
     setParseBusy(true);
     try {
       const data = await broadcastApi.parseWaMergeFile(
@@ -215,16 +207,8 @@ export function WhatsAppBroadcastPanel() {
 
   async function pickSessionFile() {
     setSessionParseError(null);
-    const result = await DocumentPicker.getDocumentAsync({
-      type: [
-        'text/csv',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ],
-      copyToCacheDirectory: true,
-    });
-    if (result.canceled) return;
-    const asset = result.assets[0];
+    const asset = await pickSpreadsheetFile();
+    if (!asset) return;
     setSessionParseBusy(true);
     try {
       const data = await broadcastApi.parsePhonesFile(
@@ -403,7 +387,7 @@ export function WhatsAppBroadcastPanel() {
               {parseBusy ? (
                 <ActivityIndicator size="small" color={WA_GREEN} />
               ) : (
-                <Ionicons name="cloud-upload-outline" size={18} color={WA_GREEN} />
+                <Ionicons name="document-text-outline" size={18} color={WA_GREEN} />
               )}
               <Text style={styles.importBtnText}>{parseBusy ? 'Reading…' : 'Import CSV / Excel'}</Text>
             </TouchableOpacity>
@@ -506,7 +490,7 @@ export function WhatsAppBroadcastPanel() {
               {sessionParseBusy ? (
                 <ActivityIndicator size="small" color={WA_GREEN} />
               ) : (
-                <Ionicons name="cloud-upload-outline" size={18} color={WA_GREEN} />
+                <Ionicons name="document-text-outline" size={18} color={WA_GREEN} />
               )}
               <Text style={styles.importBtnText}>
                 {sessionParseBusy ? 'Reading…' : 'Import CSV / Excel'}

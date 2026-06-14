@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import ScreenHeader from '../../../../components/ScreenHeader';
 import EmptyState from '../../../../components/EmptyState';
 import { useDrawer } from '../../_layout';
+import { isAdminUser } from '../../../../lib/user-role';
 import { useAuth } from '../../../../hooks/useAuth';
 import { adminApi, type AdminUserAnalytics } from '../../../../lib/api';
 import { analyticsRangeEndingToday, ALL_TIME_RANGE } from '../../../../lib/analytics-range';
@@ -62,7 +63,7 @@ export default function AdminAnalyticsScreen() {
     [users]
   );
 
-  if (profile?.role !== 'admin') {
+  if (!isAdminUser(profile?.role)) {
     return (
       <View style={styles.container}>
         <ScreenHeader title="Analytics" onMenuPress={openDrawer} />

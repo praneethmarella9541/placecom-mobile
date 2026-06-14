@@ -6,25 +6,26 @@ import {
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  useWindowDimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { whatsAppMediaSource } from '../../lib/whatsapp-media';
+import type { WhatsAppMessage } from '../../lib/whatsapp-types';
+import { resolveWhatsAppMediaUrl, whatsAppMediaSource } from '../../lib/whatsapp-media';
 
 type Props = {
-  uri: string | null;
+  message: WhatsAppMessage | null;
   authToken?: string | null;
   onClose: () => void;
 };
 
-export function WhatsAppImageViewer({ uri, authToken, onClose }: Props) {
+export function WhatsAppImageViewer({ message, authToken, onClose }: Props) {
   const insets = useSafeAreaInsets();
-  const { width, height } = useWindowDimensions();
-  const source = whatsAppMediaSource(uri, authToken);
+  const mediaUrl = message?.media_url ? resolveWhatsAppMediaUrl(message.media_url) : null;
+  const source = whatsAppMediaSource(mediaUrl, authToken);
 
   return (
-    <Modal visible={!!uri} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={!!message} transparent animationType="fade" onRequestClose={onClose}>
       <StatusBar barStyle="light-content" />
       <View style={styles.backdrop}>
         <TouchableOpacity
@@ -35,12 +36,10 @@ export function WhatsAppImageViewer({ uri, authToken, onClose }: Props) {
           <Ionicons name="close" size={28} color="#fff" />
         </TouchableOpacity>
         {source ? (
-          <Image
-            source={source}
-            style={{ width, height: height * 0.72 }}
-            resizeMode="contain"
-          />
-        ) : null}
+          <Image source={source} style={styles.image} resizeMode="contain" />
+        ) : (
+          <ActivityIndicator size="large" color="#fff" />
+        )}
       </View>
     </Modal>
   );
@@ -58,5 +57,9 @@ const styles = StyleSheet.create({
     right: 16,
     zIndex: 2,
     padding: 4,
+  },
+  image: {
+    width: '100%',
+    height: '100%',
   },
 });

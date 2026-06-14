@@ -1,5 +1,4 @@
 import { gmailApi } from './api';
-import { safeDriveCacheName } from './drive-utils';
 import { downloadUrlToCacheFile } from './file-cache-download';
 
 function fileExt(name: string): string {
@@ -30,7 +29,7 @@ export async function exportDriveFileToPdfCache(fileId: string, fileName: string
   try {
     const { accessToken } = await gmailApi.getGoogleToken();
     const url = `${DRIVE_API}/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent('application/pdf')}`;
-    const cacheName = `drive_export_${safeDriveCacheName(fileName)}.pdf`;
+    const cacheName = `${fileId}.pdf`;
     const { uri } = await downloadUrlToCacheFile(url, 'drive_exports', cacheName, {
       Authorization: `Bearer ${accessToken}`,
     });
