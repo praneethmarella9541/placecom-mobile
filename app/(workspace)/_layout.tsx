@@ -15,7 +15,7 @@ import { WorkspacePrefetchSync } from '../../components/WorkspacePrefetchSync';
 import { AndroidBackNavigation, getFocusedStackRouteName } from '../../components/AndroidBackNavigation';
 import { resolveSidebarRoleLabel, isAdminUser } from '../../lib/user-role';
 import { BrandLogo } from '../../components/BrandLogo';
-import { MAILBOX_VIEWS, type MailViewKey } from '../../lib/mail-views';
+import { MAILBOX_VIEWS, mailViewBadgeCount, type MailViewKey } from '../../lib/mail-views';
 import type { LabelCount } from '../../lib/gmail-label-counts';
 import type { GmailLabel } from '../../lib/api';
 import { labelDisplayName } from '../../lib/gmail-labels';
@@ -98,22 +98,21 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
 
   const navigate = (path: string) => {
     onClose();
-    router.push(path as any);
+    router.replace(path as any);
   };
 
   const selectMailView = useCallback((view: MailViewKey) => {
     setMailView(view);
     setFilterLabelId(null);
-    if (!onInbox) router.push('/(workspace)/inbox' as any);
     onClose();
+    if (!onInbox) router.replace('/(workspace)/inbox' as any);
   }, [setMailView, setFilterLabelId, onInbox, router, onClose]);
 
   const selectLabel = useCallback((id: string) => {
-    // Labels always show inside Inbox view
     setMailView('inbox');
     setFilterLabelId(id);
-    if (!onInbox) router.push('/(workspace)/inbox' as any);
     onClose();
+    if (!onInbox) router.replace('/(workspace)/inbox' as any);
   }, [setMailView, setFilterLabelId, onInbox, router, onClose]);
 
   return (
@@ -217,10 +216,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
                   <>
                     {MAILBOX_VIEWS.filter((v) => v.key !== 'inbox').map((view) => {
                       const subActive = onInbox && mailView === view.key && !filterLabelId;
-                      const count = labelCounts[view.badgeLabelId];
-                      const badge = view.badgeLabelId && count
-                        ? (view.key === 'starred' || view.key === 'important' ? count.total : count.unread)
-                        : 0;
+                      const badge = mailViewBadgeCount(view.key, labelCounts) ?? 0;
                       return (
                         <TouchableOpacity
                           key={view.key}
@@ -378,20 +374,22 @@ export default function WorkspaceLayout() {
         renderDrawerContent={() => <SidebarContent onClose={closeDrawer} />}
       >
         <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="inbox/index" />
+          {/* Module roots — no slide animation (instant tab-like switching) */}
+          <Stack.Screen name="inbox/index"        options={{ animation: 'none' }} />
+          <Stack.Screen name="calls/index"        options={{ animation: 'none' }} />
+          <Stack.Screen name="calendar/index"     options={{ animation: 'none' }} />
+          <Stack.Screen name="meetings/index"     options={{ animation: 'none' }} />
+          <Stack.Screen name="drive/index"        options={{ animation: 'none' }} />
+          <Stack.Screen name="forms/index"        options={{ animation: 'none' }} />
+          <Stack.Screen name="broadcasting/index" options={{ animation: 'none' }} />
+          <Stack.Screen name="dashboard/index"    options={{ animation: 'none' }} />
+          <Stack.Screen name="admin/index"        options={{ animation: 'none' }} />
+          {/* Deep screens — keep slide animation */}
           <Stack.Screen name="inbox/[id]" />
           <Stack.Screen name="inbox/compose" />
-          <Stack.Screen name="calls/index" />
           <Stack.Screen name="calls/[id]" />
-          <Stack.Screen name="calendar/index" />
-          <Stack.Screen name="meetings/index" />
           <Stack.Screen name="meetings/[id]" />
-          <Stack.Screen name="drive/index" />
-          <Stack.Screen name="forms/index" />
           <Stack.Screen name="forms/[formId]/edit" />
-          <Stack.Screen name="broadcasting/index" />
-          <Stack.Screen name="dashboard/index" />
-          <Stack.Screen name="admin/index" />
           <Stack.Screen name="admin/add" />
           <Stack.Screen name="admin/member/[userId]" />
           <Stack.Screen name="admin/analytics/index" />

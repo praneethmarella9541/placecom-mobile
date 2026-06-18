@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  AppState,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,6 +25,7 @@ import { CallListRow } from '../../../components/calls/CallListRow';
 import { CallsDialerSheet } from '../../../components/calls/CallsDialerSheet';
 import { CallsContactsTab } from '../../../components/calls/CallsContactsTab';
 import { groupCallsByDate, normalisePhone } from '../../../lib/call-utils';
+import { supabase } from '../../../lib/supabase';
 import {
   bindCallsPrefetchUser,
   loadPersistedCallsList,
@@ -48,6 +50,7 @@ export default function CallsScreen() {
   const initialCache = peekCallsPrefetchCache();
   const [calls, setCalls] = useState<CallLog[]>(() => initialCache?.logs ?? []);
   const [loading, setLoading] = useState(() => !initialCache);
+  const awaitingReturnRef = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialerOpen, setDialerOpen] = useState(false);
@@ -147,6 +150,31 @@ export default function CallsScreen() {
   );
 
   useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && awaitingReturnRef.current) {
+        awaitingReturnRef.current = false;
+        void loadCalls({ silent: true });
+      }
+    });
+    return () => sub.remove();
+  }, [loadCalls]);
+
+  // Refresh the list in real-time whenever a call log is inserted or its
+  // status is updated (e.g. Exotel webhook fires after call ends).
+  useEffect(() => {
+    if (!userId) return;
+    const channel = supabase
+      .channel(`call-logs-status-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'call_logs', filter: `user_id=eq.${userId}` },
+        () => { void loadCalls({ silent: true }); }
+      )
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [userId, loadCalls]);
+
+  useEffect(() => {
     if (!userId) return;
     bindCallsPrefetchUser(userId);
 
@@ -232,12 +260,7 @@ export default function CallsScreen() {
     setDialerOpen(false);
     await Linking.openURL(`tel:${virtualNumber}`);
 
-    let polls = 0;
-    const timer = setInterval(async () => {
-      polls++;
-      await loadCalls();
-      if (polls >= 36) clearInterval(timer);
-    }, 5000);
+    awaitingReturnRef.current = true;
   }
 
   const sections = groupCallsByDate(calls);

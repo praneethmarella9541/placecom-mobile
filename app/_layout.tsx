@@ -10,6 +10,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import AppToastHost from '../components/AppToastHost';
 import LoadingScreen from '../components/LoadingScreen';
 import { OAuthLinkingHandler } from '../components/OAuthLinkingHandler';
+import { installApiDebugConsoleHelper } from '../lib/api-debug';
 
 // iOS: dismiss Safari auth sheet when the app opens via thenucleus:// callback.
 // Must run at the root — not only on the login screen.
@@ -40,6 +41,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   const auth = useAuthState();
+
+  useEffect(() => {
+    installApiDebugConsoleHelper();
+  }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

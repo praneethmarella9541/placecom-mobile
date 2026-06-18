@@ -1,5 +1,14 @@
 import { gmailApi, type GmailFolder, type GmailThreadListItem } from './api';
+import {
+  bindMailListPrefetchUser,
+  clearMailListSessionStorage,
+  loadPersistedMailListViews,
+  persistMailListSessionCache,
+} from './mail-list-session-cache';
 import { bumpCacheWriteGeneration, getCacheWriteGeneration, MUTATION_COOLDOWN_MS } from './session-cache-core';
+import { withApiDebugTagAsync } from './api-debug';
+
+export { bindMailListPrefetchUser };
 
 export type MailListPage = { threads: GmailThreadListItem[]; nextPageToken?: string };
 
@@ -29,6 +38,25 @@ export function getMailListCache(key: string): MailListPage | undefined {
 
 export function setMailListCache(key: string, page: MailListPage): void {
   MAIL_LIST_CACHE.set(key, page);
+  persistMailListSessionCache(key, page);
+}
+
+let listHydrateUserId: string | null = null;
+let listHydratePromise: Promise<void> | null = null;
+
+/** Hydrate list views from disk (call once per user session). */
+export function hydrateMailListPrefetchCache(userId: string): Promise<void> {
+  if (!userId) return Promise.resolve();
+  if (listHydrateUserId === userId && listHydratePromise) return listHydratePromise;
+  listHydrateUserId = userId;
+  listHydratePromise = loadPersistedMailListViews(userId).then((entries) => {
+    for (const [key, snapshot] of entries) {
+      if (!MAIL_LIST_CACHE.has(key)) {
+        MAIL_LIST_CACHE.set(key, snapshot);
+      }
+    }
+  });
+  return listHydratePromise;
 }
 
 export function touchMailListMutation(): void {
@@ -49,6 +77,9 @@ export function clearMailListSessionCache(): void {
   cancelMailPrefetch();
   bumpCacheWriteGeneration();
   lastMutationAt = 0;
+  listHydrateUserId = null;
+  listHydratePromise = null;
+  void clearMailListSessionStorage();
 }
 
 /** Bust list cache entries for one mailbox folder (sent/drafts/etc.). */
@@ -198,7 +229,9 @@ async function warmOneMailKey(
   if (MAIL_LIST_CACHE.has(key) || PREFETCH_IN_FLIGHT.has(key)) return;
   PREFETCH_IN_FLIGHT.add(key);
   try {
-    const page = await fetchMailListPage(spec, { signal });
+    const page = await withApiDebugTagAsync('mail-list-prefetch', () =>
+      fetchMailListPage(spec, { signal })
+    );
     if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
     setMailListCache(key, page);
   } catch {
@@ -224,10 +257,28 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
 }
 
+export async function prefetchMailListViewIfMissing(
+  spec: MailPrefetchSpec,
+  opts?: { signal?: AbortSignal }
+): Promise<MailListPage | null> {
+  const key = buildMailListCacheKey(spec.folder, spec.labelId ?? '', spec.search ?? '');
+  const cached = MAIL_LIST_CACHE.get(key);
+  if (cached?.threads.length) return cached;
+
+  const controller = opts?.signal ?? new AbortController().signal;
+  if (controller.aborted) return null;
+  if (PREFETCH_IN_FLIGHT.has(key)) return MAIL_LIST_CACHE.get(key) ?? null;
+
+  const writeGen = getCacheWriteGeneration();
+  await warmOneMailKey(key, spec, controller, writeGen);
+  return MAIL_LIST_CACHE.get(key) ?? null;
+}
+
 export async function prefetchMailListViews(opts?: {
   skipKeys?: Set<string>;
   concurrency?: number;
   signal?: AbortSignal;
+  force?: boolean;
 }): Promise<void> {
   const signal = opts?.signal;
   if (signal?.aborted) return;
@@ -235,10 +286,12 @@ export async function prefetchMailListViews(opts?: {
   const concurrency = opts?.concurrency ?? 3;
   const writeGen = getCacheWriteGeneration();
 
+  const force = opts?.force ?? false;
   const jobs: Array<{ key: string; spec: MailPrefetchSpec }> = [];
   for (const spec of MAIL_LIST_PREFETCH_SPECS) {
     const key = buildMailListCacheKey(spec.folder, spec.labelId ?? '', spec.search ?? '');
-    if (skip.has(key) || MAIL_LIST_CACHE.has(key) || PREFETCH_IN_FLIGHT.has(key)) continue;
+    if (skip.has(key) || PREFETCH_IN_FLIGHT.has(key)) continue;
+    if (!force && MAIL_LIST_CACHE.has(key)) continue;
     jobs.push({ key, spec });
   }
 

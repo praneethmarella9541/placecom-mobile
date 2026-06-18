@@ -1,15 +1,13 @@
 import { supabase } from './supabase';
 import { normalizeUploadFilename } from './filename-utils';
 import { normalizeAdminTeamMember, type AdminTeamGroup, type AdminTeamMember } from './admin-team';
+import { traceApiRequestStart } from './api-debug';
+import { peekGmailLabelsCache, setGmailLabelsCache } from './gmail-labels-cache';
 
 export const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
-/** Set EXPO_PUBLIC_DEBUG_API=1 to log every request in dev builds. */
-const DEBUG_API = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_API === '1';
-
-function debugApi(...args: unknown[]): void {
-  if (DEBUG_API) console.log(...args);
-}
+let googleTokenCache: { accessToken: string; fetchedAt: number } | null = null;
+const GOOGLE_TOKEN_TTL_MS = 60_000;
 
 async function authHeaders(): Promise<Record<string, string>> {
   const { data } = await supabase.auth.getSession();
@@ -28,12 +26,25 @@ function fetchWithTimeout(input: string, init: RequestInit, ms = 30000): Promise
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   const onAbort = () => controller.abort();
-  outerSignal?.addEventListener('abort', onAbort);
   return fetch(input, { ...init, signal: controller.signal, cache: 'no-store' })
     .finally(() => {
       clearTimeout(timer);
       outerSignal?.removeEventListener('abort', onAbort);
     });
+}
+
+async function apiFetch(input: string, init: RequestInit, ms = 30000): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  const trace = traceApiRequestStart(method, input);
+  try {
+    const res = await fetchWithTimeout(input, init, ms);
+    trace.finish(res.status, res.ok);
+    return res;
+  } catch (e) {
+    const aborted = e instanceof Error && e.name === 'AbortError';
+    trace.finish(aborted ? 499 : 0, false);
+    throw e;
+  }
 }
 
 async function get<T>(
@@ -43,8 +54,7 @@ async function get<T>(
 ): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  debugApi('[api] GET', url.toString());
-  const res = await fetchWithTimeout(url.toString(), {
+  const res = await apiFetch(url.toString(), {
     headers: await authHeaders(),
     signal: opts?.signal,
   });
@@ -57,8 +67,7 @@ async function get<T>(
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  debugApi('[api] POST', `${BASE_URL}${path}`);
-  const res = await fetchWithTimeout(`${BASE_URL}${path}`, {
+  const res = await apiFetch(`${BASE_URL}${path}`, {
     method: 'POST',
     headers: await authHeaders(),
     body: JSON.stringify(body),
@@ -75,7 +84,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await apiFetch(`${BASE_URL}${path}`, {
     method: 'DELETE',
     headers: await authHeaders(),
   });
@@ -194,7 +203,13 @@ export const gmailApi = {
       expired?: boolean;
     }>('/api/gmail/history', Object.keys(params).length ? params : undefined, { signal: opts?.signal });
   },
-  listLabels: () => get<{ labels: GmailLabel[] }>('/api/gmail/labels'),
+  listLabels: async () => {
+    const cached = peekGmailLabelsCache();
+    if (cached) return { labels: cached };
+    const res = await get<{ labels: GmailLabel[] }>('/api/gmail/labels');
+    if (res.labels?.length) setGmailLabelsCache(res.labels);
+    return res;
+  },
   createLabel: (name: string) =>
     post<{ label: GmailLabel }>('/api/gmail/labels', { name }),
   modifyThreadLabels: (threadId: string, changes: { add?: string[]; remove?: string[] }) =>
@@ -223,8 +238,29 @@ export const gmailApi = {
       Object.keys(params).length ? params : undefined
     );
   },
-  getGoogleToken: () =>
-    get<{ accessToken: string }>('/api/gmail/token'),
+  /** Mail search autocomplete — People + thread participants (web parity). */
+  searchSuggest: (q: string) =>
+    get<{
+      contacts?: Array<{ email: string; displayName?: string; photoUrl?: string }>;
+      threads?: Array<{
+        id: string;
+        subject: string;
+        from: string;
+        participants: string;
+        date: string;
+        hasAttachments?: boolean;
+      }>;
+      completionEmail?: string;
+    }>('/api/gmail/search/suggest', { q: q.trim() }),
+  getGoogleToken: async () => {
+    const now = Date.now();
+    if (googleTokenCache && now - googleTokenCache.fetchedAt < GOOGLE_TOKEN_TTL_MS) {
+      return { accessToken: googleTokenCache.accessToken };
+    }
+    const res = await get<{ accessToken: string }>('/api/gmail/token');
+    googleTokenCache = { accessToken: res.accessToken, fetchedAt: now };
+    return res;
+  },
   attachmentUrl: (messageId: string, attachmentId: string, filename: string, mimeType: string) => {
     const p = new URLSearchParams({ messageId, attachmentId, filename, mimeType });
     return `${BASE_URL}/api/gmail/attachment?${p.toString()}`;
@@ -282,7 +318,7 @@ export const gmailApi = {
     }>('/api/gmail/drafts', { draftId }),
   deleteDraft: async (draftId: string) => {
     const headers = await authHeaders();
-    const res = await fetch(`${BASE_URL}/api/gmail/drafts?draftId=${encodeURIComponent(draftId)}`, {
+    const res = await apiFetch(`${BASE_URL}/api/gmail/drafts?draftId=${encodeURIComponent(draftId)}`, {
       method: 'DELETE',
       headers,
     });
@@ -354,7 +390,7 @@ export const whatsappApi = {
     post('/api/whatsapp/contacts', { peer_e164, name }),
   deleteContact: async (peer_e164: string) => {
     const headers = await authHeaders();
-    const res = await fetchWithTimeout(`${BASE_URL}/api/whatsapp/contacts`, {
+    const res = await apiFetch(`${BASE_URL}/api/whatsapp/contacts`, {
       method: 'DELETE',
       headers,
       body: JSON.stringify({ peer_e164 }),
@@ -396,7 +432,7 @@ export const whatsappApi = {
     form.append('file', { uri, name: safeName, type: mimeType } as unknown as Blob);
     // React Native sends a Blob-like part, not a File — server reads this field for the name.
     form.append('filename', safeName);
-    const res = await fetchWithTimeout(`${BASE_URL}/api/whatsapp/upload`, {
+    const res = await apiFetch(`${BASE_URL}/api/whatsapp/upload`, {
       method: 'POST',
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -463,7 +499,7 @@ export const calendarApi = {
     post<{ event: CalendarEventResponse }>('/api/calendar/events', data),
   updateEvent: async (id: string, data: Partial<CalendarEventInput>) => {
     const headers = await authHeaders();
-    const res = await fetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify(data),
@@ -478,7 +514,7 @@ export const calendarApi = {
   deleteEvent: async (id: string, opts?: { sendUpdates?: CalendarSendUpdates }) => {
     const headers = await authHeaders();
     const qs = opts?.sendUpdates ? `?sendUpdates=${encodeURIComponent(opts.sendUpdates)}` : '';
-    const res = await fetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}${qs}`, {
+    const res = await apiFetch(`${BASE_URL}/api/calendar/events/${encodeURIComponent(id)}${qs}`, {
       method: 'DELETE',
       headers,
     });
@@ -543,7 +579,7 @@ export const driveApi = {
     } as unknown as Blob);
     formData.append('filename', safeName);
     if (file.parent) formData.append('parent', file.parent);
-    const res = await fetchWithTimeout(`${BASE_URL}/api/drive/upload`, {
+    const res = await apiFetch(`${BASE_URL}/api/drive/upload`, {
       method: 'POST',
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -616,6 +652,13 @@ export type MeMailbox = {
   exotelVirtualNumber?: string | null;
 };
 
+export const recruitersApi = {
+  list: () =>
+    get<{ recruiters: Array<{ email: string; name: string; companyName?: string }> }>(
+      '/api/recruiters'
+    ),
+};
+
 export const meApi = {
   mailbox: () => get<MeMailbox>('/api/me/mailbox'),
 };
@@ -675,7 +718,7 @@ export const broadcastApi = {
     delete (headers as Record<string, string>)['Content-Type'];
     const form = new FormData();
     form.append('file', { uri, name: filename, type: mimeType } as any);
-    const res = await fetchWithTimeout(`${BASE_URL}/api/broadcast/parse-phones`, {
+    const res = await apiFetch(`${BASE_URL}/api/broadcast/parse-phones`, {
       method: 'POST',
       headers,
       body: form,
@@ -689,7 +732,7 @@ export const broadcastApi = {
     delete (headers as Record<string, string>)['Content-Type'];
     const form = new FormData();
     form.append('file', { uri, name: filename, type: mimeType } as any);
-    const res = await fetchWithTimeout(`${BASE_URL}/api/broadcast/parse-wa-merge`, {
+    const res = await apiFetch(`${BASE_URL}/api/broadcast/parse-wa-merge`, {
       method: 'POST',
       headers,
       body: form,
@@ -732,7 +775,7 @@ export const mailMergeApi = {
     delete (headers as Record<string, string>)['Content-Type']; // let fetch set multipart boundary
     const form = new FormData();
     form.append('file', { uri, name: filename, type: mimeType } as any);
-    const res = await fetchWithTimeout(`${BASE_URL}/api/broadcast/parse-mail-merge`, {
+    const res = await apiFetch(`${BASE_URL}/api/broadcast/parse-mail-merge`, {
       method: 'POST',
       headers,
       body: form,
@@ -840,7 +883,7 @@ export const adminApi = {
       openaiTokenLimit?: number | null;
     }
   ) => {
-    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/team-members`, {
+    const res = await apiFetch(`${BASE_URL}/api/admin/team-members`, {
       method: 'PATCH',
       headers: await authHeaders(),
       body: JSON.stringify({ userId, ...data }),
@@ -850,7 +893,7 @@ export const adminApi = {
     return body;
   },
   deleteMember: async (userId: string) => {
-    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/team-members`, {
+    const res = await apiFetch(`${BASE_URL}/api/admin/team-members`, {
       method: 'DELETE',
       headers: await authHeaders(),
       body: JSON.stringify({ userId }),
@@ -862,7 +905,7 @@ export const adminApi = {
   createGroup: (data: { name: string; restrictedFeatures: string[] }) =>
     post('/api/admin/groups', data),
   updateGroup: async (data: { groupId: string; name?: string; restrictedFeatures?: string[] }) => {
-    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/groups`, {
+    const res = await apiFetch(`${BASE_URL}/api/admin/groups`, {
       method: 'PATCH',
       headers: await authHeaders(),
       body: JSON.stringify(data),
@@ -872,7 +915,7 @@ export const adminApi = {
     return body;
   },
   deleteGroup: async (groupId: string) => {
-    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/groups`, {
+    const res = await apiFetch(`${BASE_URL}/api/admin/groups`, {
       method: 'DELETE',
       headers: await authHeaders(),
       body: JSON.stringify({ groupId }),

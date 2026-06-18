@@ -7,6 +7,8 @@
  * Here, file bytes stay on device until they go straight to Gmail.
  */
 
+import { traceExternalApiRequest } from './api-debug';
+
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const ALT_BOUNDARY = '----=_PlaceAlt_001';
 const MIXED_BOUNDARY = '----=_PlaceMixed_001';
@@ -57,6 +59,7 @@ export async function markThreadReadDirectly(
   threadId: string
 ): Promise<void> {
   const url = `${GMAIL_API}/threads/${encodeURIComponent(threadId)}/modify`;
+  const trace = traceExternalApiRequest('POST', url, { tag: 'gmail-mark-read' });
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -65,6 +68,7 @@ export async function markThreadReadDirectly(
     },
     body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
   });
+  trace.finish(res.status, res.ok);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Gmail mark-read failed (${res.status}): ${text}`);

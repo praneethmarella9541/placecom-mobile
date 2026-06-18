@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  RefreshControl, TextInput, ActivityIndicator, Alert, Pressable, AppState, ScrollView,
+  RefreshControl, TextInput, ActivityIndicator, Alert, Pressable, AppState, ScrollView, Keyboard,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,19 +17,24 @@ import { Colors } from '../../../constants/colors';
 import { Gmail, avatarColorForName } from '../../../constants/gmailTheme';
 import {
   buildMailListCacheKey,
+  bindMailListPrefetchUser,
   clearMailListSessionCache,
   fetchMailListPage,
   getMailListCache,
   getMailListLastMutationAt,
+  hydrateMailListPrefetchCache,
   invalidateMailListLabel,
   isWithinMailMutationCooldown,
   MAIL_LIST_PAGE_SIZE,
   mutateAllMailListCaches,
+  prefetchMailListViewIfMissing,
   setMailListCache,
   syncLabelBucketCaches,
   touchMailListMutation,
 } from '../../../lib/inbox-list-prefetch';
 import {
+  MAIL_THREAD_PREFETCH_DISABLED,
+  prefetchMailThreadBodies,
   prefetchMailThreadIntent,
   startMailListAndBodyPrefetchWarm,
 } from '../../../lib/mail-thread-prefetch';
@@ -38,12 +43,14 @@ import {
   mergeInboxUnread,
 } from '../../../lib/inbox-unread-session';
 import { getCacheWriteGeneration } from '../../../lib/session-cache-core';
+import { withApiDebugTagAsync } from '../../../lib/api-debug';
 import { ingestCorrespondentThreads } from '../../../lib/correspondent-rank';
+import { ingestThreadDerivedEmails, loadRecipientSuggestions } from '../../../lib/email-contact-suggestions';
 import { isPendingDelete, markLocallyRead, isLocallyRead } from '../../../lib/pending-deletes';
 import { LabelChip } from '../../../components/LabelChip';
 import { labelDisplayName } from '../../../lib/gmail-labels';
 import { GmailSearchChips } from '../../../components/inbox/GmailSearchChips';
-import { loadMailboxLabelCounts } from '../../../lib/gmail-label-counts';
+import { loadMailboxLabelCounts, MAILBOX_LABEL_ID_LIST } from '../../../lib/gmail-label-counts';
 import {
   CATEGORIES,
   type CategoryKey,
@@ -64,7 +71,7 @@ export default function InboxScreen() {
   const { openDrawer } = useDrawer();
   const {
     mailView, setMailView,
-    setLabelCounts: setContextLabelCounts,
+    labelCounts, setLabelCounts,
     setUserLabels: setContextUserLabels,
     filterLabelId, setFilterLabelId: setContextFilterLabelId,
     mailInboxBackRef,
@@ -113,15 +120,26 @@ export default function InboxScreen() {
   // Label picker modal state
   const [labelPickerOpen, setLabelPickerOpen] = useState(false);
 
+  const exitSearchMode = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
+    chipMenuOpenRef.current = false;
+    setSearch('');
+    setDebouncedSearch('');
+    setSearchFocused(false);
+    setChipMenuOpen(false);
+    searchRef.current?.blur();
+    Keyboard.dismiss();
+  }, []);
+
   useEffect(() => {
     mailInboxBackRef.current = () => {
       if (selection.size > 0) {
         setSelection(new Set());
         return true;
       }
-      if (search.trim() || searchFocused) {
-        setSearch('');
-        setSearchFocused(false);
+      if (search.trim() || searchFocused || debouncedSearch) {
+        exitSearchMode();
         return true;
       }
       if (chipMenuOpen) {
@@ -152,6 +170,7 @@ export default function InboxScreen() {
     selection,
     search,
     searchFocused,
+    debouncedSearch,
     chipMenuOpen,
     labelPickerOpen,
     mailView,
@@ -159,10 +178,8 @@ export default function InboxScreen() {
     category,
     setFilterLabelId,
     setMailView,
+    exitSearchMode,
   ]);
-
-  // Folder + label counts
-  const [labelCounts, setLabelCounts] = useState<Record<string, { total: number; unread: number }>>({});
 
   useEffect(() => {
     gmailApi.listLabels()
@@ -170,90 +187,119 @@ export default function InboxScreen() {
       .catch(() => {});
   }, []);
 
+  const countRefreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const extraLabelIdsRef = useRef<string[]>([]);
+  const allLabelsRef = useRef(allLabels);
+  allLabelsRef.current = allLabels;
+  const userLabelsLoadedRef = useRef(false);
+
   const labelCountsInFlightRef = useRef(false);
+  const labelCountsRescheduleRef = useRef(false);
   const labelCountsLastAtRef = useRef(0);
-  const LABEL_COUNTS_MIN_INTERVAL_MS = 20_000;
+  const LABEL_COUNTS_MIN_INTERVAL_MS = 15_000;
 
   const refreshLabelCounts = useCallback(async (force = false) => {
     if (!session) return;
     const now = Date.now();
     if (!force) {
-      if (labelCountsInFlightRef.current) return;
-      if (now - labelCountsLastAtRef.current < LABEL_COUNTS_MIN_INTERVAL_MS) return;
-    }
-    labelCountsInFlightRef.current = true;
-    const fetchStartedAt = Date.now();
-    try {
-      const counts = await loadMailboxLabelCounts({
-        getGoogleToken: () => gmailApi.getGoogleToken(),
-        folderCounts: (ids) => gmailApi.folderCounts(ids),
-        extraLabelIds: allLabels.filter((l) => l.type === 'user').map((l) => l.id),
-      });
-
-      // Drop stale response: a new mutation happened after this fetch was issued.
-      if (!force && getMailListLastMutationAt() > fetchStartedAt) return;
-
-      // During mutation cooldown: merge — never let server raise a count back up.
-      if (!force && isWithinMailMutationCooldown()) {
-        setLabelCounts((prev) => {
-          const merged: Record<string, { total: number; unread: number }> = { ...counts };
-          for (const id of Object.keys(prev)) {
-            if (!merged[id]) continue;
-            merged[id] = {
-              total: merged[id].total,
-              unread: Math.min(merged[id].unread, prev[id].unread),
-            };
-          }
-          if (merged['INBOX']) {
-            merged['INBOX'] = { ...merged['INBOX'], unread: mergeInboxUnread(merged['INBOX'].unread) };
-          }
-          return merged;
-        });
+      if (labelCountsInFlightRef.current) {
+        labelCountsRescheduleRef.current = true;
         return;
       }
+      if (now - labelCountsLastAtRef.current < LABEL_COUNTS_MIN_INTERVAL_MS) return;
+      if (isWithinMailMutationCooldown()) return;
+    }
 
-      // Outside cooldown: adopt server, still apply session inbox guard.
-      const final = { ...counts };
-      if (final['INBOX']) {
-        final['INBOX'] = { ...final['INBOX'], unread: mergeInboxUnread(final['INBOX'].unread) };
-      }
-      setLabelCounts(final);
+    labelCountsInFlightRef.current = true;
+    labelCountsRescheduleRef.current = false;
+    const fetchStartedAt = Date.now();
+    try {
+      const counts = await withApiDebugTagAsync('label-counts', () =>
+        loadMailboxLabelCounts({
+          getGoogleToken: () => gmailApi.getGoogleToken(),
+          folderCounts: (ids) => gmailApi.folderCounts(ids),
+          extraLabelIds: extraLabelIdsRef.current,
+        })
+      );
+
+      if (getMailListLastMutationAt() > fetchStartedAt) return;
+
+      const inCooldown = isWithinMailMutationCooldown();
+      const labels = allLabelsRef.current;
+      setLabelCounts((prev) => {
+        const merged: Record<string, { total: number; unread: number }> = { ...counts };
+        for (const l of labels) {
+          if (l.type !== 'user') continue;
+          const inc = counts[l.id];
+          const previous = prev[l.id];
+          const serverUnread = inc?.unread ?? previous?.unread ?? 0;
+          if (inCooldown && previous) {
+            merged[l.id] = {
+              total: Math.max(inc?.total ?? 0, previous.total),
+              unread: Math.min(serverUnread, previous.unread),
+            };
+          } else if (inc) {
+            merged[l.id] = { total: inc.total, unread: inc.unread };
+          } else if (previous) {
+            merged[l.id] = previous;
+          }
+        }
+        for (const id of MAILBOX_LABEL_ID_LIST) {
+          const inc = counts[id];
+          const previous = prev[id];
+          if (!previous) continue;
+          if (inCooldown) {
+            merged[id] = {
+              total: Math.max(inc?.total ?? 0, previous.total),
+              unread: Math.min(inc?.unread ?? 0, previous.unread),
+            };
+          }
+        }
+        if (!counts.INBOX) return merged;
+        const mergedUnread = mergeInboxUnread(counts.INBOX.unread);
+        if (inCooldown && prev.INBOX) {
+          return {
+            ...merged,
+            INBOX: { ...counts.INBOX, unread: Math.min(prev.INBOX.unread, mergedUnread) },
+          };
+        }
+        return { ...merged, INBOX: { ...counts.INBOX, unread: mergedUnread } };
+      });
     } catch (e: unknown) {
       console.warn('[inbox] label counts failed:', (e as Error)?.message);
     } finally {
       labelCountsInFlightRef.current = false;
       labelCountsLastAtRef.current = Date.now();
+      if (labelCountsRescheduleRef.current) {
+        labelCountsRescheduleRef.current = false;
+        void refreshLabelCounts(force);
+      }
     }
-  }, [session, allLabels]);
+  }, [session, setLabelCounts]);
 
-  /**
-   * Staggered count refresh: fires at 0 ms, 800 ms, and 2500 ms.
-   * Matches Placecom web scheduleCountRefresh() — handles Gmail propagation lag
-   * so badge counts converge to the correct value within ~3 seconds of any action.
-   */
+  /** Delayed refresh after mutations — Gmail counts lag ~1–3 s behind label changes. */
   const scheduleCountRefresh = useCallback(() => {
     countRefreshTimersRef.current.forEach(clearTimeout);
     countRefreshTimersRef.current = [];
-    void refreshLabelCounts(true);
     countRefreshTimersRef.current.push(
-      setTimeout(() => void refreshLabelCounts(true), 800)
-    );
-    countRefreshTimersRef.current.push(
-      setTimeout(() => void refreshLabelCounts(true), 2500)
+      setTimeout(() => {
+        void refreshLabelCounts(true);
+      }, 1500)
     );
   }, [refreshLabelCounts]);
 
   useEffect(() => {
+    if (!session) return;
     void refreshLabelCounts();
-  }, [refreshLabelCounts]);
+  }, [session, refreshLabelCounts]);
 
-  // Poll while this screen is focused so badges stay aligned with Gmail.
-  useFocusEffect(
-    useCallback(() => {
-      const timer = setInterval(() => void refreshLabelCounts(), 60_000);
-      return () => clearInterval(timer);
-    }, [refreshLabelCounts])
-  );
+  useEffect(() => {
+    extraLabelIdsRef.current = allLabels.filter((l) => l.type === 'user').map((l) => l.id);
+    if (extraLabelIdsRef.current.length > 0 && !userLabelsLoadedRef.current) {
+      userLabelsLoadedRef.current = true;
+      void refreshLabelCounts(true);
+    }
+  }, [allLabels, refreshLabelCounts]);
 
   // Clear selection when the visible list changes underneath us.
   useEffect(() => { setSelection(new Set()); }, [mailView, debouncedSearch, effectiveLabelId]);
@@ -271,7 +317,9 @@ export default function InboxScreen() {
     setRowBusy((s) => new Set(s).add(threadId));
     const prev = threads;
     const thread = threads.find((t) => t.id === threadId);
+    const change = nextStarred ? 1 : -1;
     mutateThreads((rows) => rows.map((r) => (r.id === threadId ? { ...r, starred: nextStarred } : r)));
+    adjustLabelCount('STARRED', change, 0);
     // Sync Starred bucket cache so navigating to Starred is instant.
     if (thread) {
       const updated = { ...thread, starred: nextStarred };
@@ -279,8 +327,10 @@ export default function InboxScreen() {
     }
     try {
       await gmailApi.modifyThreadLabels(threadId, nextStarred ? { add: ['STARRED'] } : { remove: ['STARRED'] });
+      scheduleCountRefresh();
     } catch (e: any) {
       setThreads(prev);
+      adjustLabelCount('STARRED', -change, 0);
       mutateAllMailListCaches((rows) =>
         rows.map((r) => prev.find((p) => p.id === r.id) ?? r)
       );
@@ -291,7 +341,7 @@ export default function InboxScreen() {
     }
   }
 
-  /** Instantly adjust a single label's count in local state (context synced via useEffect below). */
+  /** Instantly adjust a single label's count in shared drawer state. */
   const adjustLabelCount = useCallback((labelId: string, deltaTotal: number, deltaUnread: number) => {
     setLabelCounts((prev) => {
       const cur = prev[labelId] ?? { total: 0, unread: 0 };
@@ -303,12 +353,19 @@ export default function InboxScreen() {
         },
       };
     });
-  }, []);
+  }, [setLabelCounts]);
 
-  // Keep drawer in sync — runs after each render where labelCounts changed.
-  useEffect(() => {
-    setContextLabelCounts(labelCounts);
-  }, [labelCounts, setContextLabelCounts]);
+  // O(1) lookup by id when rendering chips on a row.
+  const labelsById = React.useMemo(() => {
+    const m = new Map<string, GmailLabel>();
+    for (const l of allLabels) m.set(l.id, l);
+    return m;
+  }, [allLabels]);
+
+  const userLabels = React.useMemo(
+    () => allLabels.filter((l) => l.type === 'user'),
+    [allLabels]
+  );
 
   // Keep drawer label list in sync.
   useEffect(() => {
@@ -343,7 +400,6 @@ export default function InboxScreen() {
       mutateThreads((rows) => rows.map((r) => (sel.has(r.id) ? { ...r, starred: true } : r)));
       if (unstarred.length > 0) {
         adjustLabelCount('STARRED', unstarred.length, 0);
-        // Sync Starred bucket cache so it's instant when user switches to Starred view.
         syncLabelBucketCaches(
           unstarred.map((t) => ({ ...t, starred: true })),
           ['STARRED'],
@@ -418,18 +474,6 @@ export default function InboxScreen() {
     });
   }
 
-  // O(1) lookup by id when rendering chips on a row.
-  const labelsById = React.useMemo(() => {
-    const m = new Map<string, GmailLabel>();
-    for (const l of allLabels) m.set(l.id, l);
-    return m;
-  }, [allLabels]);
-
-  const userLabels = React.useMemo(
-    () => allLabels.filter((l) => l.type === 'user'),
-    [allLabels]
-  );
-
   const filterChipItems = React.useMemo((): FilterChipItem[] => {
     // Category tabs only on Inbox — labels live in the sidebar; other folders have no top strip.
     if (mailView !== 'inbox') return [];
@@ -444,19 +488,8 @@ export default function InboxScreen() {
     return null;
   }, [filterLabelId, mailView, category, labelsById]);
 
-  function selectMailView(next: MailViewKey) {
-    setMailView(next);
-    if (next === 'drafts') setFilterLabelId(null);
-    if (next !== 'inbox') setFilterLabelId(null);
-  }
-
-  function selectCategory(key: CategoryKey) {
-    setFilterLabelId(null);
-    setCategory(key);
-  }
-
   function selectLabel(id: string) {
-    setFilterLabelId((cur) => (cur === id ? null : id));
+    setFilterLabelId(id === filterLabelId ? null : id);
   }
 
   function clearLabelFilter() {
@@ -489,7 +522,85 @@ export default function InboxScreen() {
   const dwellTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const fetchStartedAtRef = useRef(0);
   const writeGenAtFetchRef = useRef(0);
-  const countRefreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const prefetchBodiesForRows = useCallback(
+    (rows: GmailThreadListItem[], opts?: { forceRefresh?: boolean; append?: boolean; viewKey?: string }) => {
+      if (!userId || MAIL_THREAD_PREFETCH_DISABLED) return;
+      const ids = rows.filter((t) => !t.draftId).map((t) => t.id).filter(Boolean);
+      if (!ids.length) return;
+      void prefetchMailThreadBodies(userId, ids, {
+        concurrency: 4,
+        forceRefresh: opts?.forceRefresh,
+        append: opts?.append,
+        landing: true,
+        viewKey: opts?.viewKey ?? listCacheKey,
+      });
+    },
+    [userId, listCacheKey]
+  );
+
+  const warmBodiesFromListCacheKey = useCallback(
+    (cacheKey: string, opts?: { forceRefresh?: boolean }) => {
+      const cached = getMailListCache(cacheKey);
+      if (!cached?.threads.length) return;
+      prefetchBodiesForRows(cached.threads, { ...opts, viewKey: cacheKey });
+    },
+    [prefetchBodiesForRows]
+  );
+
+  const primeListView = useCallback(
+    (folder: typeof apiFolder, labelId: string | null | undefined, search = debouncedSearch) => {
+      const cacheKey = buildMailListCacheKey(folder, labelId ?? null, search);
+      warmBodiesFromListCacheKey(cacheKey);
+      void prefetchMailListViewIfMissing({
+        folder,
+        labelId: labelId ?? undefined,
+        search: search || undefined,
+      }).then((page) => {
+        if (page?.threads.length) prefetchBodiesForRows(page.threads, { viewKey: cacheKey });
+      });
+    },
+    [debouncedSearch, warmBodiesFromListCacheKey, prefetchBodiesForRows]
+  );
+
+  /** Mirrors web switchCategory — instant list paint + body prefetch for the tab. */
+  const switchCategory = useCallback(
+    (key: CategoryKey) => {
+      const { apiFolder: nextFolder, effectiveLabelId: nextLabel } = resolveMailListQuery(
+        mailView,
+        key,
+        null
+      );
+      const cacheKey = buildMailListCacheKey(nextFolder, nextLabel, debouncedSearch);
+      activeListCacheKey.current = cacheKey;
+      setFilterLabelId(null);
+
+      const cached = getMailListCache(cacheKey);
+      if (cached?.threads.length) {
+        setThreads(applyLocalOverlays(cached.threads));
+        setNextPageToken(cached.nextPageToken);
+        setLoading(false);
+        setError(null);
+        prefetchBodiesForRows(cached.threads, { viewKey: cacheKey });
+      } else {
+        setLoading(true);
+        void prefetchMailListViewIfMissing({
+          folder: nextFolder,
+          labelId: nextLabel ?? undefined,
+          search: debouncedSearch || undefined,
+        }).then((page) => {
+          if (activeListCacheKey.current !== cacheKey) return;
+          if (!page?.threads.length) return;
+          setThreads(applyLocalOverlays(page.threads));
+          setNextPageToken(page.nextPageToken);
+          setLoading(false);
+          prefetchBodiesForRows(page.threads, { viewKey: cacheKey });
+        });
+      }
+      setCategory(key);
+    },
+    [mailView, debouncedSearch, applyLocalOverlays, prefetchBodiesForRows, setFilterLabelId]
+  );
 
   const mutateThreads = useCallback(
     (transform: (rows: GmailThreadListItem[]) => GmailThreadListItem[]) => {
@@ -513,6 +624,7 @@ export default function InboxScreen() {
       setThreads(applyLocalOverlays(cached.threads));
       setNextPageToken(cached.nextPageToken);
       setLoading(false);
+      prefetchBodiesForRows(cached.threads, { forceRefresh: force, viewKey: cacheKey });
       if (isWithinMailMutationCooldown()) {
         setRefreshing(false);
         return;
@@ -550,7 +662,9 @@ export default function InboxScreen() {
       setMailListCache(cacheKey, { threads, nextPageToken: page.nextPageToken });
       setThreads(threads);
       ingestCorrespondentThreads(threads, apiFolder);
+      ingestThreadDerivedEmails(threads);
       setNextPageToken(page.nextPageToken);
+      prefetchBodiesForRows(threads, { forceRefresh: force, viewKey: cacheKey });
       void refreshLabelCounts();
 
       if (warmTimerRef.current) clearTimeout(warmTimerRef.current);
@@ -558,7 +672,6 @@ export default function InboxScreen() {
         startMailListAndBodyPrefetchWarm(userId, {
           skipKeys: new Set([cacheKey]),
           listConcurrency: 3,
-          bodyConcurrency: 2,
         });
       }, 400);
     } catch (e: any) {
@@ -583,6 +696,7 @@ export default function InboxScreen() {
     debouncedSearch,
     applyLocalOverlays,
     refreshLabelCounts,
+    prefetchBodiesForRows,
   ]);
 
   const loadMore = useCallback(async () => {
@@ -600,10 +714,11 @@ export default function InboxScreen() {
         const seen = new Set(prev.map((t) => t.id));
         const deduped = incoming.filter((t) => !seen.has(t.id));
         const merged = [...prev, ...deduped];
-        // Keep the cache in sync so back-nav doesn't lose later pages
         const cacheKey = buildMailListCacheKey(apiFolder, effectiveLabelId, debouncedSearch);
         setMailListCache(cacheKey, { threads: merged, nextPageToken: data.nextPageToken });
         ingestCorrespondentThreads(merged, apiFolder);
+        ingestThreadDerivedEmails(merged);
+        prefetchBodiesForRows(deduped, { append: true });
         return merged;
       });
       setNextPageToken(data.nextPageToken);
@@ -612,11 +727,12 @@ export default function InboxScreen() {
     } finally {
       setLoadingMore(false);
     }
-  }, [apiFolder, effectiveLabelId, debouncedSearch, nextPageToken, loadingMore, applyLocalOverlays]);
+  }, [apiFolder, effectiveLabelId, debouncedSearch, nextPageToken, loadingMore, applyLocalOverlays, prefetchBodiesForRows]);
 
   // Paint from session cache before first frame on folder/tab/search changes.
   useLayoutEffect(() => {
     if (!session || !userId) return;
+    bindMailListPrefetchUser(userId);
     activeListCacheKey.current = listCacheKey;
     const loadId = ++loadIdRef.current;
     const cached = getMailListCache(listCacheKey);
@@ -627,9 +743,32 @@ export default function InboxScreen() {
       setError(null);
     } else {
       setLoading(true);
+      void hydrateMailListPrefetchCache(userId).then(() => {
+        const diskCached = getMailListCache(listCacheKey);
+        if (diskCached) {
+          setThreads(applyLocalOverlays(diskCached.threads));
+          setNextPageToken(diskCached.nextPageToken);
+          setLoading(false);
+          setError(null);
+        }
+      });
     }
     void loadFirstPage(false, loadId);
   }, [listCacheKey, session, userId, applyLocalOverlays, loadFirstPage]);
+
+  // Prefetch thread bodies when landing on a folder/tab (from list cache).
+  useLayoutEffect(() => {
+    if (!session || !userId) return;
+    const cached = getMailListCache(listCacheKey);
+    if (cached?.threads.length) {
+      prefetchBodiesForRows(cached.threads, { viewKey: listCacheKey });
+    }
+  }, [listCacheKey, session, userId, prefetchBodiesForRows]);
+
+  const countPollRef = useRef({ refreshLabelCounts, loadFirstPage });
+  useEffect(() => {
+    countPollRef.current = { refreshLabelCounts, loadFirstPage };
+  }, [refreshLabelCounts, loadFirstPage]);
 
   useFocusEffect(
     useCallback(() => {
@@ -638,7 +777,7 @@ export default function InboxScreen() {
     }, [applyLocalOverlays, refreshLabelCounts])
   );
 
-  // Gmail History API poll + foreground refresh (bypasses mutation cooldown).
+  // Gmail History API poll — refresh list + counts only when Gmail reports changes.
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
@@ -660,8 +799,10 @@ export default function InboxScreen() {
         const res = await gmailApi.getHistory(since);
         if (res.historyId) historyIdRef.current = res.historyId;
         if (res.hasChanges || res.expired) {
-          scheduleCountRefresh();
-          void loadFirstPage(true);
+          if (!isWithinMailMutationCooldown()) {
+            void countPollRef.current.refreshLabelCounts(true);
+            void countPollRef.current.loadFirstPage(true);
+          }
         }
       } catch {
         /* non-fatal */
@@ -678,7 +819,7 @@ export default function InboxScreen() {
       clearInterval(interval);
       sub.remove();
     };
-  }, [session, loadFirstPage, refreshLabelCounts]);
+  }, [session, loadFirstPage]);
 
   function onThreadPressIn(threadId: string) {
     if (!userId || selection.size > 0 || mailView === 'drafts') return;
@@ -712,8 +853,8 @@ export default function InboxScreen() {
       decrementSessionInboxUnread(1);
       adjustLabelCount('INBOX', 0, -1);
       for (const lid of thread.labelIds ?? []) adjustLabelCount(lid, 0, -1);
+      scheduleCountRefresh();
     }
-    scheduleCountRefresh();
     router.push({
       pathname: '/(workspace)/inbox/[id]',
       params: {
@@ -765,12 +906,9 @@ export default function InboxScreen() {
             }, 250);
           }}
         />
-        {search.length > 0 && (
+        {(search.length > 0 || searchFocused || debouncedSearch.length > 0) && (
           <TouchableOpacity
-            onPress={() => {
-              setSearch('');
-              searchRef.current?.focus();
-            }}
+            onPress={exitSearchMode}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="close-circle" size={20} color={Gmail.textMuted} />
@@ -828,7 +966,7 @@ export default function InboxScreen() {
                 return (
                   <TouchableOpacity
                     key={item.key}
-                    onPress={() => selectCategory(item.key)}
+                    onPress={() => switchCategory(item.key)}
                     style={[styles.chipTab, active && styles.chipTabActive]}
                   >
                     <Text style={[styles.chipTabText, active && styles.chipTabTextActive]}>
@@ -916,6 +1054,7 @@ export default function InboxScreen() {
         </View>
       ) : (
         <FlatList
+          key={listCacheKey}
           data={threads}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
@@ -945,7 +1084,6 @@ export default function InboxScreen() {
                 startMailListAndBodyPrefetchWarm(userId, {
                   skipKeys: new Set([listCacheKey]),
                   listConcurrency: 3,
-                  bodyConcurrency: 2,
                   force: true,
                 });
               }}
@@ -975,7 +1113,10 @@ export default function InboxScreen() {
       {/* Gmail-style compose FAB */}
       <TouchableOpacity
         style={[styles.fab, { bottom: insets.bottom + 20 }]}
-        onPress={() => router.push('/(workspace)/inbox/compose' as any)}
+        onPress={() => {
+          void loadRecipientSuggestions();
+          router.push('/(workspace)/inbox/compose' as any);
+        }}
         activeOpacity={0.85}
       >
         <Ionicons name="create-outline" size={26} color={Gmail.fabIcon} />

@@ -2,9 +2,11 @@ import { useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { meApi } from '../lib/api';
 import {
+  hydrateMailPrefetchCaches,
   scheduleLoginPrefetchChain,
   startEarlyCallsPrefetch,
 } from '../lib/workspace-feature-prefetch';
+import { isWorkspacePrefetchSessionComplete } from '../lib/login-prefetch-session';
 
 /**
  * After auth + mailbox link, warm mail/drive/feature caches once per session.
@@ -24,30 +26,31 @@ export function WorkspacePrefetchSync() {
     if (scheduledForRef.current === user.id) return;
 
     let cancelled = false;
-    void meApi
-      .mailbox()
-      .then((mailbox) => {
-        if (cancelled) return;
-        if (!mailbox.hasStoredMailbox && !mailbox.mailboxEmail) return;
-        scheduledForRef.current = user.id;
-        scheduleLoginPrefetchChain(user.id, {
-          whatsapp: hasFeature('whatsapp'),
-          calendar: hasFeature('calendar'),
-          forms: hasFeature('forms'),
-          calls: hasFeature('calls'),
-        });
-      })
-      .catch(() => {
-        // Still warm mail/drive when mailbox endpoint is unavailable.
-        if (cancelled) return;
-        scheduledForRef.current = user.id;
-        scheduleLoginPrefetchChain(user.id, {
-          whatsapp: hasFeature('whatsapp'),
-          calendar: hasFeature('calendar'),
-          forms: hasFeature('forms'),
-          calls: hasFeature('calls'),
-        });
+    void hydrateMailPrefetchCaches(user.id).then(() => {
+      if (cancelled) return;
+      return meApi.mailbox();
+    }).then((mailbox) => {
+      if (cancelled) return;
+      if (mailbox && !mailbox.hasStoredMailbox && !mailbox.mailboxEmail) return;
+      if (scheduledForRef.current === user.id && isWorkspacePrefetchSessionComplete()) return;
+      scheduledForRef.current = user.id;
+      scheduleLoginPrefetchChain(user.id, {
+        whatsapp: hasFeature('whatsapp'),
+        calendar: hasFeature('calendar'),
+        forms: hasFeature('forms'),
+        calls: hasFeature('calls'),
       });
+    }).catch(() => {
+      if (cancelled) return;
+      if (scheduledForRef.current === user.id && isWorkspacePrefetchSessionComplete()) return;
+      scheduledForRef.current = user.id;
+      scheduleLoginPrefetchChain(user.id, {
+        whatsapp: hasFeature('whatsapp'),
+        calendar: hasFeature('calendar'),
+        forms: hasFeature('forms'),
+        calls: hasFeature('calls'),
+      });
+    });
 
     return () => {
       cancelled = true;

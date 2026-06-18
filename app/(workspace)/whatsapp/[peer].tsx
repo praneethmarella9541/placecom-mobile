@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   AppState,
   Platform,
+  DeviceEventEmitter,
 } from 'react-native';
 import * as ExpoClipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -97,7 +98,6 @@ function injectDateSeparators(messages: WhatsAppMessage[]): ChatItem[] {
 
 const CHAT_SEARCH_BAR_HEIGHT = 48;
 
-const POLL_MS = 1000;
 const LIST_BOTTOM_GAP = 8;
 const EST_MSG_HEIGHT = 76;
 const EST_SEP_HEIGHT = 34;
@@ -141,12 +141,20 @@ export default function WhatsAppConversationScreen() {
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [searchMatchCursor, setSearchMatchCursor] = useState(0);
   const [viewerMessage, setViewerMessage] = useState<WhatsAppMessage | null>(null);
-  const [imageViewerMessage, setImageViewerMessage] = useState<WhatsAppMessage | null>(null);
+  const [imageViewerIndex, setImageViewerIndex] = useState<number>(-1);
   const [openingMedia, setOpeningMedia] = useState(false);
+
+  // All image messages in chronological order — used for swipe navigation.
+  const imageMessages = useMemo(
+    () => messages.filter((m) => whatsAppMediaOpenTarget(m) === 'fullscreen-image'),
+    [messages]
+  );
+
   async function handleMediaPress(message: WhatsAppMessage) {
     const target = whatsAppMediaOpenTarget(message);
     if (target === 'fullscreen-image') {
-      setImageViewerMessage(message);
+      const idx = imageMessages.findIndex((m) => m.id === message.id);
+      setImageViewerIndex(idx >= 0 ? idx : 0);
       return;
     }
     if (target === 'inline-video') {
@@ -407,23 +415,35 @@ export default function WhatsAppConversationScreen() {
     scrollToLatest,
   ]);
 
+  // Stable ref so the Supabase callback always calls the latest loadMessages
+  // without triggering channel teardown/recreate.
+  const loadMessagesRef = useRef(loadMessages);
+  useEffect(() => { loadMessagesRef.current = loadMessages; }, [loadMessages]);
+
   useFocusEffect(
     useCallback(() => {
       void markWhatsAppThreadRead(peerDecoded, new Date().toISOString());
       void loadMessages({ silent: true });
-      const timer = setInterval(() => {
-        void loadMessages({ silent: true });
-      }, POLL_MS);
-      return () => clearInterval(timer);
     }, [loadMessages, peerDecoded])
   );
 
+  // Foreground push: load new messages immediately when a notification arrives
+  // for this specific peer.
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void loadMessages({ silent: true });
+    const sub = DeviceEventEmitter.addListener('wa:newMessage', (payload: { peer?: unknown }) => {
+      if (!payload?.peer || payload.peer === peerDecoded) {
+        void loadMessagesRef.current({ silent: true });
+      }
     });
     return () => sub.remove();
-  }, [loadMessages]);
+  }, [peerDecoded]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void loadMessagesRef.current({ silent: true });
+    });
+    return () => sub.remove();
+  }, []);
 
   // Keep the latest message visible when the keyboard opens.
   useEffect(() => {
@@ -966,9 +986,10 @@ export default function WhatsAppConversationScreen() {
       />
 
       <WhatsAppImageViewer
-        message={imageViewerMessage}
+        messages={imageMessages}
+        initialIndex={imageViewerIndex}
         authToken={authToken}
-        onClose={() => setImageViewerMessage(null)}
+        onClose={() => setImageViewerIndex(-1)}
       />
 
       <WhatsAppMediaViewer

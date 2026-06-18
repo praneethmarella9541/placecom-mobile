@@ -11,7 +11,7 @@ export type Contact = { email: string; displayName?: string };
 
 export type ContactOperator = 'from' | 'to' | 'cc' | 'bcc';
 
-const EMPTY_SUGGESTION_LIMIT = 15;
+const EMPTY_SUGGESTION_LIMIT = 25;
 const QUERY_SUGGESTION_LIMIT = 50;
 
 function contactKey(c: Contact): string {

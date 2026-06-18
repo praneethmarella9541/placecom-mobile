@@ -1,4 +1,5 @@
 import { gmailApi } from './api';
+import { traceExternalApiRequest } from './api-debug';
 import type { DriveFile } from './types';
 import { decodeDisplayFilename } from './filename-utils';
 
@@ -46,9 +47,12 @@ export async function listDriveFilesDirectly(opts: {
   if (opts.orderBy) params.set('orderBy', opts.orderBy);
   if (opts.pageToken) params.set('pageToken', opts.pageToken);
 
-  const res = await fetch(`${DRIVE_API}/files?${params.toString()}`, {
+  const url = `${DRIVE_API}/files?${params.toString()}`;
+  const trace = traceExternalApiRequest('GET', url, { tag: 'drive-direct' });
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+  trace.finish(res.status, res.ok);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Drive list failed (${res.status}): ${text.slice(0, 120)}`);

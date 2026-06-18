@@ -1,7 +1,13 @@
 import { calendarApi, formsApi, gmailApi, whatsappApi } from './api';
 import { persistContactsCache } from './wa-contacts-cache';
 import { clearWhatsAppThreadCache, prefetchWhatsAppThreads } from './whatsapp-thread-cache';
-import { cancelMailPrefetch } from './inbox-list-prefetch';
+import { bindMailListPrefetchUser, cancelMailPrefetch } from './inbox-list-prefetch';
+import {
+  beginWorkspacePrefetchWarm,
+  clearWorkspacePrefetchSession,
+  finishWorkspacePrefetchWarm,
+} from './login-prefetch-session';
+import { bindMailThreadPrefetchUser } from './mail-thread-session-cache';
 import { warmMailListsThenThreadBodies } from './mail-thread-prefetch';
 import { prefetchDriveListViews, cancelDrivePrefetch } from './drive-list-prefetch';
 import {
@@ -11,6 +17,7 @@ import {
 } from './calls-list-prefetch';
 import { prefetchWaContactsList } from './wa-contacts-cache';
 import { getCacheWriteGeneration } from './session-cache-core';
+import { withApiDebugTagAsync } from './api-debug';
 
 const LOGIN_DEBOUNCE_MS = 200;
 
@@ -61,6 +68,7 @@ export function clearWorkspaceFeaturePrefetchCaches(): void {
   loginChainAbort?.abort();
   loginChainAbort = null;
   loginRanForUser = null;
+  clearWorkspacePrefetchSession();
   cancelMailPrefetch();
   cancelDrivePrefetch();
   clearCallsListSessionCache();
@@ -130,27 +138,35 @@ async function prefetchForms(signal: AbortSignal): Promise<void> {
 async function runLoginPrefetchChainInternal(
   userId: string,
   access: FeaturePrefetchAccess,
-  signal: AbortSignal
+  signal: AbortSignal,
+  force?: boolean
 ): Promise<void> {
-  const writeGen = getCacheWriteGeneration();
-  await Promise.all([
-    warmMailListsThenThreadBodies(userId, {
-      listConcurrency: 3,
-      bodyConcurrency: 2,
-      signal,
-    }),
-    prefetchDriveListViews({ concurrency: 2, signal }),
-    access.calls ? prefetchCallsList(signal) : Promise.resolve(),
-  ]);
-  if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
+  if (!beginWorkspacePrefetchWarm({ force })) return;
 
-  if (access.whatsapp) await prefetchWhatsApp(signal, userId);
-  if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
+  try {
+    const writeGen = getCacheWriteGeneration();
+    await withApiDebugTagAsync('login-warm', async () => {
+      await Promise.all([
+        warmMailListsThenThreadBodies(userId, {
+          listConcurrency: 3,
+          signal,
+        }),
+        prefetchDriveListViews({ concurrency: 2, signal }),
+        access.calls ? prefetchCallsList(signal) : Promise.resolve(),
+      ]);
+      if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
 
-  if (access.calendar) await prefetchCalendar(signal);
-  if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
+      if (access.whatsapp) await prefetchWhatsApp(signal, userId);
+      if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
 
-  if (access.forms) await prefetchForms(signal);
+      if (access.calendar) await prefetchCalendar(signal);
+      if (signal.aborted || writeGen !== getCacheWriteGeneration()) return;
+
+      if (access.forms) await prefetchForms(signal);
+    });
+  } finally {
+    finishWorkspacePrefetchWarm();
+  }
 }
 
 /**
@@ -168,9 +184,10 @@ export function startEarlyCallsPrefetch(userId: string, callsEnabled: boolean): 
  */
 export function scheduleLoginPrefetchChain(
   userId: string,
-  access: FeaturePrefetchAccess
+  access: FeaturePrefetchAccess,
+  opts?: { force?: boolean }
 ): void {
-  if (loginRanForUser === userId) return;
+  if (!opts?.force && loginRanForUser === userId) return;
 
   if (loginTimer) clearTimeout(loginTimer);
   loginChainAbort?.abort();
@@ -179,8 +196,22 @@ export function scheduleLoginPrefetchChain(
     loginTimer = null;
     loginRanForUser = userId;
     bindCallsPrefetchUser(userId);
+    bindMailListPrefetchUser(userId);
+    bindMailThreadPrefetchUser(userId);
     const controller = new AbortController();
     loginChainAbort = controller;
-    void runLoginPrefetchChainInternal(userId, access, controller.signal).catch(() => {});
+    void runLoginPrefetchChainInternal(userId, access, controller.signal, opts?.force).catch(() => {});
   }, LOGIN_DEBOUNCE_MS);
+}
+
+/** Restore mail list + thread caches from disk before first inbox paint. */
+export async function hydrateMailPrefetchCaches(userId: string): Promise<void> {
+  bindMailListPrefetchUser(userId);
+  bindMailThreadPrefetchUser(userId);
+  const { hydrateMailListPrefetchCache } = await import('./inbox-list-prefetch');
+  const { hydrateMailThreadPrefetchCache } = await import('./mail-thread-prefetch');
+  await Promise.all([
+    hydrateMailListPrefetchCache(userId),
+    hydrateMailThreadPrefetchCache(userId),
+  ]);
 }

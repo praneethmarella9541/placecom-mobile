@@ -61,13 +61,14 @@ export default function WhatsAppContactMediaScreen() {
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewerMessage, setViewerMessage] = useState<WhatsAppMessage | null>(null);
-  const [imageViewerMessage, setImageViewerMessage] = useState<WhatsAppMessage | null>(null);
+  const [imageViewerIndex, setImageViewerIndex] = useState(-1);
   const [openingMedia, setOpeningMedia] = useState(false);
 
   async function handleMediaPress(message: WhatsAppMessage) {
     const target = whatsAppMediaOpenTarget(message);
     if (target === 'fullscreen-image') {
-      setImageViewerMessage(message);
+      const idx = imageMessages.findIndex((m) => m.id === message.id);
+      setImageViewerIndex(idx >= 0 ? idx : 0);
       return;
     }
     if (target === 'inline-video') {
@@ -116,6 +117,9 @@ export default function WhatsAppContactMediaScreen() {
     }
     return buckets;
   }, [messages]);
+
+  // Image messages in order — used for swipe navigation in the fullscreen viewer.
+  const imageMessages = useMemo(() => mediaByTab.image, [mediaByTab]);
 
   const items = tab === 'document'
     ? [...mediaByTab.document, ...mediaByTab.audio]
@@ -206,9 +210,10 @@ export default function WhatsAppContactMediaScreen() {
       )}
 
       <WhatsAppImageViewer
-        message={imageViewerMessage}
+        messages={imageMessages}
+        initialIndex={imageViewerIndex}
         authToken={authToken}
-        onClose={() => setImageViewerMessage(null)}
+        onClose={() => setImageViewerIndex(-1)}
       />
       <WhatsAppMediaViewer
         message={viewerMessage}

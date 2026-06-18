@@ -28,3 +28,16 @@ export function normalizeRecipientField(raw: string): string {
     .filter(Boolean)
     .join(', ');
 }
+
+/** Token being typed after the last comma/semicolon in a multi-recipient field. */
+export function currentRecipientToken(raw: string): string {
+  const parts = raw.split(/[,;]/);
+  return (parts[parts.length - 1] ?? '').trim().toLowerCase();
+}
+
+/** Replace the in-progress recipient token with a picked contact email. */
+export function replaceLastRecipientToken(raw: string, chosen: string): string {
+  const parts = raw.split(/[,;]/);
+  parts[parts.length - 1] = ' ' + chosen;
+  return parts.join(', ').replace(/^,\s*/, '') + ', ';
+}

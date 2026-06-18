@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -36,7 +36,6 @@ import {
 import { useDrawer } from '../_layout';
 import {
   calendarApi,
-  gmailApi,
   type CalendarEventInput,
   type CalendarSendUpdates,
 } from '../../../lib/api';
@@ -59,10 +58,8 @@ import {
   type CalendarEditorState,
 } from '../../../lib/calendar-utils';
 import { copyText, joinGoogleMeet } from '../../../lib/calendar-actions';
-
-type ViewMode = 'month' | 'week' | 'day' | 'list';
-type NotifyMode = 'save' | 'delete' | null;
-interface Contact { email: string; displayName?: string }
+import { useEmailContactSuggestions } from '../../../hooks/useEmailContactSuggestions';
+import { replaceLastRecipientToken } from '../../../lib/recipient-utils';
 
 const HOUR_HEIGHT = 56;
 const TIME_GUTTER = 46;
@@ -71,15 +68,6 @@ const WEEK_COL_W = (SCREEN_W - TIME_GUTTER) / 7;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function currentToken(raw: string): string {
-  const parts = raw.split(/[,;]/);
-  return (parts[parts.length - 1] ?? '').trim().toLowerCase();
-}
-function replaceLastToken(raw: string, chosen: string): string {
-  const parts = raw.split(/[,;]/);
-  parts[parts.length - 1] = ' ' + chosen;
-  return parts.join(', ').replace(/^,\s*/, '') + ', ';
-}
 function eventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
   return events
     .filter((e) => { const d = parseEventDate(e); return d && isSameDay(d, day); })
@@ -364,12 +352,11 @@ export default function CalendarScreen() {
   const [deleting, setDeleting] = useState(false);
   const [pendingPayload, setPendingPayload] = useState<CalendarEventInput | null>(null);
   const [notifyMode, setNotifyMode] = useState<NotifyMode>(null);
-  const [allContacts, setAllContacts] = useState<Contact[]>([]);
-  const [attendeeSuggestions, setAttendeeSuggestions] = useState<Contact[]>([]);
-
-  useEffect(() => {
-    gmailApi.getContacts().then((r) => setAllContacts(r.contacts ?? [])).catch(() => {});
-  }, []);
+  const {
+    suggestions: attendeeSuggestions,
+    onFieldChange: onAttendeeSuggestChange,
+    dismiss: dismissAttendeeSuggestions,
+  } = useEmailContactSuggestions();
 
   const loadEvents = useCallback(async () => {
     try {
@@ -415,19 +402,18 @@ export default function CalendarScreen() {
   }
 
   // ── month grid ───────────────────────────────────────────────────────────
-  const monthDays = eachDayOfInterval({ start: startOfMonth(anchor), end: endOfMonth(anchor) });
-  const dayEvents = eventsForDay(events, selectedDay);
-
-  // ── attendee suggestions ─────────────────────────────────────────────────
-  function computeAttendeeSuggestions(raw: string) {
-    const token = currentToken(raw);
-    if (token.length < 2) { setAttendeeSuggestions([]); return; }
-    setAttendeeSuggestions(
-      allContacts
-        .filter((c) => c.email.toLowerCase().includes(token) || (c.displayName ?? '').toLowerCase().includes(token))
-        .slice(0, 6)
-    );
-  }
+  const monthDays = useMemo(
+    () => eachDayOfInterval({ start: startOfMonth(anchor), end: endOfMonth(anchor) }),
+    [anchor]
+  );
+  const dayEvents = useMemo(
+    () => eventsForDay(events, selectedDay),
+    [events, selectedDay]
+  );
+  const monthGridDays = useMemo(
+    () => monthDays.map((day) => ({ day, evts: eventsForDay(events, day) })),
+    [monthDays, events]
+  );
 
   // ── editor actions ───────────────────────────────────────────────────────
   function openNewEvent() { setDetailEvent(null); setEditor(newEventEditor(selectedDay)); }
@@ -445,7 +431,7 @@ export default function CalendarScreen() {
       if (editor.id) await calendarApi.updateEvent(editor.id, payload);
       else await calendarApi.createEvent(payload);
       setEditor(null);
-      setAttendeeSuggestions([]);
+      dismissAttendeeSuggestions();
       await loadEvents();
     } catch (e: unknown) {
       Alert.alert('Could not save', e instanceof Error ? e.message : 'Unknown error');
@@ -489,7 +475,7 @@ export default function CalendarScreen() {
     setDeleting(true);
     try {
       await calendarApi.deleteEvent(id, sendUpdates ? { sendUpdates } : undefined);
-      setEditor(null); setDetailEvent(null); setAttendeeSuggestions([]);
+      setEditor(null); setDetailEvent(null); dismissAttendeeSuggestions();
       await loadEvents();
     } catch (e: unknown) {
       Alert.alert('Could not delete', e instanceof Error ? e.message : 'Unknown error');
@@ -561,29 +547,24 @@ export default function CalendarScreen() {
           <View style={styles.monthGridWrap}>
           <CalendarMonthGrid
             leadingEmptyCells={monthDays[0].getDay()}
-            days={monthDays.map((day) => {
-              const dEvts = eventsForDay(events, day);
-              const selected = isSameDay(day, selectedDay);
-              const today = isToday(day);
-              return {
-                date: day,
-                muted: !isSameMonth(day, anchor),
-                selected,
-                today,
-                bottom: (
-                  <>
-                    {dEvts.slice(0, 2).map((e) => (
-                      <View key={e.id} style={[styles.monthChip, { backgroundColor: getEventColor(e) }]}>
-                        <Text style={styles.monthChipText} numberOfLines={1}>{e.summary || '·'}</Text>
-                      </View>
-                    ))}
-                    {dEvts.length > 2 ? (
-                      <Text style={styles.moreText}>+{dEvts.length - 2}</Text>
-                    ) : null}
-                  </>
-                ),
-              };
-            })}
+            days={monthGridDays.map(({ day, evts: dEvts }) => ({
+              date: day,
+              muted: !isSameMonth(day, anchor),
+              selected: isSameDay(day, selectedDay),
+              today: isToday(day),
+              bottom: (
+                <>
+                  {dEvts.slice(0, 2).map((e) => (
+                    <View key={e.id} style={[styles.monthChip, { backgroundColor: getEventColor(e) }]}>
+                      <Text style={styles.monthChipText} numberOfLines={1}>{e.summary || '·'}</Text>
+                    </View>
+                  ))}
+                  {dEvts.length > 2 ? (
+                    <Text style={styles.moreText}>+{dEvts.length - 2}</Text>
+                  ) : null}
+                </>
+              ),
+            }))}
             onPressDay={setSelectedDay}
           />
           </View>
@@ -681,17 +662,17 @@ export default function CalendarScreen() {
         saving={saving}
         deleting={deleting}
         attendeeSuggestions={attendeeSuggestions}
-        onClose={() => { setEditor(null); setAttendeeSuggestions([]); }}
+        onClose={() => { setEditor(null); dismissAttendeeSuggestions(); }}
         onChange={setEditor}
         onPickAttendee={(c) => {
           if (!editor) return;
-          setEditor({ ...editor, attendeesRaw: replaceLastToken(editor.attendeesRaw, c.email) });
-          setAttendeeSuggestions([]);
+          setEditor({ ...editor, attendeesRaw: replaceLastRecipientToken(editor.attendeesRaw, c.email) });
+          dismissAttendeeSuggestions();
         }}
         onAttendeesChange={(raw) => {
           if (!editor) return;
           setEditor({ ...editor, attendeesRaw: raw });
-          computeAttendeeSuggestions(raw);
+          onAttendeeSuggestChange('to', raw);
         }}
         onSave={saveEvent}
         onDelete={confirmDelete}

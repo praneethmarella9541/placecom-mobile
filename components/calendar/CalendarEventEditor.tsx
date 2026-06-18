@@ -140,7 +140,7 @@ export function CalendarEventEditor({
               style={styles.titleInput}
               value={editor.summary}
               onChangeText={(v) => onChange({ ...editor, summary: v })}
-              placeholder="Event title"
+              placeholder="Event Title"
               placeholderTextColor={CalendarTheme.textMuted}
               returnKeyType="done"
               autoFocus={!editor.id}
@@ -619,12 +619,12 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '400',
     color: CalendarTheme.text,
-    paddingHorizontal: 56,
+    paddingHorizontal: 16,
     paddingVertical: 16,
     borderBottomWidth: 2,
     borderBottomColor: CalendarTheme.blue,
   },
-  colorBar: { height: 3, marginHorizontal: 56, borderRadius: 2, marginTop: -2 },
+  colorBar: { height: 3, marginHorizontal: 16, borderRadius: 2, marginTop: -2 },
 
   // Row
   rowContainer: { flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 12 },

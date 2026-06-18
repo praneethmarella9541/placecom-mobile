@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, ScrollView, KeyboardAvoidingView, Platform, BackHandler,
@@ -9,7 +9,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import ComposeRichEditor, { type ComposeEditorHandle } from '../../../components/inbox/ComposeRichEditor';
-import { gmailApi } from '../../../lib/api';
+import { EmailContactSuggestionList } from '../../../components/EmailContactSuggestionList';
+import {
+  RecipientField,
+  type RecipientFieldHandle,
+  type RecipientSuggestion,
+} from '../../../components/RecipientField';
+import { useComposeRecipientSuggestions } from '../../../hooks/useComposeRecipientSuggestions';
+import { filterComposeRecipientSuggestions } from '../../../lib/compose-recipient-filter';
 import { cacheDeleteInboxFolder } from '../../../lib/cache';
 import { markPendingDelete } from '../../../lib/pending-deletes';
 import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
@@ -35,6 +42,7 @@ import {
   normalizeRecipientField,
   parseRecipients,
 } from '../../../lib/recipient-utils';
+import { gmailApi } from '../../../lib/api';
 import { Colors } from '../../../constants/colors';
 import { Gmail } from '../../../constants/gmailTheme';
 
@@ -66,22 +74,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function currentToken(raw: string): string {
-  const parts = raw.split(/[,;]/);
-  return (parts[parts.length - 1] ?? '').trim().toLowerCase();
-}
-
-function replaceLastToken(raw: string, chosen: string): string {
-  const parts = raw.split(/[,;]/);
-  parts[parts.length - 1] = ' ' + chosen;
-  return parts.join(', ').replace(/^,\s*/, '') + ', ';
-}
-
-interface Contact {
-  email: string;
-  displayName?: string;
-}
-
 // 'preparing' = reading file as base64 in background after pick (≤3 MB)
 // 'ready'     = base64 read, ready to send inline
 // 'staged'    = 3–25 MB chunked upload complete; use stagedUploadId on save
@@ -107,8 +99,6 @@ interface PickedFile {
   attachmentId?: string;
   savedMessageId?: string;
 }
-
-type SuggestField = 'to' | 'cc' | 'bcc' | null;
 
 let keySeq = 0;
 function nextKey() { return String(++keySeq); }
@@ -217,16 +207,42 @@ export default function ComposeScreen() {
     }
   }, [draftSaveStatus]);
 
-  const [allContacts, setAllContacts] = useState<Contact[]>([]);
-  const [suggestions, setSuggestions] = useState<Contact[]>([]);
-  const [suggestField, setSuggestField] = useState<SuggestField>(null);
+  const { suggestions: composeRecipientSuggestions } = useComposeRecipientSuggestions();
 
-  // Load contacts
-  useEffect(() => {
-    gmailApi.getContacts()
-      .then((r) => setAllContacts(r.contacts ?? []))
-      .catch(() => {});
-  }, []);
+  type ActiveRecipientField = 'to' | 'cc' | 'bcc';
+  const toFieldRef = useRef<RecipientFieldHandle>(null);
+  const ccFieldRef = useRef<RecipientFieldHandle>(null);
+  const bccFieldRef = useRef<RecipientFieldHandle>(null);
+  const [activeRecipientField, setActiveRecipientField] =
+    useState<ActiveRecipientField>('to');
+  const [recipientDraft, setRecipientDraft] = useState('');
+
+  const filteredSuggestions = useMemo(
+    () => filterComposeRecipientSuggestions(composeRecipientSuggestions, recipientDraft),
+    [composeRecipientSuggestions, recipientDraft]
+  );
+
+  const pickSuggestion = useCallback(
+    (contact: RecipientSuggestion) => {
+      const ref =
+        activeRecipientField === 'cc'
+          ? ccFieldRef
+          : activeRecipientField === 'bcc'
+            ? bccFieldRef
+            : toFieldRef;
+      ref.current?.applySuggestion(contact);
+      setRecipientDraft('');
+    },
+    [activeRecipientField]
+  );
+
+  const onRecipientDraftChange = useCallback(
+    (field: ActiveRecipientField, draft: string) => {
+      setActiveRecipientField(field);
+      setRecipientDraft(draft);
+    },
+    []
+  );
 
   useEffect(() => {
     composeStateRef.current = {
@@ -316,45 +332,6 @@ export default function ComposeScreen() {
         loadingDraftRef.current = false;
       });
   }, [params.draftId]);
-
-  function computeSuggestions(raw: string, field: SuggestField) {
-    const token = currentToken(raw);
-    if (token.length < 2 || allContacts.length === 0) {
-      setSuggestions([]);
-      setSuggestField(null);
-      return;
-    }
-    const matches = allContacts.filter(
-      (c) =>
-        c.email.toLowerCase().includes(token) ||
-        (c.displayName ?? '').toLowerCase().includes(token)
-    ).slice(0, 6);
-    setSuggestions(matches);
-    setSuggestField(matches.length > 0 ? field : null);
-  }
-
-  function onChangeField(value: string, field: SuggestField, setter: (v: string) => void) {
-    setter(value);
-    computeSuggestions(value, field);
-  }
-
-  function pickSuggestion(contact: Contact, field: SuggestField) {
-    const chosen = contact.email.trim();
-    if (field === 'to') setTo((v) => replaceLastToken(v, chosen));
-    else if (field === 'cc') setCc((v) => replaceLastToken(v, chosen));
-    else if (field === 'bcc') setBcc((v) => replaceLastToken(v, chosen));
-    setSuggestions([]);
-    setSuggestField(null);
-  }
-
-  function blurRecipientField(field: SuggestField, raw: string, setter: (v: string) => void) {
-    setTimeout(() => {
-      setSuggestions([]);
-      setSuggestField(null);
-      const normalized = normalizeRecipientField(raw);
-      if (normalized !== raw.trim()) setter(normalized);
-    }, 150);
-  }
 
   async function uploadToDrive(file: PickedFile) {
     const key = file.key;
@@ -689,19 +666,16 @@ export default function ComposeScreen() {
     router.back();
   }
 
-  async function discardAndClose() {
+  function discardAndClose() {
     draftSaverRef.current.cancelPending();
     const idToDelete = draftId ?? draftSaverRef.current.getKnownDraftId();
     if (idToDelete) {
-      // Mark as pending-delete BEFORE awaiting Gmail — the inbox screen
-      // already filters by this set, so the row vanishes immediately on
-      // back-navigation even while Gmail catches up.
       markPendingDelete(idToDelete);
-      // Instantly decrement the draft badge.
       bumpDraftCount(-1);
-      try { await gmailApi.deleteDraft(idToDelete); } catch { /* non-fatal */ }
-      // Bust the drafts cache so the inbox refetches on focus
-      cacheDeleteInboxFolder('drafts');
+      // Fire-and-forget — markPendingDelete already hides the row optimistically.
+      gmailApi.deleteDraft(idToDelete)
+        .then(() => cacheDeleteInboxFolder('drafts'))
+        .catch(() => {});
     }
     router.back();
   }
@@ -812,19 +786,16 @@ export default function ComposeScreen() {
             keyboardShouldPersistTaps="always"
             nestedScrollEnabled
           >
-            <View style={styles.fieldRow}>
-              <Text style={styles.fieldLabel}>To</Text>
-              <TextInput
-                style={styles.fieldInput}
+            <View style={styles.recipientRow}>
+              <Text style={styles.recipientLabel}>To</Text>
+              <RecipientField
+                ref={toFieldRef}
                 value={to}
-                onChangeText={(v) => onChangeField(v, 'to', setTo)}
-                onFocus={() => computeSuggestions(to, 'to')}
-                onBlur={() => blurRecipientField('to', to, setTo)}
+                onChange={setTo}
                 placeholder="Recipients"
-                placeholderTextColor={Gmail.textMuted}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
+                onFocus={() => setActiveRecipientField('to')}
+                onDraftChange={(draft) => onRecipientDraftChange('to', draft)}
+                style={styles.recipientFieldFlex}
               />
               <TouchableOpacity onPress={() => setShowCcBcc((v) => !v)}>
                 <Text style={styles.ccBccToggle}>{showCcBcc ? 'Hide' : 'Cc/Bcc'}</Text>
@@ -833,41 +804,44 @@ export default function ComposeScreen() {
 
             {showCcBcc && (
               <>
-                <View style={styles.fieldRow}>
-                  <Text style={styles.fieldLabel}>Cc</Text>
-                  <TextInput
-                    style={styles.fieldInput}
+                <View style={styles.recipientRow}>
+                  <Text style={styles.recipientLabel}>Cc</Text>
+                  <RecipientField
+                    ref={ccFieldRef}
                     value={cc}
-                    onChangeText={(v) => onChangeField(v, 'cc', setCc)}
-                    onFocus={() => computeSuggestions(cc, 'cc')}
-                    onBlur={() => blurRecipientField('cc', cc, setCc)}
+                    onChange={setCc}
                     placeholder="Cc"
-                    placeholderTextColor={Gmail.textMuted}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoCorrect={false}
+                    onFocus={() => setActiveRecipientField('cc')}
+                    onDraftChange={(draft) => onRecipientDraftChange('cc', draft)}
+                    style={styles.recipientFieldFlex}
                   />
                 </View>
 
-                <View style={styles.fieldRow}>
-                  <Text style={styles.fieldLabel}>Bcc</Text>
-                  <TextInput
-                    style={styles.fieldInput}
+                <View style={styles.recipientRow}>
+                  <Text style={styles.recipientLabel}>Bcc</Text>
+                  <RecipientField
+                    ref={bccFieldRef}
                     value={bcc}
-                    onChangeText={(v) => onChangeField(v, 'bcc', setBcc)}
-                    onFocus={() => computeSuggestions(bcc, 'bcc')}
-                    onBlur={() => blurRecipientField('bcc', bcc, setBcc)}
+                    onChange={setBcc}
                     placeholder="Bcc"
-                    placeholderTextColor={Gmail.textMuted}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoCorrect={false}
+                    onFocus={() => setActiveRecipientField('bcc')}
+                    onDraftChange={(draft) => onRecipientDraftChange('bcc', draft)}
+                    style={styles.recipientFieldFlex}
                   />
                 </View>
               </>
             )}
+          </ScrollView>
 
-            <View style={styles.fieldRow}>
+          {recipientDraft.trim().length > 0 && filteredSuggestions.length > 0 ? (
+            <EmailContactSuggestionList
+              suggestions={filteredSuggestions}
+              onPick={pickSuggestion}
+              maxHeight={220}
+            />
+          ) : null}
+
+          <View style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>Subject</Text>
               <TextInput
                 style={styles.fieldInput}
@@ -885,14 +859,6 @@ export default function ComposeScreen() {
                 ))}
               </View>
             )}
-          </ScrollView>
-
-          {suggestField && suggestions.length > 0 && (
-            <SuggestionList
-              suggestions={suggestions}
-              onPick={(c) => pickSuggestion(c, suggestField)}
-            />
-          )}
         </View>
 
         <KeyboardAvoidingView
@@ -978,41 +944,6 @@ function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => 
   );
 }
 
-function SuggestionList({ suggestions, onPick }: { suggestions: Contact[]; onPick: (c: Contact) => void }) {
-  return (
-    <ScrollView
-      style={styles.suggestionBox}
-      keyboardShouldPersistTaps="always"
-      nestedScrollEnabled
-    >
-      {suggestions.map((c) => (
-        <TouchableOpacity
-          key={c.email}
-          style={styles.suggestionRow}
-          onPress={() => onPick(c)}
-          activeOpacity={0.7}
-        >
-          <View style={styles.suggestionAvatar}>
-            <Text style={styles.suggestionAvatarText}>
-              {((c.displayName ?? c.email).charAt(0) || '?').toUpperCase()}
-            </Text>
-          </View>
-          <View style={styles.suggestionText}>
-            {c.displayName ? (
-              <>
-                <Text style={styles.suggestionName} numberOfLines={1}>{c.displayName}</Text>
-                <Text style={styles.suggestionEmail} numberOfLines={1}>{c.email}</Text>
-              </>
-            ) : (
-              <Text style={styles.suggestionName} numberOfLines={1}>{c.email}</Text>
-            )}
-          </View>
-        </TouchableOpacity>
-      ))}
-    </ScrollView>
-  );
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Gmail.bg },
   editorKeyboardAvoid: { flex: 1, minHeight: 0 },
@@ -1084,11 +1015,43 @@ const styles = StyleSheet.create({
     zIndex: 40,
     elevation: 16,
     backgroundColor: Gmail.bg,
+    overflow: 'visible',
   },
-  recipientsScroll: { flexGrow: 0, maxHeight: 220 },
-  fieldRow: {
+  recipientsScroll: { flexGrow: 0, maxHeight: 180 },
+  recipientRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Gmail.divider,
+    gap: 8,
+  },
+  recipientLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: Gmail.textSecondary,
+    minWidth: 28,
+  },
+  recipientFieldFlex: {
+    flex: 1,
+    minWidth: 0,
+  },
+  fieldBlock: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Gmail.divider,
+  },
+  fieldHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  fieldRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
@@ -1096,10 +1059,10 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   fieldLabel: {
-    width: 56,
     fontSize: 14,
     fontWeight: '500',
     color: Gmail.textSecondary,
+    paddingTop: 2,
   },
   fieldInput: {
     flex: 1,

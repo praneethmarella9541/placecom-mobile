@@ -16,6 +16,7 @@ import { supabase } from '../../../lib/supabase';
 import { gmailApi, type GmailLabel, type GmailMessage } from '../../../lib/api';
 import { readFileAsBase64 } from '../../../lib/gmail-send-direct';
 import { queueReplyMailSend } from '../../../lib/mail-outbox';
+import { peekGmailLabelsCache } from '../../../lib/gmail-labels-cache';
 import { getCachedThread, openMailThread } from '../../../lib/mail-thread-prefetch';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
@@ -165,8 +166,13 @@ export default function ThreadDetailScreen() {
       .finally(() => setLoading(false));
   }, [id, userId]);
 
-  // Labels list — load once. Cached server-side so this is cheap.
+  // Labels — reuse inbox session cache when available.
   useEffect(() => {
+    const cached = peekGmailLabelsCache();
+    if (cached?.length) {
+      setAllLabels(cached);
+      return;
+    }
     gmailApi.listLabels()
       .then((r) => setAllLabels(r.labels ?? []))
       .catch(() => { /* non-fatal */ });

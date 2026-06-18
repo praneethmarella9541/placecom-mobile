@@ -1,4 +1,5 @@
 import type { GmailFolder } from './api';
+import { traceExternalApiRequest } from './api-debug';
 
 /** Same host as other direct Gmail calls in this app. */
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -25,6 +26,8 @@ const MAILBOX_LABEL_IDS = [
   'SPAM',
   'TRASH',
 ] as const;
+
+export const MAILBOX_LABEL_ID_LIST: readonly string[] = MAILBOX_LABEL_IDS;
 
 const FOLDER_LABEL_ID: Record<GmailFolder, string> = {
   inbox: 'INBOX',
@@ -85,9 +88,13 @@ function mergeLabelCounts(
 }
 
 async function gmailFetch(accessToken: string, path: string): Promise<Response> {
-  return fetch(`${GMAIL_API}${path}`, {
+  const url = `${GMAIL_API}${path}`;
+  const trace = traceExternalApiRequest('GET', url, { tag: 'gmail-labels' });
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+  trace.finish(res.status, res.ok);
+  return res;
 }
 
 async function fetchGmailLabelById(
@@ -154,9 +161,10 @@ export type MailboxCountsLoader = {
   extraLabelIds?: string[];
 };
 
-/** Backend + direct Gmail, merged — keeps Inbox/Sent/Drafts in sync with Gmail. */
+/** Folder badge counts via backend folder-counts (same source as web). */
 export async function loadMailboxLabelCounts(
-  loader: MailboxCountsLoader
+  loader: MailboxCountsLoader,
+  opts?: { includeDirectGmail?: boolean }
 ): Promise<Record<string, LabelCount>> {
   const mailboxIds = new Set<string>(MAILBOX_LABEL_IDS);
   const ids = [
@@ -170,6 +178,8 @@ export async function loadMailboxLabelCounts(
   if (backend?.counts) {
     merged = mergeLabelCounts(merged, backend.counts);
   }
+
+  if (!opts?.includeDirectGmail) return merged;
 
   try {
     const { accessToken } = await loader.getGoogleToken();

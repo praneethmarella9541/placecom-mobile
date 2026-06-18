@@ -186,7 +186,7 @@ export function CallsContactsTab({ onCall }: Props) {
               style={styles.input}
               value={phoneInput}
               onChangeText={setPhoneInput}
-              placeholder="+91 80561 01540"
+              placeholder="+91 98765 43210"
               placeholderTextColor={CallsTheme.textMuted}
               keyboardType="phone-pad"
             />

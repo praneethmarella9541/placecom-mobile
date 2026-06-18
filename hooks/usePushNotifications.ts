@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Platform } from 'react-native';
+import { Platform, DeviceEventEmitter } from 'react-native';
 import { router } from 'expo-router';
 import type { Session } from '@supabase/supabase-js';
 import { markIncomingCallNotified } from '../lib/incoming-call-alerts';
@@ -71,6 +71,9 @@ export function usePushNotifications(session: Session | null) {
       const data = notification.request.content.data as Record<string, unknown> | undefined;
       if (data?.type === 'incoming_call' && typeof data.callSid === 'string' && data.callSid) {
         markIncomingCallNotified(data.callSid);
+      }
+      if (data?.type === 'whatsapp') {
+        DeviceEventEmitter.emit('wa:newMessage', { peer: data.peer });
       }
     });
 

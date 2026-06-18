@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,10 @@ import {
 } from 'react-native';
 import type { GmailFolder, GmailLabel, GmailThreadListItem } from '../../lib/api';
 import { ingestCorrespondentThreads } from '../../lib/correspondent-rank';
+import {
+  getComposeRecipientSuggestions,
+  ingestThreadDerivedEmails,
+} from '../../lib/email-contact-suggestions';
 import { gmailApi } from '../../lib/api';
 import { Gmail, avatarColorForName } from '../../constants/gmailTheme';
 import {
@@ -22,10 +26,15 @@ import {
   labelSearchValue,
 } from '../../lib/gmail-labels';
 import {
-  suggestContactsForOperator,
   type Contact,
   type ContactOperator,
 } from '../../lib/gmail-contact-suggestions';
+import {
+  CONTACT_SEARCH_DEBOUNCE_MS,
+  filterRecipientSuggestions,
+  loadRecipientSuggestions,
+  resolveSearchContactSuggestions,
+} from '../../lib/email-contact-suggestions';
 import {
   GMAIL_FILTER_CHIPS,
   ATTACHMENT_FILTER_OPTIONS,
@@ -89,11 +98,13 @@ export function GmailSearchChips({
 }: Props) {
   const [openMenu, setOpenMenu] = useState<GmailFilterChipId | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [sentThreads, setSentThreads] = useState<GmailThreadListItem[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
   const [menuQuery, setMenuQuery] = useState('');
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const { height: windowHeight } = useWindowDimensions();
+  const baseContactsRef = useRef<Contact[]>([]);
+  const contactSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contactRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!visible) {
@@ -102,6 +113,9 @@ export function GmailSearchChips({
       onChipMenuOpenChange?.(false);
       return;
     }
+    void loadRecipientSuggestions().then(() => {
+      baseContactsRef.current = getComposeRecipientSuggestions();
+    });
   }, [visible, onChipMenuOpenChange]);
 
   useEffect(() => {
@@ -112,32 +126,48 @@ export function GmailSearchChips({
     if (!visible || !openMenu || !CONTACT_OPERATORS.has(openMenu as ContactOperator)) {
       return;
     }
-    let cancelled = false;
+
     const q = menuQuery.trim();
-    const timer = setTimeout(() => {
+    let cancelled = false;
+
+    if (!q) {
+      setContacts([]);
+      setContactsLoading(false);
+      return;
+    }
+
+    setContacts(filterRecipientSuggestions(baseContactsRef.current, q, 50));
+
+    if (contactSearchTimerRef.current) clearTimeout(contactSearchTimerRef.current);
+    contactSearchTimerRef.current = setTimeout(() => {
+      if (menuQuery.trim() !== q) return;
+      const id = ++contactRequestIdRef.current;
       setContactsLoading(true);
-      gmailApi
-        .getContacts(q.length >= 2 ? { q } : undefined)
-        .then((r) => {
-          if (!cancelled) setContacts(r.contacts ?? []);
+      void resolveSearchContactSuggestions(q, baseContactsRef.current, 50)
+        .then((results) => {
+          if (!cancelled && id === contactRequestIdRef.current) setContacts(results);
         })
         .catch(() => {
-          if (!cancelled) setContacts([]);
+          if (!cancelled && id === contactRequestIdRef.current) {
+            setContacts(filterRecipientSuggestions(baseContactsRef.current, q, 50));
+          }
         })
         .finally(() => {
-          if (!cancelled) setContactsLoading(false);
+          if (!cancelled && id === contactRequestIdRef.current) setContactsLoading(false);
         });
-    }, q.length >= 2 ? 280 : 0);
+    }, CONTACT_SEARCH_DEBOUNCE_MS);
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      if (contactSearchTimerRef.current) clearTimeout(contactSearchTimerRef.current);
     };
   }, [visible, openMenu, menuQuery]);
 
   useEffect(() => {
     if (threads.length > 0) {
       ingestCorrespondentThreads(threads, folder);
+      ingestThreadDerivedEmails(threads);
+      baseContactsRef.current = getComposeRecipientSuggestions();
     }
   }, [threads, folder]);
 
@@ -155,12 +185,9 @@ export function GmailSearchChips({
       .then((r) => {
         if (cancelled) return;
         const list = r.threads ?? [];
-        setSentThreads(list);
         ingestCorrespondentThreads(list, 'sent');
       })
-      .catch(() => {
-        if (!cancelled) setSentThreads([]);
-      });
+      .catch(() => { /* non-fatal */ });
     return () => {
       cancelled = true;
     };
@@ -198,16 +225,7 @@ export function GmailSearchChips({
     return Math.max(140, Math.min(base, available));
   }, [keyboardHeight, menuUsesKeyboard, windowHeight]);
 
-  const filteredContacts = useMemo(() => {
-    if (!openMenu || !CONTACT_OPERATORS.has(openMenu as ContactOperator)) return [];
-    return suggestContactsForOperator({
-      operator: openMenu as ContactOperator,
-      query: menuQuery,
-      apiContacts: contacts,
-      threads,
-      sentThreads,
-    });
-  }, [openMenu, menuQuery, contacts, threads, sentThreads]);
+  const filteredContacts = contacts;
 
   const filteredLabels = useMemo(() => {
     const q = menuQuery.trim().toLowerCase();

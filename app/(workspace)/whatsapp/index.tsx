@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   View,
@@ -9,6 +9,8 @@ import {
   RefreshControl,
   ActivityIndicator,
   TextInput,
+  AppState,
+  DeviceEventEmitter,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
@@ -33,7 +35,6 @@ import { prefetchWhatsAppThreads, warmWhatsAppThread } from '../../../lib/whatsa
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 
-const LIST_POLL_MS = 4000;
 const convCacheKey = (userId: string) => `wa_conv_list_v2:${userId}`;
 
 export default function WhatsAppScreen() {
@@ -131,16 +132,35 @@ export default function WhatsAppScreen() {
     }
   }, [applyConversationList, status]);
 
+  // Stable ref so the Supabase callback always calls the latest version
+  // without triggering channel teardown/recreate on every status change.
+  const refreshConversationsRef = useRef(refreshConversations);
+  useEffect(() => { refreshConversationsRef.current = refreshConversations; }, [refreshConversations]);
+
   useFocusEffect(
     useCallback(() => {
       if (!session) return;
       void refreshConversations();
-      const timer = setInterval(() => {
-        void refreshConversations();
-      }, LIST_POLL_MS);
-      return () => clearInterval(timer);
     }, [session, refreshConversations])
   );
+
+
+  // Foreground push notification: refresh list immediately when a WhatsApp
+  // message arrives while the app is open.
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('wa:newMessage', () => {
+      void refreshConversationsRef.current();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Fallback: refresh when app returns to foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshConversationsRef.current();
+    });
+    return () => sub.remove();
+  }, []);
 
   const filtered = conversations.filter((c) => {
     const q = search.toLowerCase().trim();
@@ -239,6 +259,11 @@ export default function WhatsAppScreen() {
               displayName={displayNameForPeer(item.peer_e164, contacts)}
               onPress={() => {
                 if (userId) void warmWhatsAppThread(userId, item.peer_e164);
+                // Clear badge immediately so it's gone when the user comes back,
+                // without waiting for the next refreshConversations round-trip.
+                setConversations(prev =>
+                  prev.map(c => c.peer_e164 === item.peer_e164 ? { ...c, unread_count: 0 } : c)
+                );
                 router.push(`/(workspace)/whatsapp/${encodeURIComponent(item.peer_e164)}` as any);
               }}
             />
