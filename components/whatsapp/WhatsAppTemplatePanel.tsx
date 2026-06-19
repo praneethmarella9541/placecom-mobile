@@ -5,6 +5,7 @@ import {
   TextInput,
   TouchableOpacity,
   Switch,
+  ScrollView,
   StyleSheet,
   LayoutAnimation,
   Platform,
@@ -140,7 +141,12 @@ export function WhatsAppTemplatePanel({
 
       {/* ── Expanded body ───────────────────────────────────────────────── */}
       {open ? (
-        <View style={styles.body}>
+        <ScrollView
+          style={styles.bodyScroll}
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           {/* Template picker (only when there are multiple templates) */}
           {templates.length > 1 ? (
             <View style={styles.section}>
@@ -228,7 +234,7 @@ export function WhatsAppTemplatePanel({
               style={styles.toggle}
             />
           </View>
-        </View>
+        </ScrollView>
       ) : null}
     </View>
   );
@@ -350,9 +356,12 @@ const styles = StyleSheet.create({
   },
 
   // ── Expanded body ──────────────────────────────────────────────────────
-  body: {
+  bodyScroll: {
+    maxHeight: 280,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.border,
+  },
+  body: {
     paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 12,

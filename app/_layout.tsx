@@ -3,6 +3,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthContext, useAuth, useAuthState } from '../hooks/useAuth';
 import { useIncomingCallAlerts } from '../hooks/useIncomingCallAlerts';
@@ -11,6 +12,14 @@ import AppToastHost from '../components/AppToastHost';
 import LoadingScreen from '../components/LoadingScreen';
 import { OAuthLinkingHandler } from '../components/OAuthLinkingHandler';
 import { installApiDebugConsoleHelper } from '../lib/api-debug';
+import { isExpoGo } from '../lib/expo-runtime';
+
+// keyboard-controller ships native code (unavailable in Expo Go); skip its provider
+// there and let the system handle the keyboard. Real builds get the native provider.
+function KeyboardLayoutProvider({ children }: { children: React.ReactNode }) {
+  if (isExpoGo()) return <>{children}</>;
+  return <KeyboardProvider>{children}</KeyboardProvider>;
+}
 
 // iOS: dismiss Safari auth sheet when the app opens via thenucleus:// callback.
 // Must run at the root — not only on the login screen.
@@ -48,20 +57,22 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <StatusBar style="auto" />
-        <AuthContext.Provider value={auth}>
-          <AuthGuard>
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="auth" />
-              <Stack.Screen name="(workspace)" />
-            </Stack>
-            <AppToastHost />
-            <OAuthLinkingHandler />
-          </AuthGuard>
-        </AuthContext.Provider>
-      </SafeAreaProvider>
+      <KeyboardLayoutProvider>
+        <SafeAreaProvider>
+          <StatusBar style="auto" />
+          <AuthContext.Provider value={auth}>
+            <AuthGuard>
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="(auth)" />
+                <Stack.Screen name="auth" />
+                <Stack.Screen name="(workspace)" />
+              </Stack>
+              <AppToastHost />
+              <OAuthLinkingHandler />
+            </AuthGuard>
+          </AuthContext.Provider>
+        </SafeAreaProvider>
+      </KeyboardLayoutProvider>
     </GestureHandlerRootView>
   );
 }

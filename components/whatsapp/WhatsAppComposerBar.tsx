@@ -89,7 +89,8 @@ export function WhatsAppComposerBar({
   const pendingPickerRef = useRef<AttachPickerKind | null>(null);
   const [inputKey, setInputKey] = useState(0);
 
-  // Parent passes safe-area + keyboard inset (Android pan / iOS KeyboardAvoidingView).
+  // Resting safe-area inset; KeyboardAvoidingView (keyboard-controller) lifts the
+  // bar above the keyboard, so this collapses to 0 while the keyboard is up.
   const bottomPad = bottomInset;
   const hasAttachments = attachments.length > 0;
 
