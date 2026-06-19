@@ -42,6 +42,23 @@ export function invalidateReadAtCache(userId?: string): void {
   else _readAtCache.clear();
 }
 
+/**
+ * Synchronously mark a thread as read in the optimistic cache.
+ * Call this on the list screen when the user taps a conversation so the badge
+ * is already cleared before refreshConversations() completes — avoids the flash
+ * caused by markWhatsAppThreadRead's async auth.getUser() delay.
+ */
+export function optimisticallyMarkThreadRead(peer: string): void {
+  const canonical = canonicalWhatsAppPeer(peer);
+  if (!canonical) return;
+  const at = new Date().toISOString();
+  _optimisticReadAt[canonical] = at;
+  for (const alias of peerKeysForQuery(canonical)) {
+    _optimisticReadAt[alias] = at;
+  }
+  invalidateReadAtCache();
+}
+
 export function clearWhatsAppUnreadSessionState(): void {
   for (const key of Object.keys(_optimisticReadAt)) {
     delete _optimisticReadAt[key];

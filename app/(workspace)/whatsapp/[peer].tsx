@@ -38,7 +38,6 @@ import {
   previewOutboundBody,
 } from '../../../lib/whatsapp-messages';
 import { markWhatsAppThreadRead } from '../../../lib/whatsapp-unread';
-import { normalizeWhatsAppMessages } from '../../../lib/whatsapp-message-normalize';
 import { WhatsAppMessageBubble } from '../../../components/whatsapp/WhatsAppMessageBubble';
 import { WhatsAppComposerBar } from '../../../components/whatsapp/WhatsAppComposerBar';
 import type { PendingAttachment } from '../../../components/whatsapp/WhatsAppMediaAttachmentPreview';
@@ -62,9 +61,15 @@ import { Colors } from '../../../constants/colors';
 import {
   getMemoryThreadMessages,
   readThreadCache,
+  warmWhatsAppThread,
   writeThreadCache,
 } from '../../../lib/whatsapp-thread-cache';
 import { normalizeOutboundImageAsset } from '../../../lib/whatsapp-outbound-media';
+import {
+  ChatScreenWrapper,
+  chatComposerBottomInset,
+  chatScreenWrapperProps,
+} from '../../../lib/android-keyboard-layout';
 
 // ─── Date separator helpers ───────────────────────────────────────────────────
 
@@ -283,10 +288,12 @@ export default function WhatsAppConversationScreen() {
   const loadMessages = useCallback(
     async (opts?: { silent?: boolean }) => {
       try {
-        const data = await whatsappApi.getMessages(peerDecoded);
-        const incoming = normalizeWhatsAppMessages(
-          (data.messages ?? []) as WhatsAppMessage[]
-        );
+        // Route through the thread-cache inflight map so if warmWhatsAppThread
+        // already started a fetch for this peer (e.g., triggered by a push
+        // notification), we await the same promise instead of making a second
+        // concurrent API call.
+        const incoming =
+          (await warmWhatsAppThread(userId ?? '', peerDecoded, { force: true })) ?? [];
         if (opts?.silent) {
           setMessages((prev) => {
             if (!hasNewWhatsAppMessages(prev, incoming)) return prev;
@@ -424,6 +431,9 @@ export default function WhatsAppConversationScreen() {
     useCallback(() => {
       void markWhatsAppThreadRead(peerDecoded, new Date().toISOString());
       void loadMessages({ silent: true });
+      return () => {
+        Keyboard.dismiss();
+      };
     }, [loadMessages, peerDecoded])
   );
 
@@ -700,14 +710,21 @@ export default function WhatsAppConversationScreen() {
     Alert.alert('Saved', 'Contact name updated.');
   }
 
+  const composerBottomInset = chatComposerBottomInset(keyboardHeight, insets.bottom);
+
   return (
-    <KeyboardAvoidingView
+    <ChatScreenWrapper
       style={[styles.container, { paddingTop: insets.top }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={0}
+      {...chatScreenWrapperProps()}
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <TouchableOpacity
+          onPress={() => {
+            Keyboard.dismiss();
+            router.back();
+          }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
           <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
         <View style={styles.headerAvatar}>
@@ -981,7 +998,7 @@ export default function WhatsAppConversationScreen() {
         sending={false}
         onSend={sendWithReply}
         onSendAttachments={sendAttachments}
-        bottomInset={keyboardHeight > 0 ? 0 : insets.bottom}
+        bottomInset={composerBottomInset}
         onEmojiOpenChange={setEmojiOpen}
       />
 
@@ -1038,7 +1055,7 @@ export default function WhatsAppConversationScreen() {
           </View>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </ChatScreenWrapper>
   );
 }
 

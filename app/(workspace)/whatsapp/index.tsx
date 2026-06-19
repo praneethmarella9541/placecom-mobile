@@ -29,7 +29,7 @@ import {
   peerInitials,
 } from '../../../lib/whatsapp-utils';
 import { savedContactsWithoutConversation } from '../../../lib/whatsapp-contacts';
-import { attachUnreadCounts } from '../../../lib/whatsapp-unread';
+import { attachUnreadCounts, optimisticallyMarkThreadRead } from '../../../lib/whatsapp-unread';
 import { getWhatsAppPrefetchCache } from '../../../lib/workspace-feature-prefetch';
 import { prefetchWhatsAppThreads, warmWhatsAppThread } from '../../../lib/whatsapp-thread-cache';
 import { useAuth } from '../../../hooks/useAuth';
@@ -49,6 +49,11 @@ export default function WhatsAppScreen() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
+
+  // peer_e164 → timestamp (ms) when the user tapped to read. Used to preserve
+  // the cleared badge even if the server still returns unread_count > 0 (e.g.
+  // wa_thread_reads lag or phone-number canonical mismatch).
+  const clearedPeersRef = useRef<Map<string, number>>(new Map());
 
   // Load cached conversations + login prefetch immediately so the list is instant
   useEffect(() => {
@@ -78,14 +83,30 @@ export default function WhatsAppScreen() {
     ) => {
       const line = businessLine ?? statusData?.businessLine ?? null;
       const withUnread = line ? await attachUnreadCounts(convs, line) : convs;
-      setConversations(withUnread);
+
+      // Preserve optimistic badge clears. If the user tapped into a conversation
+      // and the server still shows it as unread (DB lag / canonical mismatch),
+      // keep unread_count at 0 — unless a genuinely newer message has arrived.
+      const merged = withUnread.map((c) => {
+        const clearedAt = clearedPeersRef.current.get(c.peer_e164);
+        if (clearedAt !== undefined && (c.unread_count ?? 0) > 0) {
+          const lastAt = c.last_at ?? c.last_message_at;
+          const lastTs = lastAt ? new Date(lastAt).getTime() : 0;
+          if (lastTs <= clearedAt) return { ...c, unread_count: 0 };
+          // A new message arrived after the clear — let the badge show
+          clearedPeersRef.current.delete(c.peer_e164);
+        }
+        return c;
+      });
+
+      setConversations(merged);
       if (statusData) setStatus(statusData);
       // Persist to cache for next cold open
       if (userId) {
-        AsyncStorage.setItem(convCacheKey(userId), JSON.stringify(withUnread)).catch(() => {});
+        AsyncStorage.setItem(convCacheKey(userId), JSON.stringify(merged)).catch(() => {});
         void prefetchWhatsAppThreads(
           userId,
-          withUnread.map((c) => c.peer_e164),
+          merged.map((c) => c.peer_e164),
           { limit: 24 }
         );
       }
@@ -137,19 +158,33 @@ export default function WhatsAppScreen() {
   const refreshConversationsRef = useRef(refreshConversations);
   useEffect(() => { refreshConversationsRef.current = refreshConversations; }, [refreshConversations]);
 
+  // Set true when the user taps a conversation. useFocusEffect reads and
+  // clears it to skip the refresh on return — the optimistic unread_count: 0
+  // is already in state, so a refresh would only cause a flash.
+  const returnedFromChatRef = useRef(false);
+
   useFocusEffect(
     useCallback(() => {
       if (!session) return;
-      void refreshConversations();
-    }, [session, refreshConversations])
+      if (returnedFromChatRef.current) {
+        returnedFromChatRef.current = false;
+        return;
+      }
+      void refreshConversationsRef.current();
+    }, [session])
   );
 
-
-  // Foreground push notification: refresh list immediately when a WhatsApp
-  // message arrives while the app is open.
+  // Foreground push notification: refresh list and pre-warm the thread so
+  // opening the chat is fast.
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('wa:newMessage', () => {
-      void refreshConversationsRef.current();
+    const sub = DeviceEventEmitter.addListener('wa:newMessage', (payload: { peer?: unknown }) => {
+      // Delay the list refresh — the push notification fires before the server
+      // has finished updating the conversation row, so an immediate fetch would
+      // return the previous last_body. 900 ms is enough in practice.
+      setTimeout(() => void refreshConversationsRef.current(), 900);
+      if (userId && typeof payload?.peer === 'string' && payload.peer) {
+        void warmWhatsAppThread(userId, payload.peer);
+      }
     });
     return () => sub.remove();
   }, []);
@@ -259,11 +294,20 @@ export default function WhatsAppScreen() {
               displayName={displayNameForPeer(item.peer_e164, contacts)}
               onPress={() => {
                 if (userId) void warmWhatsAppThread(userId, item.peer_e164);
-                // Clear badge immediately so it's gone when the user comes back,
-                // without waiting for the next refreshConversations round-trip.
-                setConversations(prev =>
-                  prev.map(c => c.peer_e164 === item.peer_e164 ? { ...c, unread_count: 0 } : c)
-                );
+                clearedPeersRef.current.set(item.peer_e164, Date.now());
+                optimisticallyMarkThreadRead(item.peer_e164);
+                setConversations(prev => {
+                  const updated = prev.map(c =>
+                    c.peer_e164 === item.peer_e164 ? { ...c, unread_count: 0 } : c
+                  );
+                  // Persist immediately so if the screen unmounts and remounts the
+                  // AsyncStorage cache never shows a stale badge.
+                  if (userId) {
+                    AsyncStorage.setItem(convCacheKey(userId), JSON.stringify(updated)).catch(() => {});
+                  }
+                  return updated;
+                });
+                returnedFromChatRef.current = true;
                 router.push(`/(workspace)/whatsapp/${encodeURIComponent(item.peer_e164)}` as any);
               }}
             />

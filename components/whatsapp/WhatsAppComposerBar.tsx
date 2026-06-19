@@ -9,6 +9,8 @@ import {
   Alert,
   Keyboard,
   InteractionManager,
+  Platform,
+  BackHandler,
   type TextInput as RNTextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -85,10 +87,9 @@ export function WhatsAppComposerBar({
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const uploadGenRef = useRef<Record<string, number>>({});
   const pendingPickerRef = useRef<AttachPickerKind | null>(null);
+  const [inputKey, setInputKey] = useState(0);
 
-  // The screen wraps this bar in a KeyboardAvoidingView, so the system keyboard
-  // offset is handled there. Here we only reserve the safe-area inset — adding
-  // the keyboard height again would double-offset the bar on Android (adjustResize).
+  // Parent passes safe-area + keyboard inset (Android pan / iOS KeyboardAvoidingView).
   const bottomPad = bottomInset;
   const hasAttachments = attachments.length > 0;
 
@@ -125,6 +126,39 @@ export function WhatsAppComposerBar({
   function insertEmoji(emoji: string) {
     onDraftChange(draft + emoji);
   }
+
+  function dismissComposer() {
+    setAttachSheetOpen(false);
+    setEmojiPanel(false);
+    inputRef.current?.blur();
+    Keyboard.dismiss();
+  }
+
+  function resetInputField() {
+    dismissComposer();
+    setInputKey((k) => k + 1);
+  }
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const onHardwareBack = () => {
+      if (attachSheetOpen) {
+        setAttachSheetOpen(false);
+        return true;
+      }
+      if (emojiOpen) {
+        setEmojiPanel(false);
+        return true;
+      }
+      if (inputRef.current?.isFocused?.()) {
+        resetInputField();
+        return true;
+      }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+    return () => sub.remove();
+  }, [attachSheetOpen, emojiOpen, setEmojiPanel]);
 
   function startUpload(item: PendingAttachment) {
     const gen = (uploadGenRef.current[item.id] ?? 0) + 1;
@@ -408,7 +442,7 @@ export function WhatsAppComposerBar({
     if (needsTemplate) {
       if (varsForSend.some((v) => !v.trim())) return;
       void onSend({ messageType: 'template', text: draft.trim() });
-      setEmojiPanel(false);
+      resetInputField();
       return;
     }
 
@@ -420,14 +454,14 @@ export function WhatsAppComposerBar({
       }
       setAttachmentsState([]);
       onDraftChange('');
-      setEmojiPanel(false);
+      resetInputField();
       onSendAttachments?.(items, caption);
       return;
     }
 
     if (!draft.trim()) return;
     void onSend({ messageType: 'text', text: draft.trim() });
-    setEmojiPanel(false);
+    resetInputField();
   }
 
   const canSend = needsTemplate
@@ -496,6 +530,7 @@ export function WhatsAppComposerBar({
           {/* ── Middle: text input ─────────────────────────────────── */}
           {!needsTemplate && !hasAttachments ? (
             <TextInput
+              key={inputKey}
               ref={inputRef}
               style={styles.input}
               value={draft}

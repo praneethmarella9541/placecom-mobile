@@ -16,6 +16,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const base = appJson.expo as ExpoConfig;
   const android = { ...base.android };
 
+  // Edge-to-edge production APKs need pan + manual keyboard insets. Expo Go and
+  // local dev keep resize (see lib/android-keyboard-layout.ts).
+  const easProfile = process.env.EAS_BUILD_PROFILE;
+  const androidManualKeyboard =
+    easProfile === 'production' ||
+    easProfile === 'production-apk' ||
+    easProfile === 'preview';
+
+  android.softwareKeyboardLayoutMode = androidManualKeyboard ? 'pan' : 'resize';
+
   if (fs.existsSync('./google-services.json')) {
     android.googleServicesFile = './google-services.json';
   }
@@ -34,5 +44,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...base,
     version: readAppVersion(),
     android,
+    extra: {
+      ...base.extra,
+      androidManualKeyboard,
+    },
   };
 };

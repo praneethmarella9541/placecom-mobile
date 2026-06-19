@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Alert,
+  TextInput, ActivityIndicator, Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,11 +9,18 @@ import { format } from 'date-fns';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { smsApi } from '../../../lib/api';
 import { Colors } from '../../../constants/colors';
+import { useKeyboardHeight } from '../../../hooks/useKeyboardHeight';
+import {
+  ChatScreenWrapper,
+  chatComposerBottomInset,
+  chatScreenWrapperProps,
+} from '../../../lib/android-keyboard-layout';
 
 export default function SmsConversationScreen() {
   const { peer } = useLocalSearchParams<{ peer: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const keyboardHeight = useKeyboardHeight();
   const flatListRef = useRef<FlatList>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,12 +57,10 @@ export default function SmsConversationScreen() {
     }
   }
 
+  const inputBottomPad = chatComposerBottomInset(keyboardHeight, insets.bottom + 8);
+
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={0}
-    >
+    <ChatScreenWrapper style={{ flex: 1 }} {...chatScreenWrapperProps()}>
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()}>
@@ -80,7 +85,7 @@ export default function SmsConversationScreen() {
           />
         )}
 
-        <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
+        <View style={[styles.inputBar, { paddingBottom: inputBottomPad }]}>
           <TextInput
             style={styles.input}
             value={text}
@@ -99,7 +104,7 @@ export default function SmsConversationScreen() {
           </TouchableOpacity>
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </ChatScreenWrapper>
   );
 }
 
