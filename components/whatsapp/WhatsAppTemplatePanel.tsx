@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/colors';
+import { applyTemplatePreview } from '../../lib/whatsapp-messages';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -25,21 +26,6 @@ export type WhatsAppTemplateMeta = {
   label: string;
   preview?: string;
 };
-
-function applyPreview(tpl: WhatsAppTemplateMeta, variables: string[]): string {
-  const vars = variables.map((v) => v.trim());
-  if (tpl.preview?.includes('{{')) {
-    let out = tpl.preview;
-    for (let i = 0; i < vars.length; i++) {
-      out = out.split(`{{${i + 1}}}`).join(vars[i] || '…');
-    }
-    return out;
-  }
-  if (tpl.name === 'initial_conversation' && vars.length >= 2) {
-    return `Hi ${vars[0] || '…'}, this is ${vars[1] || '…'} from PlaceCom`;
-  }
-  return tpl.preview ?? `[Template: ${tpl.name}]`;
-}
 
 function getVarLabels(tpl: WhatsAppTemplateMeta | undefined): string[] {
   const count = tpl?.bodyParamCount ?? 2;
@@ -93,7 +79,7 @@ export function WhatsAppTemplatePanel({
 
   const previewText =
     selectedTemplate && templateVariables.some((v) => v.trim())
-      ? applyPreview(selectedTemplate, templateVariables)
+      ? applyTemplatePreview(selectedTemplate, templateVariables)
       : selectedTemplate?.preview?.replace(/\{\{\d+\}\}/g, '…') ?? '…';
 
   const summaryLabel = selectedTemplate?.label ?? selectedTemplate?.name ?? 'Template';

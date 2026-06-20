@@ -24,6 +24,7 @@ import { CallsTheme } from '../../../constants/callsTheme';
 import { CallListRow } from '../../../components/calls/CallListRow';
 import { CallsDialerSheet } from '../../../components/calls/CallsDialerSheet';
 import { CallsContactsTab } from '../../../components/calls/CallsContactsTab';
+import { CallsGoogleContactsTab } from '../../../components/calls/CallsGoogleContactsTab';
 import { groupCallsByDate, normalisePhone } from '../../../lib/call-utils';
 import { supabase } from '../../../lib/supabase';
 import {
@@ -35,10 +36,15 @@ import {
 } from '../../../lib/calls-list-prefetch';
 import type { CallLog } from '../../../lib/types';
 
-type CallsTab = 'history' | 'contacts';
+type CallsTab = 'history' | 'contacts' | 'google';
 
 const AGENT_PHONE_KEY = 'thenucleus:agent_phone';
 const AGENT_PHONE_KEY_LEGACY = 'placecom:agent_phone';
+
+// Module-level so the realtime channel name stays globally unique across screen
+// remounts (tab navigation). A per-component ref resets to 0 on remount and can
+// collide with a still-subscribed channel from the previous mount.
+let callsChannelSeq = 0;
 
 export default function CallsScreen() {
   const router = useRouter();
@@ -159,20 +165,34 @@ export default function CallsScreen() {
     return () => sub.remove();
   }, [loadCalls]);
 
+  // Stable ref so the realtime callback always calls the latest loadCalls without
+  // re-creating the channel (which would re-trigger the subscribe lifecycle).
+  const loadCallsRef = useRef(loadCalls);
+  useEffect(() => { loadCallsRef.current = loadCalls; }, [loadCalls]);
+
   // Refresh the list in real-time whenever a call log is inserted or its
   // status is updated (e.g. Exotel webhook fires after call ends).
   useEffect(() => {
     if (!userId) return;
+    // supabase.channel() returns the *existing* instance for a reused name, and
+    // calling .on() on an already-subscribed channel throws. Drop any orphaned
+    // channels for this user (e.g. a prior mount whose async removeChannel hasn't
+    // finished), then subscribe under a globally-unique name so .on() is always
+    // valid on a fresh channel.
+    const prefix = `realtime:call-logs-status-${userId}`;
+    for (const ch of supabase.getChannels()) {
+      if (ch.topic.startsWith(prefix)) void supabase.removeChannel(ch);
+    }
     const channel = supabase
-      .channel(`call-logs-status-${userId}`)
+      .channel(`call-logs-status-${userId}-${++callsChannelSeq}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'call_logs', filter: `user_id=eq.${userId}` },
-        () => { void loadCalls({ silent: true }); }
+        () => { void loadCallsRef.current({ silent: true }); }
       )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [userId, loadCalls]);
+  }, [userId]);
 
   useEffect(() => {
     if (!userId) return;
@@ -281,19 +301,27 @@ export default function CallsScreen() {
       </View>
 
       <View style={styles.tabs}>
-        {([['history', 'Call history'], ['contacts', 'Contacts']] as const).map(([key, label]) => (
+        {([['history', 'Call history'], ['contacts', 'Contacts'], ['google', 'Google Contacts']] as const).map(([key, label]) => (
           <TouchableOpacity
             key={key}
             style={[styles.tab, tab === key && styles.tabActive]}
             onPress={() => setTab(key)}
             activeOpacity={0.7}
           >
-            <Text style={[styles.tabText, tab === key && styles.tabTextActive]}>{label}</Text>
+            <Text
+              style={[styles.tabText, tab === key && styles.tabTextActive]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+            >
+              {label}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      {tab === 'contacts' ? (
+      {tab === 'google' ? (
+        <CallsGoogleContactsTab onCall={(number) => openDialer(number)} />
+      ) : tab === 'contacts' ? (
         <CallsContactsTab onCall={(number) => openDialer(number)} />
       ) : (
       <>

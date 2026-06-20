@@ -11,10 +11,12 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import EmptyState from '../EmptyState';
 import { CallsTheme } from '../../constants/callsTheme';
 import { useContacts } from '../../hooks/useContacts';
 import { normalisePhone } from '../../lib/call-utils';
+import { isValidE164, normalizePhone } from '../../lib/phone';
 import { formatWhatsAppPhone } from '../../lib/whatsapp-utils';
 import type { WaContactRow } from '../../lib/wa-contacts-db';
 
@@ -30,6 +32,7 @@ function initials(name: string): string {
 }
 
 export function CallsContactsTab({ onCall }: Props) {
+  const router = useRouter();
   const { contacts, loading, error, saveContact, removeContact } = useContacts();
   const [query, setQuery] = useState('');
   const [editor, setEditor] = useState<{ peer: string; name: string; isNew: boolean } | null>(null);
@@ -133,27 +136,43 @@ export function CallsContactsTab({ onCall }: Props) {
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.peer_e164}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.row} onPress={() => onCall(item.peer_e164)} activeOpacity={0.75}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{initials(item.name)}</Text>
-            </View>
-            <View style={styles.rowBody}>
-              <Text style={styles.rowName} numberOfLines={1}>{item.name}</Text>
-              <Text style={styles.rowPeer} numberOfLines={1}>{formatWhatsAppPhone(item.peer_e164)}</Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => openEdit(item)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={styles.rowAction}
-            >
-              <Ionicons name="create-outline" size={20} color={CallsTheme.textMuted} />
+        renderItem={({ item }) => {
+          const waPhone = normalizePhone(item.peer_e164);
+          const canWhatsApp = isValidE164(waPhone);
+          return (
+            <TouchableOpacity style={styles.row} onPress={() => onCall(item.peer_e164)} activeOpacity={0.75}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{initials(item.name)}</Text>
+              </View>
+              <View style={styles.rowBody}>
+                <Text style={styles.rowName} numberOfLines={1}>{item.name}</Text>
+                <Text style={styles.rowPeer} numberOfLines={1}>{formatWhatsAppPhone(item.peer_e164)}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => openEdit(item)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={styles.rowAction}
+              >
+                <Ionicons name="create-outline" size={20} color={CallsTheme.textMuted} />
+              </TouchableOpacity>
+              {canWhatsApp ? (
+                <TouchableOpacity
+                  style={styles.waBtn}
+                  onPress={() =>
+                    router.push(`/(workspace)/whatsapp/${encodeURIComponent(waPhone)}` as never)
+                  }
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  accessibilityLabel={`Open WhatsApp chat with ${item.name}`}
+                >
+                  <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
+                </TouchableOpacity>
+              ) : null}
+              <View style={styles.callBtn}>
+                <Ionicons name="call" size={18} color={CallsTheme.green} />
+              </View>
             </TouchableOpacity>
-            <View style={styles.callBtn}>
-              <Ionicons name="call" size={18} color={CallsTheme.green} />
-            </View>
-          </TouchableOpacity>
-        )}
+          );
+        }}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         contentContainerStyle={filtered.length === 0 ? { flex: 1 } : styles.listContent}
         ListEmptyComponent={
@@ -262,6 +281,14 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     backgroundColor: CallsTheme.greenLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(37,211,102,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },

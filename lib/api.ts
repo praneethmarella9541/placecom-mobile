@@ -351,6 +351,12 @@ export const callsApi = {
     post<{ ok: boolean; id: string }>('/api/calls', { to, agentPhone }),
   refresh: (id: string) => post<{ ok: boolean; exotelStatus?: string; mappedStatus?: string; hasRecording?: boolean }>('/api/calls/refresh', { id }),
   recordingUrl: (recordingSid: string) => `${BASE_URL}/api/calls/recording/${encodeURIComponent(recordingSid)}`,
+  // Google Contacts directory (People API) — same endpoint the web app uses.
+  googleContacts: (opts?: { signal?: AbortSignal }) =>
+    get<{
+      contacts: Array<{ name: string; emails: string[]; phones: string[]; photoUrl?: string }>;
+      hint?: string;
+    }>('/api/google/contacts', undefined, opts),
 };
 
 // SMS
@@ -417,6 +423,8 @@ export const whatsappApi = {
       messageType?: string;
       text?: string;
       useTemplate?: boolean;
+      templateName?: string;
+      templateLanguage?: string;
       templateVariables?: string[];
       mediaUrl?: string;
       mediaCaption?: string;

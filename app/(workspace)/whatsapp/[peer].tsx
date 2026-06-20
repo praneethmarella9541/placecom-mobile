@@ -476,9 +476,9 @@ export default function WhatsAppConversationScreen() {
     const previewBody = previewOutboundBody(
       payload,
       needsTemplate,
-      templateVariables[0] ?? '',
-      templateVariables[1] ?? '',
-      draft
+      draft,
+      activeTemplate,
+      templateVariables
     );
     const contentType = needsTemplate
       ? 'template'
@@ -511,6 +511,10 @@ export default function WhatsAppConversationScreen() {
           useTemplate: needsTemplate,
           messageType: needsTemplate ? 'template' : payload.messageType,
           text: needsTemplate ? undefined : payload.text ?? draft.trim(),
+          templateName: needsTemplate ? selectedTemplateName || undefined : undefined,
+          templateLanguage: needsTemplate
+            ? activeTemplate?.languageCode || undefined
+            : undefined,
           templateVariables: needsTemplate
             ? varsForSend.map((v) => v.trim())
             : undefined,

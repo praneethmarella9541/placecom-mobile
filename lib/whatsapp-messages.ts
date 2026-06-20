@@ -74,14 +74,42 @@ export function hasNewWhatsAppMessages(
   return false;
 }
 
+/**
+ * Builds the human-readable body for a template, substituting {{1}}, {{2}}… with
+ * the entered variables. Shared by the composer's template panel preview and the
+ * optimistic outbound bubble so both reflect the *selected* template (not a
+ * hardcoded default).
+ */
+export function applyTemplatePreview(
+  tpl: { name: string; preview?: string },
+  variables: string[]
+): string {
+  const vars = variables.map((v) => v.trim());
+  if (tpl.preview?.includes('{{')) {
+    let out = tpl.preview;
+    for (let i = 0; i < vars.length; i++) {
+      out = out.split(`{{${i + 1}}}`).join(vars[i] || '…');
+    }
+    return out;
+  }
+  if (tpl.name === 'initial_conversation' && vars.length >= 2) {
+    return `Hi ${vars[0] || '…'}, this is ${vars[1] || '…'} from PlaceCom`;
+  }
+  return tpl.preview ?? `[Template: ${tpl.name}]`;
+}
+
 export function previewOutboundBody(
   payload: WhatsAppSendPayload,
   needsTemplate: boolean,
-  templateVar1: string,
-  templateVar2: string,
-  draft: string
+  draft: string,
+  activeTemplate?: { name: string; preview?: string },
+  templateVariables?: string[]
 ): string {
-  if (needsTemplate) return `Hi ${templateVar1}, this is ${templateVar2} from PlaceCom`;
+  if (needsTemplate) {
+    return activeTemplate
+      ? applyTemplatePreview(activeTemplate, templateVariables ?? [])
+      : `Hi ${templateVariables?.[0] ?? ''}, this is ${templateVariables?.[1] ?? ''} from PlaceCom`;
+  }
   if (payload.messageType === 'text') return payload.text?.trim() || draft.trim();
   if (payload.mediaCaption?.trim()) return payload.mediaCaption.trim();
   if (payload.mediaFilename) return `[${payload.messageType}: ${payload.mediaFilename}]`;
