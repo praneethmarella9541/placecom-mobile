@@ -357,6 +357,14 @@ export const callsApi = {
       contacts: Array<{ name: string; emails: string[]; phones: string[]; photoUrl?: string }>;
       hint?: string;
     }>('/api/google/contacts', undefined, opts),
+  // Push a single contact into the shared (mailbox owner's) Google Contacts.
+  // Pass `previousPhone` on a renumber edit so the existing entry is updated.
+  syncGoogleContact: (name: string, phone: string, previousPhone?: string) =>
+    post<{ ok: boolean; action?: string }>('/api/google/contacts', {
+      name,
+      phone,
+      ...(previousPhone ? { previousPhone } : {}),
+    }),
 };
 
 // SMS

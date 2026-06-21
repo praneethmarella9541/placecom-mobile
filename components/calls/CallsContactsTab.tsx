@@ -18,6 +18,8 @@ import { useContacts } from '../../hooks/useContacts';
 import { normalisePhone } from '../../lib/call-utils';
 import { isValidE164, normalizePhone } from '../../lib/phone';
 import { formatWhatsAppPhone } from '../../lib/whatsapp-utils';
+import { callsApi } from '../../lib/api';
+import { showAppToast } from '../../lib/app-toast';
 import type { WaContactRow } from '../../lib/wa-contacts-db';
 
 type Props = {
@@ -38,6 +40,7 @@ export function CallsContactsTab({ onCall }: Props) {
   const [editor, setEditor] = useState<{ peer: string; name: string; isNew: boolean } | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [phoneInput, setPhoneInput] = useState('');
+  const [syncGoogle, setSyncGoogle] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const filtered = useMemo(() => {
@@ -52,12 +55,29 @@ export function CallsContactsTab({ onCall }: Props) {
     setEditor({ peer: '', name: '', isNew: true });
     setNameInput('');
     setPhoneInput('');
+    setSyncGoogle(true);
   }
 
   function openEdit(c: WaContactRow) {
     setEditor({ peer: c.peer_e164, name: c.name, isNew: false });
     setNameInput(c.name);
     setPhoneInput(c.peer_e164);
+    setSyncGoogle(true);
+  }
+
+  // Push the saved contact into the shared Google Contacts (create or update).
+  // Fire-and-forget — the local save already succeeded, so a sync failure only
+  // surfaces a toast and never blocks the contact book.
+  async function syncToGoogle(name: string, phone: string, previousPhone?: string) {
+    try {
+      await callsApi.syncGoogleContact(name, phone, previousPhone);
+      showAppToast(`${name} synced to Google Contacts`, 'success');
+    } catch (e: unknown) {
+      showAppToast(
+        e instanceof Error ? e.message : 'Could not sync to Google Contacts',
+        'error'
+      );
+    }
   }
 
   async function handleSave() {
@@ -71,14 +91,18 @@ export function CallsContactsTab({ onCall }: Props) {
       Alert.alert('Invalid number', 'Enter a valid number with country code, e.g. +918056101540.');
       return;
     }
+    const numberChanged = !!editor && !editor.isNew && !!editor.peer && editor.peer !== phone;
+    const previousPhone = numberChanged ? editor!.peer : undefined;
+    const shouldSync = syncGoogle;
     setSaving(true);
     try {
       // If the phone changed on an existing contact, drop the old row first.
-      if (editor && !editor.isNew && editor.peer && editor.peer !== phone) {
-        await removeContact(editor.peer);
+      if (numberChanged) {
+        await removeContact(editor!.peer);
       }
       await saveContact(phone, name);
       setEditor(null);
+      if (shouldSync) void syncToGoogle(name, phone, previousPhone);
     } catch (e: unknown) {
       Alert.alert('Could not save', e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
@@ -209,6 +233,18 @@ export function CallsContactsTab({ onCall }: Props) {
               placeholderTextColor={CallsTheme.textMuted}
               keyboardType="phone-pad"
             />
+            <TouchableOpacity
+              style={styles.syncRow}
+              onPress={() => setSyncGoogle((v) => !v)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={syncGoogle ? 'checkbox' : 'square-outline'}
+                size={22}
+                color={syncGoogle ? CallsTheme.blue : CallsTheme.textMuted}
+              />
+              <Text style={styles.syncLabel}>Also save to shared Google Contacts</Text>
+            </TouchableOpacity>
             <View style={styles.sheetActions}>
               {!editor?.isNew ? (
                 <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
@@ -319,6 +355,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: CallsTheme.text,
   },
+  syncRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 2 },
+  syncLabel: { flex: 1, fontSize: 14, color: CallsTheme.text },
   sheetActions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
   deleteBtn: {
     width: 44,

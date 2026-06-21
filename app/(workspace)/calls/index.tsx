@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -25,7 +25,7 @@ import { CallListRow } from '../../../components/calls/CallListRow';
 import { CallsDialerSheet } from '../../../components/calls/CallsDialerSheet';
 import { CallsContactsTab } from '../../../components/calls/CallsContactsTab';
 import { CallsGoogleContactsTab } from '../../../components/calls/CallsGoogleContactsTab';
-import { groupCallsByDate, normalisePhone } from '../../../lib/call-utils';
+import { groupCallsByDate, isStalePendingCall, normalisePhone } from '../../../lib/call-utils';
 import { supabase } from '../../../lib/supabase';
 import {
   bindCallsPrefetchUser,
@@ -57,6 +57,7 @@ export default function CallsScreen() {
   const [calls, setCalls] = useState<CallLog[]>(() => initialCache?.logs ?? []);
   const [loading, setLoading] = useState(() => !initialCache);
   const awaitingReturnRef = useRef(false);
+  const pendingCallIdRef = useRef<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialerOpen, setDialerOpen] = useState(false);
@@ -155,15 +156,36 @@ export default function CallsScreen() {
     [applyCallsPayload]
   );
 
+  // After returning from the native dialer, actively poll Exotel for the placed
+  // call's status (the CallSid attaches a moment after the call connects) before
+  // refreshing the list, so a connected call resolves promptly instead of
+  // lingering as "pending" until a webhook + realtime update arrives.
+  const reconcilePlacedCall = useCallback(async () => {
+    const placedId = pendingCallIdRef.current;
+    pendingCallIdRef.current = null;
+    if (placedId) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await callsApi.refresh(placedId);
+          if (res?.ok) break;
+        } catch {
+          /* ignore — fall back to a plain list refresh below */
+        }
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    }
+    await loadCalls({ silent: true });
+  }, [loadCalls]);
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active' && awaitingReturnRef.current) {
         awaitingReturnRef.current = false;
-        void loadCalls({ silent: true });
+        void reconcilePlacedCall();
       }
     });
     return () => sub.remove();
-  }, [loadCalls]);
+  }, [reconcilePlacedCall]);
 
   // Stable ref so the realtime callback always calls the latest loadCalls without
   // re-creating the channel (which would re-trigger the subscribe lifecycle).
@@ -270,7 +292,8 @@ export default function CallsScreen() {
 
     setPlacing(true);
     try {
-      await callsApi.makeCall(to, agentPhone);
+      const res = await callsApi.makeCall(to, agentPhone);
+      pendingCallIdRef.current = res?.id ?? null;
     } catch (e: unknown) {
       setPlacing(false);
       Alert.alert('Failed to register call', e instanceof Error ? e.message : 'Check your connection.');
@@ -283,7 +306,28 @@ export default function CallsScreen() {
     awaitingReturnRef.current = true;
   }
 
-  const sections = groupCallsByDate(calls);
+  // Hide calls that have been stuck at "pending" past the staleness window —
+  // they never got a final status from Exotel (e.g. dialer backed out). A steady
+  // tick re-evaluates so the row disappears near the boundary even without a
+  // refetch. The interval has no deps (it must NOT reset on every list refresh,
+  // or the countdown restarts and hiding is delayed); it only re-renders while a
+  // non-terminal row exists, via a ref so the timer itself stays stable.
+  const [staleTick, setStaleTick] = useState(() => Date.now());
+  const callsRef = useRef(calls);
+  callsRef.current = calls;
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (callsRef.current.some((c) => c.status === 'pending' || c.status === 'in-progress')) {
+        setStaleTick(Date.now());
+      }
+    }, 15000);
+    return () => clearInterval(t);
+  }, []);
+  const visibleCalls = useMemo(
+    () => calls.filter((c) => !isStalePendingCall(c, staleTick)),
+    [calls, staleTick]
+  );
+  const sections = groupCallsByDate(visibleCalls);
 
   function openDialer(prefill?: string) {
     setDialerPrefill(prefill);
@@ -385,7 +429,7 @@ export default function CallsScreen() {
               subtitle="Tap the phone button to place your first call"
             />
           }
-          contentContainerStyle={calls.length === 0 ? { flex: 1 } : styles.listContent}
+          contentContainerStyle={visibleCalls.length === 0 ? { flex: 1 } : styles.listContent}
         />
       )}
 

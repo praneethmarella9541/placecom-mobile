@@ -203,6 +203,11 @@ function TimelineRow({
   );
 }
 
+// Transcript feature is disabled for now: hide the tab/button and make no
+// transcribe API calls. Code is kept intact so it can be re-enabled by flipping
+// this flag back to true.
+const TRANSCRIPT_ENABLED = false;
+
 export default function CallDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -293,6 +298,7 @@ export default function CallDetailScreen() {
   }, [id]);
 
   async function handleTranscribe() {
+    if (!TRANSCRIPT_ENABLED) return;
     if (!call) return;
     setTranscribing(true);
     try {
@@ -461,7 +467,7 @@ export default function CallDetailScreen() {
       </View>
 
       <View style={styles.tabPills}>
-        {(['details', 'transcript'] as const).map((t) => (
+        {(TRANSCRIPT_ENABLED ? (['details', 'transcript'] as const) : (['details'] as const)).map((t) => (
           <TouchableOpacity
             key={t}
             style={[styles.tabPill, tab === t && styles.tabPillActive]}

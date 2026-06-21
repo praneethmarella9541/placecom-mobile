@@ -6,7 +6,8 @@ import {
   upsertWaContact,
   type WaContactRow,
 } from '../lib/wa-contacts-db';
-import { loadCachedContactsList } from '../lib/wa-contacts-cache';
+import { loadCachedContactsList, persistContactsCache } from '../lib/wa-contacts-cache';
+import { setWhatsAppPrefetchContacts } from '../lib/workspace-feature-prefetch';
 import { useAuth } from './useAuth';
 
 function sortContacts(rows: WaContactRow[]): WaContactRow[] {
@@ -49,13 +50,18 @@ export function useContacts() {
     try {
       const rows = await fetchWaContacts();
       setContacts(sortContacts(rows));
+      // Refresh both caches so a remount (e.g. switching the Calls tab) paints
+      // the latest contacts immediately instead of a stale snapshot.
+      hasCachedRef.current = true;
+      if (userId) void persistContactsCache(userId, rows);
+      setWhatsAppPrefetchContacts(rows.map((r) => ({ peer_e164: r.peer_e164, name: r.name })));
     } catch (e: unknown) {
       if (!hasCachedRef.current) setContacts([]);
       setError(e instanceof Error ? e.message : 'Failed to load contacts');
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [session, userId]);
 
   useEffect(() => {
     if (!session) {

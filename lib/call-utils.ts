@@ -41,6 +41,31 @@ export function callDisplayStatus(call: CallLog): string {
   return call.status;
 }
 
+// A placed call starts as `pending` and only advances once Exotel's webhook
+// attaches a real CallSid. If you back out of the native dialer (or the call
+// never goes through the Exotel line), no webhook fires and the row never
+// resolves. Hide such rows once they're older than this — the row is kept in
+// the data (it reappears if it ever resolves), just not displayed.
+export const PENDING_STALE_MS = 60 * 1000;
+
+/** A real Exotel CallSid (not the `pending_…`/`exotel_…` placeholder). */
+function hasRealCallSid(call: CallLog): boolean {
+  const sid = call.call_sid ?? '';
+  return !!sid && !sid.startsWith('pending_') && !sid.startsWith('exotel_');
+}
+
+export function isStalePendingCall(call: CallLog, now: number = Date.now()): boolean {
+  // Never hide a call that reached a final status or was actually answered.
+  if (TERMINAL_STATUSES.has(call.status)) return false;
+  if (isAnsweredCall(call)) return false;
+  // Unresolved = still `pending`, or no real Exotel CallSid ever attached (so a
+  // live in-progress call, which always has a real sid, is never hidden).
+  if (call.status !== 'pending' && hasRealCallSid(call)) return false;
+  const created = call.created_at ? new Date(call.created_at).getTime() : NaN;
+  if (Number.isNaN(created)) return false;
+  return now - created > PENDING_STALE_MS;
+}
+
 export function formatCallDuration(seconds: number | null | undefined): string {
   if (!seconds || seconds < 0) return '—';
   const m = Math.floor(seconds / 60);

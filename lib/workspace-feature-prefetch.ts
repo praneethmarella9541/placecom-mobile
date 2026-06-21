@@ -54,6 +54,21 @@ export function getWhatsAppPrefetchCache(): WaCache | null {
   return whatsappCache;
 }
 
+/**
+ * Keep the in-memory contacts in sync after a local save/delete so screens that
+ * remount (e.g. switching the Calls tab) read fresh names from cache instead of
+ * the stale prefetch snapshot. No-op until the workspace prefetch has run.
+ */
+export function setWhatsAppPrefetchContacts(
+  rows: Array<{ peer_e164: string; name: string }>
+): void {
+  if (!whatsappCache) return;
+  whatsappCache = {
+    ...whatsappCache,
+    contacts: { ...whatsappCache.contacts, contacts: rows },
+  };
+}
+
 export function getCalendarPrefetchCache(): CalendarCache | null {
   return calendarCache;
 }
