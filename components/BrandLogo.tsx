@@ -1,13 +1,16 @@
 import React from 'react';
-import { View, Text, Image, StyleSheet, type ImageStyle, type ViewStyle } from 'react-native';
-import { APP_NAME, APP_LOGO } from '../constants/branding';
+import { View, Text, StyleSheet, type ViewStyle } from 'react-native';
+import Svg, { Circle, Ellipse } from 'react-native-svg';
+import { APP_NAME } from '../constants/branding';
+import { Colors } from '../constants/colors';
+import { FONTS } from '../constants/fonts';
 
 type Size = 'sm' | 'md' | 'lg';
 
-const SIZES: Record<Size, { image: number; font: number }> = {
-  sm: { image: 28, font: 16 },
-  md: { image: 56, font: 22 },
-  lg: { image: 80, font: 28 },
+const SIZES: Record<Size, { mark: number; font: number }> = {
+  sm: { mark: 22, font: 16 },
+  md: { mark: 32, font: 22 },
+  lg: { mark: 44, font: 28 },
 };
 
 type Props = {
@@ -15,34 +18,34 @@ type Props = {
   layout?: 'row' | 'column';
   showName?: boolean;
   nameColor?: string;
+  inverted?: boolean;
   style?: ViewStyle;
-  imageStyle?: ImageStyle;
 };
+
+export function BrandMark({ size = 32, color }: { size?: number; color: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 64 64" fill="none">
+      <Circle cx="32" cy="32" r="27" stroke={color} strokeWidth="2.2" />
+      <Ellipse cx="32" cy="32" rx="27" ry="11" stroke={color} strokeWidth="2.2" rotation="60" origin="32, 32" />
+      <Ellipse cx="32" cy="32" rx="27" ry="11" stroke={color} strokeWidth="2.2" rotation="-60" origin="32, 32" />
+      <Circle cx="32" cy="32" r="6" fill={color} />
+    </Svg>
+  );
+}
 
 export function BrandLogo({
   size = 'md',
   layout = 'row',
   showName = true,
-  nameColor = '#FFFFFF',
+  nameColor = Colors.text,
+  inverted = false,
   style,
-  imageStyle,
 }: Props) {
   const dims = SIZES[size];
+  const markColor = inverted ? '#FFFFFF' : Colors.copper;
   return (
     <View style={[styles.row, layout === 'column' && styles.column, style]}>
-      <Image
-        source={APP_LOGO}
-        style={[
-          {
-            width: dims.image,
-            height: dims.image,
-            borderRadius: size === 'sm' ? 6 : 12,
-          },
-          imageStyle,
-        ]}
-        resizeMode="contain"
-        accessibilityLabel={`${APP_NAME} logo`}
-      />
+      <BrandMark size={dims.mark} color={markColor} />
       {showName ? (
         <Text style={[styles.name, { fontSize: dims.font, color: nameColor }]} numberOfLines={1}>
           {APP_NAME}
@@ -55,5 +58,5 @@ export function BrandLogo({
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   column: { flexDirection: 'column', gap: 12 },
-  name: { fontWeight: '700', letterSpacing: 0.2 },
+  name: { fontFamily: FONTS.displayBold, letterSpacing: 0.2 },
 });

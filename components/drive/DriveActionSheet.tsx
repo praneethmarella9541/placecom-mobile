@@ -11,7 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { DriveFile } from '../../lib/types';
 import { DriveTheme } from '../../constants/driveTheme';
 import { DriveFileIcon } from './DriveFileIcon';
-import { isDriveFolder } from '../../lib/drive-utils';
+import { formatDriveDate, formatDriveSize, isDriveFolder } from '../../lib/drive-utils';
 
 type Action = {
   key: string;
@@ -23,6 +23,7 @@ type Action = {
 
 export function DriveActionSheet({
   file,
+  ownerName = 'Me',
   visible,
   onClose,
   onOpen,
@@ -32,6 +33,7 @@ export function DriveActionSheet({
   onMove,
 }: {
   file: DriveFile | null;
+  ownerName?: string;
   visible: boolean;
   onClose: () => void;
   onOpen: () => void;
@@ -64,10 +66,26 @@ export function DriveActionSheet({
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
           <View style={styles.fileHeader}>
-            <DriveFileIcon mimeType={file.mimeType} size="md" />
+            <DriveFileIcon mimeType={file.mimeType} size="md" variant="outline" />
             <Text style={styles.fileName} numberOfLines={2}>
               {file.name}
             </Text>
+          </View>
+          <View style={styles.detailsSection}>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Owner</Text>
+              <Text style={styles.detailValue} numberOfLines={1}>{ownerName}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Modified</Text>
+              <Text style={styles.detailValue} numberOfLines={1}>{formatDriveDate(file.modifiedTime) || '—'}</Text>
+            </View>
+            {!folder && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Size</Text>
+                <Text style={styles.detailValue} numberOfLines={1}>{formatDriveSize(file.size) || '—'}</Text>
+              </View>
+            )}
           </View>
           {actions.map((a) => (
             <TouchableOpacity key={a.key} style={styles.actionRow} onPress={a.onPress} activeOpacity={0.7}>
@@ -115,6 +133,16 @@ const styles = StyleSheet.create({
     borderBottomColor: DriveTheme.divider,
   },
   fileName: { flex: 1, fontSize: 16, fontWeight: '600', color: DriveTheme.text },
+  detailsSection: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    gap: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: DriveTheme.divider,
+  },
+  detailRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  detailLabel: { fontSize: 13, color: DriveTheme.textMuted },
+  detailValue: { fontSize: 13, color: DriveTheme.text, fontWeight: '500', flexShrink: 1, textAlign: 'right' },
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',

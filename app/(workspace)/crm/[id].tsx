@@ -63,7 +63,7 @@ export default function LeadDetailScreen() {
     }
   }
 
-  if (loading) return <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>;
+  if (loading) return <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>;
   if (!lead) return <View style={styles.center}><Text>Lead not found</Text></View>;
 
   const sc = lead.score ? SCORE_COLORS[lead.score] : null;

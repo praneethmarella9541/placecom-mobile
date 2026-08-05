@@ -45,7 +45,7 @@ export default function MeetingDetailScreen() {
     }
   }
 
-  if (loading) return <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>;
+  if (loading) return <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>;
   if (!meeting) return <View style={styles.center}><Text>Meeting not found</Text></View>;
 
   return (

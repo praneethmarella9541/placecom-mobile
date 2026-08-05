@@ -593,6 +593,50 @@ export const meApi = {
   mailbox: () => get<MeMailbox>('/api/me/mailbox'),
 };
 
+// Google Contacts directory (read-only — same mailbox owner's Google account used by Gmail)
+export type GoogleContact = {
+  name: string;
+  emails: string[];
+  phones: string[];
+  photoUrl?: string;
+};
+export const contactsApi = {
+  getGoogleDirectory: () =>
+    get<{ contacts: GoogleContact[]; hint?: string; error?: string }>('/api/google/contacts'),
+};
+
+// Profile / account settings
+export type MeProfile = {
+  displayUsername?: string;
+  jobTitle?: string;
+  bio?: string;
+  sessionEmail?: string;
+  mailboxEmail?: string;
+  exotelVirtualNumber?: string;
+  groupName?: string;
+  canChangePassword?: boolean;
+  tokensUsed?: number;
+  tokenLimit?: number;
+};
+export const profileApi = {
+  getProfile: () => get<MeProfile>('/api/me/profile'),
+  updateProfile: async (data: { displayUsername?: string; jobTitle?: string; bio?: string }) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/me/profile`, {
+      method: 'PATCH',
+      headers: await authHeaders(),
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      let msg = `PATCH profile failed: ${res.status}`;
+      try { const b = await res.json(); if (b?.error) msg = b.error; } catch {}
+      throw new Error(msg);
+    }
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+  changePassword: (data: { currentPassword: string; newPassword: string }) =>
+    post<{ ok: boolean; error?: string }>('/api/me/password', data),
+};
+
 // Mailbox session sync — persists the Google refresh token server-side
 // so Gmail/Drive/Calendar keep working without re-consent.
 // Mobile passes the provider tokens explicitly because Bearer-authed
@@ -771,14 +815,41 @@ export type AdminAnalyticsResponse = {
 };
 
 // Admin
+export type TeamGroup = { id: string; name: string; restrictedFeatures: string[]; createdAt: string };
+
 export const adminApi = {
   listExotelNumbers: () => get<{ numbers: string[] }>('/api/admin/exotel-numbers'),
-  listTeam: () => get<{ members: any[] }>('/api/admin/team-members'),
+  listTeam: () => get<{ members: any[]; assignedExotelNumbers?: string[] }>('/api/admin/team-members'),
+  listGroups: () => get<{ groups: TeamGroup[] }>('/api/admin/groups'),
+  createGroup: (data: { name: string; restrictedFeatures: string[] }) =>
+    post<{ ok: boolean; group: TeamGroup }>('/api/admin/groups', data),
+  updateGroup: async (groupId: string, data: { name?: string; restrictedFeatures?: string[] }) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/groups`, {
+      method: 'PATCH',
+      headers: await authHeaders(),
+      body: JSON.stringify({ groupId, ...data }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
+    return body as { ok: boolean; group: TeamGroup };
+  },
+  deleteGroup: async (groupId: string) => {
+    const res = await fetchWithTimeout(`${BASE_URL}/api/admin/groups`, {
+      method: 'DELETE',
+      headers: await authHeaders(),
+      body: JSON.stringify({ groupId }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string })?.error ?? `Request failed: ${res.status}`);
+    return body;
+  },
   createMember: (data: {
     email: string;
     password: string;
-    role: 'staff' | 'committee';
-    restrictedFeatures?: string[];
+    displayUsername?: string | null;
+    jobTitle?: string | null;
+    groupId?: string | null;
+    openaiTokenLimit?: number | null;
     mobilePhone?: string | null;
     exotelVirtualNumber?: string | null;
   }) => post('/api/admin/staff-users', data),
@@ -787,8 +858,10 @@ export const adminApi = {
     data: {
       email?: string;
       password?: string;
-      role?: 'staff' | 'committee';
-      restrictedFeatures?: string[];
+      displayUsername?: string | null;
+      jobTitle?: string | null;
+      groupId?: string | null;
+      openaiTokenLimit?: number | null;
       mobilePhone?: string | null;
       exotelVirtualNumber?: string | null;
     }

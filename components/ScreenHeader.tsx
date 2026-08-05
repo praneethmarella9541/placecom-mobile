@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/colors';
+import { FONTS } from '../constants/fonts';
 
 interface Props {
   title: string;
@@ -21,7 +22,7 @@ export default function ScreenHeader({ title, onMenuPress, rightAction }: Props)
       <Text style={styles.title} numberOfLines={1}>{title}</Text>
       {rightAction ? (
         <TouchableOpacity onPress={rightAction.onPress} style={styles.rightBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name={rightAction.icon} size={22} color={Colors.primary} />
+          <Ionicons name={rightAction.icon} size={22} color={Colors.copper} />
         </TouchableOpacity>
       ) : (
         <View style={styles.rightBtn} />
@@ -50,7 +51,7 @@ const styles = StyleSheet.create({
   title: {
     flex: 1,
     fontSize: 18,
-    fontWeight: '700',
+    fontFamily: FONTS.displayBold,
     color: Colors.text,
   },
   rightBtn: {

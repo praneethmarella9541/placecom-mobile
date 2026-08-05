@@ -671,7 +671,7 @@ function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => 
   return (
     <View style={[styles.attachmentChip, { backgroundColor: bgColor, borderColor: chipColor + '44' }]}>
       {isBusy
-        ? <ActivityIndicator size="small" color={Colors.primary} style={{ width: 14, height: 14 }} />
+        ? <ActivityIndicator size="small" color={Colors.copper} style={{ width: 14, height: 14 }} />
         : isDrive ? <Ionicons name="logo-google" size={14} color={chipColor} />
         : isError ? <Ionicons name="warning-outline" size={14} color={chipColor} />
         : <Ionicons name="document-outline" size={14} color={chipColor} />

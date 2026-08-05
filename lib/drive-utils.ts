@@ -78,19 +78,30 @@ export function formatDriveDate(iso: string | undefined): string {
 }
 
 export type DriveSortKey = 'name' | 'modified' | 'size';
+export type DriveSortDir = 'asc' | 'desc';
 
-export function sortDriveFiles(files: DriveFile[], sortBy: DriveSortKey): DriveFile[] {
+/** Sensible default direction the first time a column is selected. */
+export function defaultDriveSortDir(sortBy: DriveSortKey): DriveSortDir {
+  return sortBy === 'name' ? 'asc' : 'desc';
+}
+
+export function sortDriveFiles(
+  files: DriveFile[],
+  sortBy: DriveSortKey,
+  dir: DriveSortDir = defaultDriveSortDir(sortBy)
+): DriveFile[] {
   const folders = files.filter(isDriveFolder);
   const rest = files.filter((f) => !isDriveFolder(f));
-  const cmp = (a: DriveFile, b: DriveFile) => {
+  const base = (a: DriveFile, b: DriveFile) => {
     if (sortBy === 'name') return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     if (sortBy === 'size') {
       const sa = parseInt(a.size ?? '0', 10) || 0;
       const sb = parseInt(b.size ?? '0', 10) || 0;
-      return sb - sa;
+      return sa - sb;
     }
-    return new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime();
+    return new Date(a.modifiedTime).getTime() - new Date(b.modifiedTime).getTime();
   };
+  const cmp = (a: DriveFile, b: DriveFile) => (dir === 'asc' ? base(a, b) : -base(a, b));
   return [...folders.sort(cmp), ...rest.sort(cmp)];
 }
 

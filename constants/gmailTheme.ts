@@ -1,24 +1,24 @@
-/** Gmail-inspired palette for the mail module (list, thread, compose). */
+/** Mail module palette — warm/copper editorial theme, matching the web app. */
 export const Gmail = {
-  red: '#D93025',
-  redDark: '#C5221F',
-  blue: '#1A73E8',
-  blueLight: '#E8F0FE',
+  red: '#DC2626',
+  redDark: '#B91C1C',
+  blue: '#C45C1A',
+  blueLight: 'rgba(196, 92, 26, 0.10)',
   star: '#F4B400',
-  bg: '#FFFFFF',
-  bgMuted: '#F6F8FC',
-  text: '#202124',
-  textSecondary: '#5F6368',
-  textMuted: '#80868B',
-  border: '#E8EAED',
-  divider: '#F1F3F4',
-  searchBg: '#EAF1FB',
-  fab: '#C2E7FF',
-  fabIcon: '#001D35',
+  bg: '#F5F3EF',
+  bgMuted: '#EDE9E1',
+  text: '#1A1612',
+  textSecondary: '#4A443C',
+  textMuted: '#8C857B',
+  border: 'rgba(20, 18, 14, 0.09)',
+  divider: 'rgba(20, 18, 14, 0.09)',
+  searchBg: '#FFFFFF',
+  fab: '#C45C1A',
+  fabIcon: '#FFFFFF',
 };
 
 const AVATAR_COLORS = [
-  '#1A73E8', '#D93025', '#188038', '#E37400', '#9334E6', '#0B8043', '#C5221F', '#4285F4',
+  '#C45C1A', '#2563EB', '#166534', '#B45309', '#7C4A1E', '#0F766E', '#B91C1C', '#4338CA',
 ];
 
 export function avatarColorForName(name: string): string {

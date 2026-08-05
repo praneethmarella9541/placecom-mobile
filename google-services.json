@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "159527844596",
+    "project_id": "nucleus-7a700",
+    "storage_bucket": "nucleus-7a700.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:159527844596:android:b2aee61bcc692fb6ff3ca1",
+        "android_client_info": {
+          "package_name": "in.thenucleus.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBqhFqJY16bL1huvsVp4SBZHhV9ZUWaHKw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

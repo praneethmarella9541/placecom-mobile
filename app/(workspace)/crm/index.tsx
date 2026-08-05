@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, TextInput, ScrollView, Alert,
+  RefreshControl, ActivityIndicator, TextInput, ScrollView, Alert, Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +36,12 @@ export default function CrmScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [filterScore, setFilterScore] = useState<string | null>(null);
+  const [addingLead, setAddingLead] = useState(false);
+  const [newCompany, setNewCompany] = useState('');
+  const [newContact, setNewContact] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [savingLead, setSavingLead] = useState(false);
 
   const loadLeads = useCallback(async () => {
     try {
@@ -67,12 +73,45 @@ export default function CrmScreen() {
     return acc;
   }, {});
 
+  function openAddLead() {
+    setNewCompany('');
+    setNewContact('');
+    setNewEmail('');
+    setNewPhone('');
+    setAddingLead(true);
+  }
+
+  async function handleCreateLead() {
+    const company = newCompany.trim();
+    if (!company) {
+      Alert.alert('Company required', 'Enter a company name.');
+      return;
+    }
+    setSavingLead(true);
+    try {
+      await crmApi.createLead({
+        company_name: company,
+        contact_name: newContact.trim() || null,
+        email: newEmail.trim() || null,
+        phone: newPhone.trim() || null,
+        lead_type: leadType,
+        stage: STAGES[leadType][0],
+      });
+      setAddingLead(false);
+      await loadLeads();
+    } catch (e: unknown) {
+      Alert.alert('Could not add lead', e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setSavingLead(false);
+    }
+  }
+
   return (
     <View style={styles.container}>
       <ScreenHeader
         title="CRM"
         onMenuPress={openDrawer}
-        rightAction={{ icon: 'add-circle-outline', onPress: () => router.push('/(workspace)/crm/new' as any) }}
+        rightAction={{ icon: 'add-circle-outline', onPress: openAddLead }}
       />
 
       <View style={styles.typeBar}>
@@ -114,7 +153,7 @@ export default function CrmScreen() {
       </View>
 
       {loading ? (
-        <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+        <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>
       ) : (
         <ScrollView showsVerticalScrollIndicator={false}>
           {STAGES[leadType].map((stage) => (
@@ -127,6 +166,58 @@ export default function CrmScreen() {
           ))}
         </ScrollView>
       )}
+
+      <Modal visible={addingLead} transparent animationType="fade" onRequestClose={() => setAddingLead(false)}>
+        <View style={styles.backdrop}>
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Add Lead</Text>
+            <TextInput
+              style={styles.sheetInput}
+              value={newCompany}
+              onChangeText={setNewCompany}
+              placeholder="Company name"
+              placeholderTextColor={Colors.textMuted}
+              autoFocus
+            />
+            <TextInput
+              style={styles.sheetInput}
+              value={newContact}
+              onChangeText={setNewContact}
+              placeholder="Contact name"
+              placeholderTextColor={Colors.textMuted}
+            />
+            <TextInput
+              style={styles.sheetInput}
+              value={newEmail}
+              onChangeText={setNewEmail}
+              placeholder="Email"
+              placeholderTextColor={Colors.textMuted}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <TextInput
+              style={styles.sheetInput}
+              value={newPhone}
+              onChangeText={setNewPhone}
+              placeholder="Phone"
+              placeholderTextColor={Colors.textMuted}
+              keyboardType="phone-pad"
+            />
+            <View style={styles.sheetActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setAddingLead(false)}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleCreateLead} disabled={savingLead}>
+                {savingLead ? (
+                  <ActivityIndicator color={Colors.surface} size="small" />
+                ) : (
+                  <Text style={styles.saveBtnText}>Add</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -270,4 +361,27 @@ const styles = StyleSheet.create({
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: 12, color: Colors.textMuted, maxWidth: 150 },
   leadTime: { fontSize: 11, color: Colors.textMuted },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 24 },
+  sheet: { backgroundColor: Colors.surface, borderRadius: 14, padding: 20, gap: 12 },
+  sheetTitle: { fontSize: 17, fontWeight: '700', color: Colors.text },
+  sheetInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 16,
+    color: Colors.text,
+  },
+  sheetActions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
+  cancelBtn: { paddingHorizontal: 16, paddingVertical: 12 },
+  cancelText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
+  saveBtn: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: Colors.primary,
+    minWidth: 80,
+    alignItems: 'center',
+  },
+  saveBtnText: { fontSize: 15, fontWeight: '600', color: Colors.surface },
 });

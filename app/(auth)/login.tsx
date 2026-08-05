@@ -19,10 +19,10 @@ import { BrandLogo } from '../../components/BrandLogo';
 import { AnalyticsTheme as T } from '../../constants/analyticsTheme';
 
 const FEATURES = [
-  { n: '01', label: 'Shared inbox for the whole placement team' },
-  { n: '02', label: 'Auto-extract recruiter contacts from every email' },
+  { n: '01', label: 'Shared inbox and WhatsApp for the whole team' },
+  { n: '02', label: 'Auto-extract contacts and track leads through your pipeline' },
   { n: '03', label: 'Outbound calls with recordings & AI transcripts' },
-  { n: '04', label: 'Calendar sync + meeting summaries that write themselves' },
+  { n: '04', label: 'Broadcasts, synced calendar, and shared drive — all in one place' },
 ] as const;
 
 export default function LoginScreen() {
@@ -81,7 +81,7 @@ export default function LoginScreen() {
           <View style={styles.heroGlowTop} pointerEvents="none" />
           <View style={styles.heroGlowBottom} pointerEvents="none" />
 
-          <BrandLogo size="md" layout="row" nameColor={T.bg} />
+          <BrandLogo size="md" layout="row" nameColor={T.bg} inverted />
 
           <View style={styles.copperBar} />
           <Text style={styles.heroEyebrow}>Placement operations</Text>

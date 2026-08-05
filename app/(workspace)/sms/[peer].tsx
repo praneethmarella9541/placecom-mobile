@@ -68,7 +68,7 @@ export default function SmsConversationScreen() {
         </View>
 
         {loading ? (
-          <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+          <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>
         ) : (
           <FlatList
             ref={flatListRef}

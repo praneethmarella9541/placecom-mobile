@@ -64,12 +64,12 @@ export default function MeetingsScreen() {
       />
       {syncing && (
         <View style={styles.syncBanner}>
-          <ActivityIndicator size="small" color={Colors.primary} />
+          <ActivityIndicator size="small" color={Colors.copper} />
           <Text style={styles.syncText}>Syncing meetings from Fireflies...</Text>
         </View>
       )}
       {loading ? (
-        <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+        <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>
       ) : (
         <FlatList
           data={meetings}
@@ -77,7 +77,7 @@ export default function MeetingsScreen() {
           renderItem={({ item }) => (
             <MeetingRow meeting={item} onPress={() => router.push(`/(workspace)/meetings/${item.id}` as any)} />
           )}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadMeetings(); }} tintColor={Colors.primary} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadMeetings(); }} tintColor={Colors.copper} />}
           ListEmptyComponent={<EmptyState icon="videocam-outline" title="No meetings" subtitle="Sync meetings from Fireflies using the sync button" />}
           contentContainerStyle={meetings.length === 0 ? { flex: 1 } : { paddingBottom: 16 }}
         />

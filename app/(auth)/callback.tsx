@@ -61,7 +61,7 @@ export default function AuthCallback() {
 
   return (
     <View style={styles.container}>
-      <ActivityIndicator color={Colors.primary} />
+      <ActivityIndicator color={Colors.copper} />
       <Text style={styles.text}>
         {status === 'failed' ? 'Sign-in failed — returning to login…' : 'Signing you in…'}
       </Text>

@@ -31,7 +31,7 @@ type PickedAttachment = {
 
 type EmailSubView = 'broadcast' | 'merge';
 
-const EMAIL_COLOR = Colors.primary;
+const EMAIL_COLOR = Colors.copper;
 
 export default function BroadcastingScreen() {
   const { openDrawer } = useDrawer();
@@ -160,7 +160,7 @@ export default function BroadcastingScreen() {
               <Ionicons
                 name={t.icon}
                 size={16}
-                color={channel === t.key ? (t.key === 'whatsapp' ? '#25D366' : Colors.primary) : Colors.textSecondary}
+                color={channel === t.key ? (t.key === 'whatsapp' ? '#25D366' : Colors.copper) : Colors.textSecondary}
               />
               <Text style={[styles.channelBtnText, channel === t.key && styles.channelBtnTextActive]}>
                 {t.label}
@@ -223,7 +223,7 @@ export default function BroadcastingScreen() {
           </View>
 
           <TouchableOpacity style={styles.attachBtn} onPress={pickAttachment}>
-            <Ionicons name="attach-outline" size={18} color={Colors.primary} />
+            <Ionicons name="attach-outline" size={18} color={Colors.copper} />
             <Text style={styles.attachText}>Add attachment</Text>
           </TouchableOpacity>
           {attachments.length > 0 && (
@@ -231,11 +231,11 @@ export default function BroadcastingScreen() {
               {attachments.map((a) => (
                 <View key={a.uri} style={styles.attachChip}>
                   {a.status === 'preparing' ? (
-                    <ActivityIndicator size="small" color={Colors.primary} />
+                    <ActivityIndicator size="small" color={Colors.copper} />
                   ) : a.status === 'error' ? (
                     <Ionicons name="warning-outline" size={14} color={Colors.error} />
                   ) : (
-                    <Ionicons name="document-outline" size={14} color={Colors.primary} />
+                    <Ionicons name="document-outline" size={14} color={Colors.copper} />
                   )}
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={styles.attachChipName} numberOfLines={1}>{a.name}</Text>
@@ -327,9 +327,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 8,
   },
-  channelBtnActive: { backgroundColor: Colors.primaryLight },
+  channelBtnActive: { backgroundColor: Colors.copperTint },
   channelBtnText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
-  channelBtnTextActive: { color: Colors.primary, fontWeight: '700' },
+  channelBtnTextActive: { color: Colors.copper, fontWeight: '700' },
   subTabRow: {
     flexDirection: 'row',
     backgroundColor: Colors.surface,
@@ -343,9 +343,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
-  subTabBtnActive: { backgroundColor: Colors.primaryLight },
+  subTabBtnActive: { backgroundColor: Colors.copperTint },
   subTabBtnText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
-  subTabBtnTextActive: { color: Colors.primary, fontWeight: '700' },
+  subTabBtnTextActive: { color: Colors.copper, fontWeight: '700' },
   card: {
     backgroundColor: Colors.surface,
     borderRadius: 12,
@@ -372,7 +372,7 @@ const styles = StyleSheet.create({
   bodyInput: { minHeight: 120 },
   recipientsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   recipientsInput: { minHeight: 100 },
-  recipientCount: { fontSize: 12, color: Colors.primary, fontWeight: '600' },
+  recipientCount: { fontSize: 12, color: Colors.copper, fontWeight: '600' },
   attachBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -383,14 +383,14 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderStyle: 'dashed',
   },
-  attachText: { flex: 1, fontSize: 13, color: Colors.primary },
+  attachText: { flex: 1, fontSize: 13, color: Colors.copper },
   attachChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: Colors.primaryLight,
+    backgroundColor: Colors.copperTint,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: Colors.border,

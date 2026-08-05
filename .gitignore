@@ -43,3 +43,10 @@ google-service-account.json
 # generated native folders
 /ios
 /android
+
+# local build artifacts
+*.apk
+*.aab
+
+# editor
+.idea/

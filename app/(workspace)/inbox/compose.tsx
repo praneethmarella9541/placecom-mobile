@@ -115,9 +115,9 @@ function nextKey() { return String(++keySeq); }
 
 export default function ComposeScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ draftId?: string }>();
+  const params = useLocalSearchParams<{ draftId?: string; to?: string }>();
   const { bumpDraftCount } = useMailView();
-  const [to, setTo] = useState('');
+  const [to, setTo] = useState(params.to ?? '');
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
   const [subject, setSubject] = useState('');
@@ -927,7 +927,7 @@ function AttachmentChip({ file, onRemove }: { file: PickedFile; onRemove: () => 
   return (
     <View style={[styles.attachmentChip, { backgroundColor: bgColor, borderColor: chipColor + '44' }]}>
       {isBusy ? (
-        <ActivityIndicator size="small" color={Colors.primary} style={{ width: 14, height: 14 }} />
+        <ActivityIndicator size="small" color={Colors.copper} style={{ width: 14, height: 14 }} />
       ) : isDrive ? (
         <Ionicons name="logo-google" size={14} color={chipColor} />
       ) : isError ? (

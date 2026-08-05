@@ -209,8 +209,8 @@ export function MailMergePanel() {
 
         <TouchableOpacity style={styles.fileBtn} onPress={pickFile} disabled={parseBusy}>
           {parseBusy
-            ? <ActivityIndicator color={Colors.primary} size="small" />
-            : <Ionicons name="cloud-upload-outline" size={18} color={Colors.primary} />}
+            ? <ActivityIndicator color={Colors.copper} size="small" />
+            : <Ionicons name="cloud-upload-outline" size={18} color={Colors.copper} />}
           <Text style={styles.fileBtnText}>
             {parseBusy ? 'Reading…' : 'Choose file'}
           </Text>
@@ -241,7 +241,7 @@ export function MailMergePanel() {
             <View style={styles.chipRow}>
               {columns.filter((c) => c !== 'email').map((c) => (
                 <View key={c} style={[styles.chip, styles.fieldChip]}>
-                  <Text style={[styles.chipText, { color: Colors.primary }]}>{`{{${c}}}`}</Text>
+                  <Text style={[styles.chipText, { color: Colors.copper }]}>{`{{${c}}}`}</Text>
                 </View>
               ))}
             </View>
@@ -321,7 +321,7 @@ export function MailMergePanel() {
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>4. Attachments (optional)</Text>
         <TouchableOpacity style={styles.fileBtn} onPress={pickAttachment}>
-          <Ionicons name="attach-outline" size={18} color={Colors.primary} />
+          <Ionicons name="attach-outline" size={18} color={Colors.copper} />
           <Text style={styles.fileBtnText}>Add attachment</Text>
         </TouchableOpacity>
 
@@ -330,11 +330,11 @@ export function MailMergePanel() {
             {attachments.map((a) => (
               <View key={a.uri} style={styles.attachChip}>
                 {a.status === 'preparing' ? (
-                  <ActivityIndicator size="small" color={Colors.primary} />
+                  <ActivityIndicator size="small" color={Colors.copper} />
                 ) : a.status === 'error' ? (
                   <Ionicons name="warning-outline" size={14} color={Colors.error} />
                 ) : (
-                  <Ionicons name="document-outline" size={14} color={Colors.primary} />
+                  <Ionicons name="document-outline" size={14} color={Colors.copper} />
                 )}
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.attachChipName} numberOfLines={1}>{a.name}</Text>
@@ -418,7 +418,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 15, fontWeight: '700', color: Colors.text },
   hint: { fontSize: 12, color: Colors.textSecondary, lineHeight: 18 },
-  code: { fontFamily: 'monospace', fontSize: 11, color: Colors.primary },
+  code: { fontFamily: 'monospace', fontSize: 11, color: Colors.copper },
   label: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary, marginTop: 4 },
   subLabel: { fontSize: 12, fontWeight: '600', color: Colors.textSecondary, marginBottom: 4 },
   input: {
@@ -438,11 +438,11 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: 12,
     borderWidth: 1,
-    borderColor: Colors.primary,
+    borderColor: Colors.copper,
     borderStyle: 'dashed',
     borderRadius: 10,
   },
-  fileBtnText: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  fileBtnText: { fontSize: 14, fontWeight: '600', color: Colors.copper },
   infoText: { fontSize: 12, color: Colors.textSecondary },
   errorText: { fontSize: 12, color: Colors.error },
   placeholderHint: { fontSize: 11, color: Colors.textMuted, fontStyle: 'italic' },
@@ -456,7 +456,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     maxWidth: 240,
   },
-  fieldChip: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  fieldChip: { borderColor: Colors.copper, backgroundColor: Colors.copperTint },
   chipText: { fontSize: 11, color: Colors.text },
   moreText: { fontSize: 11, color: Colors.textMuted, alignSelf: 'center' },
   previewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -476,7 +476,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: Colors.primaryLight,
+    backgroundColor: Colors.copperTint,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -489,7 +489,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     padding: 15,
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.copper,
     borderRadius: 12,
     minHeight: 50,
   },

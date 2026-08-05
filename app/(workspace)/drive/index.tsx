@@ -41,7 +41,7 @@ import {
   type DriveTabKey,
 } from '../../../lib/drive-list-prefetch';
 import { getCacheWriteGeneration } from '../../../lib/session-cache-core';
-import { sortDriveFiles, type DriveSortKey, isDriveFolder } from '../../../lib/drive-utils';
+import { sortDriveFiles, defaultDriveSortDir, type DriveSortKey, type DriveSortDir, isDriveFolder } from '../../../lib/drive-utils';
 import type { DriveFile } from '../../../lib/types';
 import { DriveTheme } from '../../../constants/driveTheme';
 import { DriveListRow } from '../../../components/drive/DriveListRow';
@@ -52,6 +52,7 @@ import { DriveActionSheet } from '../../../components/drive/DriveActionSheet';
 import { DriveMoveSheet } from '../../../components/drive/DriveMoveSheet';
 import { copyDriveFileLink, shareDriveFileLink } from '../../../lib/drive-file-actions';
 import { DriveCreateSheet } from '../../../components/drive/DriveCreateSheet';
+import { useAuth } from '../../../hooks/useAuth';
 
 type LayoutMode = 'list' | 'grid';
 const TABS: { key: DriveTabKey; label: string; view: DriveListContext['view'] }[] = [
@@ -75,6 +76,11 @@ export default function DriveScreen() {
   const { openDrawer } = useDrawer();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const { user, profile } = useAuth();
+  const ownerName = (() => {
+    const meta = (user?.user_metadata ?? {}) as { full_name?: string; name?: string };
+    return profile?.display_name || meta.full_name || meta.name || user?.email || 'Me';
+  })();
 
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -84,6 +90,14 @@ export default function DriveScreen() {
   const [tab, setTab] = useState<DriveTabKey>('my-drive');
   const [layout, setLayout] = useState<LayoutMode>('list');
   const [sortBy, setSortBy] = useState<DriveSortKey>('modified');
+  const [sortDir, setSortDir] = useState<DriveSortDir>('desc');
+
+  const selectSort = useCallback((key: DriveSortKey) => {
+    setSortBy((prevKey) => {
+      setSortDir((prevDir) => (prevKey === key ? (prevDir === 'asc' ? 'desc' : 'asc') : defaultDriveSortDir(key)));
+      return key;
+    });
+  }, []);
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [search, setSearch] = useState('');
@@ -125,7 +139,7 @@ export default function DriveScreen() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const sortedFiles = useMemo(() => sortDriveFiles(files, sortBy), [files, sortBy]);
+  const sortedFiles = useMemo(() => sortDriveFiles(files, sortBy, sortDir), [files, sortBy, sortDir]);
 
   const loadFiles = useCallback(async (force = false, viewLoadId?: number) => {
     const cacheKey = buildDriveListCacheKey(listContext);
@@ -572,6 +586,7 @@ export default function DriveScreen() {
               style={styles.sortOption}
               onPress={() => {
                 setSortBy(opt.key);
+                setSortDir(defaultDriveSortDir(opt.key));
                 setSortMenuOpen(false);
               }}
             >
@@ -581,6 +596,25 @@ export default function DriveScreen() {
               {sortBy === opt.key && <Ionicons name="checkmark" size={18} color={DriveTheme.blue} />}
             </TouchableOpacity>
           ))}
+        </View>
+      )}
+
+      {layout === 'list' && !loading && (
+        <View style={styles.tableHeader}>
+          <View style={{ width: 36 }} />
+          <TouchableOpacity style={styles.tableHeaderNameCol} onPress={() => selectSort('name')}>
+            <Text style={styles.tableHeaderText}>NAME</Text>
+            {sortBy === 'name' && (
+              <Ionicons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={11} color={DriveTheme.textMuted} />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.tableHeaderModifiedCol} onPress={() => selectSort('modified')}>
+            <Text style={styles.tableHeaderText}>MODIFIED</Text>
+            {sortBy === 'modified' && (
+              <Ionicons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={11} color={DriveTheme.textMuted} />
+            )}
+          </TouchableOpacity>
+          <View style={{ width: 22 }} />
         </View>
       )}
 
@@ -698,6 +732,7 @@ export default function DriveScreen() {
 
       <DriveActionSheet
         file={actionFile}
+        ownerName={ownerName}
         visible={!!actionFile}
         onClose={() => setActionFile(null)}
         onOpen={() => actionFile && openFile(actionFile)}
@@ -729,6 +764,24 @@ export default function DriveScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: DriveTheme.bg },
+  tableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: DriveTheme.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: DriveTheme.divider,
+  },
+  tableHeaderText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: DriveTheme.textMuted,
+    letterSpacing: 0.4,
+  },
+  tableHeaderNameCol: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  tableHeaderModifiedCol: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

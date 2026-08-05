@@ -5,6 +5,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import { Colors } from '../../constants/colors';
 import { useAuth } from '../../hooks/useAuth';
 import { meApi, type MeMailbox } from '../../lib/api';
@@ -15,17 +16,23 @@ import { MAILBOX_VIEWS, type MailViewKey } from '../../lib/mail-views';
 import type { LabelCount } from '../../lib/gmail-label-counts';
 import type { GmailLabel } from '../../lib/api';
 import { labelDisplayName } from '../../lib/gmail-labels';
+// Grouped to match the web app's sidebar sections (Comms / Ops).
 const MODULES = [
-  { key: 'inbox',        label: 'Mail',      icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false },
-  { key: 'calls',        label: 'Calls',     icon: 'call-outline' as const,            path: '/(workspace)/calls',        feature: 'calls',        googleOnly: false },
-  { key: 'calendar',     label: 'Calendar',  icon: 'calendar-outline' as const,        path: '/(workspace)/calendar',     feature: 'calendar',     googleOnly: false },
-  { key: 'drive',        label: 'Drive',     icon: 'cloud-outline' as const,           path: '/(workspace)/drive',        feature: 'drive',        googleOnly: false },
-  { key: 'forms',        label: 'Forms',     icon: 'document-text-outline' as const,   path: '/(workspace)/forms',        feature: 'forms',        googleOnly: false },
-  { key: 'broadcasting', label: 'Broadcast', icon: 'megaphone-outline' as const,       path: '/(workspace)/broadcasting', feature: 'broadcasting', googleOnly: false },
-  { key: 'whatsapp',     label: 'WhatsApp',  icon: 'logo-whatsapp' as const,           path: '/(workspace)/whatsapp',     feature: 'whatsapp',     googleOnly: false },
-  // Dashboard and Team are admin-only: only visible when signed in via Google OAuth
-  { key: 'dashboard',   label: 'Dashboard', icon: 'analytics-outline' as const,       path: '/(workspace)/dashboard',    feature: 'dashboard',    googleOnly: true  },
-  { key: 'admin',        label: 'Team',      icon: 'shield-checkmark-outline' as const, path: '/(workspace)/admin',       feature: null,           googleOnly: true  },
+  { key: 'inbox',        label: 'Mail',      icon: 'mail-outline' as const,            path: '/(workspace)/inbox',        feature: 'inbox',        googleOnly: false, group: 'comms' as const },
+  { key: 'whatsapp',     label: 'WhatsApp',  icon: 'chatbubble-outline' as const,      path: '/(workspace)/whatsapp',     feature: 'whatsapp',     googleOnly: false, group: 'comms' as const },
+  { key: 'broadcasting', label: 'Broadcast', icon: 'radio-outline' as const,           path: '/(workspace)/broadcasting', feature: 'broadcasting', googleOnly: false, group: 'comms' as const },
+  { key: 'contacts',     label: 'Contacts',  icon: 'person-outline' as const,          path: '/(workspace)/contacts',     feature: null,           googleOnly: false, group: 'comms' as const },
+  { key: 'calls',        label: 'Calls',     icon: 'call-outline' as const,            path: '/(workspace)/calls',        feature: 'calls',        googleOnly: false, group: 'ops' as const },
+  { key: 'calendar',     label: 'Calendar',  icon: 'calendar-outline' as const,        path: '/(workspace)/calendar',     feature: 'calendar',     googleOnly: false, group: 'ops' as const },
+  { key: 'drive',        label: 'Drive',     icon: 'folder-outline' as const,          path: '/(workspace)/drive',        feature: 'drive',        googleOnly: false, group: 'ops' as const },
+  { key: 'forms',        label: 'Forms',     icon: 'document-text-outline' as const,   path: '/(workspace)/forms',        feature: 'forms',        googleOnly: false, group: 'ops' as const },
+  // Team is admin-only: only visible when signed in via Google OAuth
+  { key: 'admin',        label: 'Team',      icon: 'people-outline' as const,          path: '/(workspace)/admin',       feature: null,           googleOnly: true,  group: 'ops' as const },
+] as const;
+
+const NAV_GROUPS = [
+  { key: 'comms', label: 'Comms' },
+  { key: 'ops', label: 'Ops' },
 ] as const;
 
 interface DrawerCtx {
@@ -110,6 +117,152 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
     onClose();
   }, [setMailView, setFilterLabelId, onInbox, router, onClose]);
 
+  const renderModule = (mod: (typeof MODULES)[number]) => {
+    // googleOnly modules (Team) are hidden for email-login users
+    if (mod.googleOnly && !isGoogleUser) return null;
+    const allowed = mod.feature === null || hasFeature(mod.feature);
+    if (!allowed) return null;
+    const active = pathname.includes(mod.key);
+
+    if (mod.key === 'inbox') {
+      const inboxUnread = labelCounts['INBOX']?.unread ?? 0;
+      return (
+        <React.Fragment key="inbox">
+          {/* Inbox parent row — tapping always goes to inbox main */}
+          <TouchableOpacity
+            style={[styles.navItem, onInbox && mailView === 'inbox' && styles.navItemActive]}
+            onPress={() => selectMailView('inbox')}
+          >
+            {onInbox && mailView === 'inbox' && <View style={styles.navActiveBar} />}
+            <Ionicons
+              name="mail-outline"
+              size={20}
+              color={onInbox && mailView === 'inbox' ? Colors.sidebarActiveText : Colors.sidebarText}
+            />
+            <Text style={[styles.navLabel, onInbox && mailView === 'inbox' && styles.navLabelActive]} numberOfLines={1}>
+              Mail
+            </Text>
+            {inboxUnread > 0 && (
+              <View style={styles.navBadge}>
+                <Text style={styles.navBadgeText}>{inboxUnread > 99 ? '99+' : inboxUnread}</Text>
+              </View>
+            )}
+            <TouchableOpacity
+              onPress={() => setMailExpanded((v) => !v)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.expandBtn}
+            >
+              <Ionicons
+                name={mailExpanded ? 'chevron-up' : 'chevron-down'}
+                size={16}
+                color={Colors.sidebarText}
+              />
+            </TouchableOpacity>
+          </TouchableOpacity>
+
+          {/* Mail sub-items — all views except Inbox itself */}
+          {mailExpanded && (
+            <>
+              {MAILBOX_VIEWS.filter((v) => v.key !== 'inbox').map((view) => {
+                const subActive = onInbox && mailView === view.key && !filterLabelId;
+                const count = labelCounts[view.badgeLabelId];
+                const badge = view.badgeLabelId && count
+                  ? (view.key === 'starred' || view.key === 'important' ? count.total : count.unread)
+                  : 0;
+                return (
+                  <TouchableOpacity
+                    key={view.key}
+                    style={[styles.navSubItem, subActive && styles.navSubItemActive]}
+                    onPress={() => selectMailView(view.key)}
+                  >
+                    <Ionicons
+                      name={view.icon}
+                      size={18}
+                      color={subActive ? Colors.sidebarActiveText : Colors.sidebarText}
+                    />
+                    <Text style={[styles.navSubLabel, subActive && styles.navLabelActive]} numberOfLines={1}>
+                      {view.label}
+                    </Text>
+                    {badge > 0 && (
+                      <View style={[styles.navBadge, subActive && styles.navBadgeActive]}>
+                        <Text style={[styles.navBadgeText, subActive && styles.navBadgeTextActive]}>
+                          {badge > 99 ? '99+' : badge}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+
+              {/* Labels sub-section — nested under Inbox, same as Gmail */}
+              {userLabels.length > 0 && (
+                <>
+                  <TouchableOpacity
+                    style={styles.navSubSectionHeader}
+                    onPress={() => setLabelsExpanded((v) => !v)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.navSectionTitle}>Labels</Text>
+                    <Ionicons
+                      name={labelsExpanded ? 'chevron-up' : 'chevron-down'}
+                      size={13}
+                      color={Colors.sidebarText}
+                      style={{ opacity: 0.7 }}
+                    />
+                  </TouchableOpacity>
+
+                  {labelsExpanded && userLabels.map((label) => {
+                    const unread = labelCounts[label.id]?.unread ?? 0;
+                    const labelActive = onInbox && filterLabelId === label.id;
+                    return (
+                      <TouchableOpacity
+                        key={label.id}
+                        style={[styles.navSubItem, labelActive && styles.navSubItemActive]}
+                        onPress={() => selectLabel(label.id)}
+                      >
+                        <Ionicons
+                          name="pricetag-outline"
+                          size={16}
+                          color={labelActive ? Colors.sidebarActiveText : Colors.sidebarText}
+                        />
+                        <Text style={[styles.navSubLabel, labelActive && styles.navLabelActive]} numberOfLines={1}>
+                          {labelDisplayName(label)}
+                        </Text>
+                        {unread > 0 && (
+                          <View style={[styles.navBadge, labelActive && styles.navBadgeActive]}>
+                            <Text style={[styles.navBadgeText, labelActive && styles.navBadgeTextActive]}>
+                              {unread > 99 ? '99+' : unread}
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              )}
+            </>
+          )}
+        </React.Fragment>
+      );
+    }
+
+    return (
+      <TouchableOpacity
+        key={mod.key}
+        style={[styles.navItem, active && styles.navItemActive]}
+        onPress={() => navigate(mod.path)}
+      >
+        {active && <View style={styles.navActiveBar} />}
+        <Ionicons
+          name={mod.icon}
+          size={20}
+          color={active ? Colors.sidebarActiveText : Colors.sidebarText}
+        />
+        <Text style={[styles.navLabel, active && styles.navLabelActive]}>{mod.label}</Text>
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <View style={[styles.sidebar, { paddingTop: insets.top }]}>
       <View style={styles.sidebarHeader}>
@@ -159,147 +312,26 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
       </View>
 
       <ScrollView style={styles.navList} showsVerticalScrollIndicator={false}>
-        {MODULES.map((mod) => {
-          // googleOnly modules (Dashboard, Team) are hidden for email-login users
-          if (mod.googleOnly && !isGoogleUser) return null;
-          const allowed = mod.feature === null || hasFeature(mod.feature);
-          if (!allowed) return null;
-          const active = pathname.includes(mod.key);
-
-          if (mod.key === 'inbox') {
-            const inboxUnread = labelCounts['INBOX']?.unread ?? 0;
-            return (
-              <React.Fragment key="inbox">
-                {/* Inbox parent row — tapping always goes to inbox main */}
-                <TouchableOpacity
-                  style={[styles.navItem, onInbox && mailView === 'inbox' && styles.navItemActive]}
-                  onPress={() => selectMailView('inbox')}
-                >
-                  <Ionicons
-                    name="mail-outline"
-                    size={20}
-                    color={onInbox && mailView === 'inbox' ? Colors.sidebarActiveText : Colors.sidebarText}
-                  />
-                  <Text style={[styles.navLabel, onInbox && mailView === 'inbox' && styles.navLabelActive]} numberOfLines={1}>
-                    Mail
-                  </Text>
-                  {inboxUnread > 0 && (
-                    <View style={styles.navBadge}>
-                      <Text style={styles.navBadgeText}>{inboxUnread > 99 ? '99+' : inboxUnread}</Text>
-                    </View>
-                  )}
-                  <TouchableOpacity
-                    onPress={() => setMailExpanded((v) => !v)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    style={styles.expandBtn}
-                  >
-                    <Ionicons
-                      name={mailExpanded ? 'chevron-up' : 'chevron-down'}
-                      size={16}
-                      color={Colors.sidebarText}
-                    />
-                  </TouchableOpacity>
-                </TouchableOpacity>
-
-                {/* Mail sub-items — all views except Inbox itself */}
-                {mailExpanded && (
-                  <>
-                    {MAILBOX_VIEWS.filter((v) => v.key !== 'inbox').map((view) => {
-                      const subActive = onInbox && mailView === view.key && !filterLabelId;
-                      const count = labelCounts[view.badgeLabelId];
-                      const badge = view.badgeLabelId && count
-                        ? (view.key === 'starred' || view.key === 'important' ? count.total : count.unread)
-                        : 0;
-                      return (
-                        <TouchableOpacity
-                          key={view.key}
-                          style={[styles.navSubItem, subActive && styles.navSubItemActive]}
-                          onPress={() => selectMailView(view.key)}
-                        >
-                          <Ionicons
-                            name={view.icon}
-                            size={18}
-                            color={subActive ? Colors.sidebarActiveText : Colors.sidebarText}
-                          />
-                          <Text style={[styles.navSubLabel, subActive && styles.navLabelActive]} numberOfLines={1}>
-                            {view.label}
-                          </Text>
-                          {badge > 0 && (
-                            <View style={[styles.navBadge, subActive && styles.navBadgeActive]}>
-                              <Text style={styles.navBadgeText}>{badge > 99 ? '99+' : badge}</Text>
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
-
-                    {/* Labels sub-section — nested under Inbox, same as Gmail */}
-                    {userLabels.length > 0 && (
-                      <>
-                        <TouchableOpacity
-                          style={styles.navSubSectionHeader}
-                          onPress={() => setLabelsExpanded((v) => !v)}
-                          activeOpacity={0.7}
-                        >
-                          <Text style={styles.navSectionTitle}>Labels</Text>
-                          <Ionicons
-                            name={labelsExpanded ? 'chevron-up' : 'chevron-down'}
-                            size={13}
-                            color={Colors.sidebarText}
-                            style={{ opacity: 0.7 }}
-                          />
-                        </TouchableOpacity>
-
-                        {labelsExpanded && userLabels.map((label) => {
-                          const unread = labelCounts[label.id]?.unread ?? 0;
-                          const labelActive = onInbox && filterLabelId === label.id;
-                          return (
-                            <TouchableOpacity
-                              key={label.id}
-                              style={[styles.navSubItem, labelActive && styles.navSubItemActive]}
-                              onPress={() => selectLabel(label.id)}
-                            >
-                              <Ionicons
-                                name="pricetag-outline"
-                                size={16}
-                                color={labelActive ? Colors.sidebarActiveText : Colors.sidebarText}
-                              />
-                              <Text style={[styles.navSubLabel, labelActive && styles.navLabelActive]} numberOfLines={1}>
-                                {labelDisplayName(label)}
-                              </Text>
-                              {unread > 0 && (
-                                <View style={[styles.navBadge, labelActive && styles.navBadgeActive]}>
-                                  <Text style={styles.navBadgeText}>{unread > 99 ? '99+' : unread}</Text>
-                                </View>
-                              )}
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </>
-                    )}
-                  </>
-                )}
-              </React.Fragment>
-            );
-          }
-
+        {NAV_GROUPS.map((group) => {
+          const items = MODULES.filter((mod) => mod.group === group.key);
+          const rendered = items.map(renderModule).filter(Boolean);
+          if (rendered.length === 0) return null;
           return (
-            <TouchableOpacity
-              key={mod.key}
-              style={[styles.navItem, active && styles.navItemActive]}
-              onPress={() => navigate(mod.path)}
-            >
-              <Ionicons
-                name={mod.icon}
-                size={20}
-                color={active ? Colors.sidebarActiveText : Colors.sidebarText}
-              />
-              <Text style={[styles.navLabel, active && styles.navLabelActive]}>{mod.label}</Text>
-            </TouchableOpacity>
+            <React.Fragment key={group.key}>
+              <Text style={styles.navGroupTitle}>{group.label}</Text>
+              {rendered}
+            </React.Fragment>
           );
         })}
       </ScrollView>
 
+      <TouchableOpacity
+        style={styles.footerItem}
+        onPress={() => navigate('/(workspace)/profile')}
+      >
+        <Ionicons name="person-circle-outline" size={20} color={Colors.sidebarText} />
+        <Text style={styles.signOutText}>Profile</Text>
+      </TouchableOpacity>
       <TouchableOpacity
         style={styles.signOutBtn}
         onPress={async () => { onClose(); await signOut(); }}
@@ -307,6 +339,9 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         <Ionicons name="log-out-outline" size={20} color={Colors.sidebarText} />
         <Text style={styles.signOutText}>Sign Out</Text>
       </TouchableOpacity>
+      <Text style={[styles.versionText, { paddingBottom: 12 + insets.bottom }]}>
+        v{Constants.expoConfig?.version ?? '1.0.0'}
+      </Text>
     </View>
   );
 }
@@ -360,6 +395,12 @@ export default function WorkspaceLayout() {
           <Stack.Screen name="admin/index" />
           <Stack.Screen name="admin/analytics/index" />
           <Stack.Screen name="admin/analytics/[userId]" />
+          <Stack.Screen name="crm/index" />
+          <Stack.Screen name="crm/[id]" />
+          <Stack.Screen name="sms/index" />
+          <Stack.Screen name="sms/[peer]" />
+          <Stack.Screen name="contacts/index" />
+          <Stack.Screen name="profile/index" />
         </Stack>
       </Drawer>
     </DrawerContext.Provider>
@@ -375,7 +416,7 @@ const styles = StyleSheet.create({
   sidebarHeader: {
     padding: 20,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.1)',
+    borderBottomColor: Colors.border,
     gap: 16,
   },
   userInfo: {
@@ -387,7 +428,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.copper,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -398,7 +439,7 @@ const styles = StyleSheet.create({
   },
   userDetails: { flex: 1 },
   userName: {
-    color: Colors.surface,
+    color: Colors.text,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -428,6 +469,16 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   navList: { flex: 1, padding: 12 },
+  navGroupTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingBottom: 6,
+  },
   navItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -436,8 +487,19 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     borderRadius: 10,
     marginBottom: 2,
+    position: 'relative',
   },
-  navItemActive: { backgroundColor: Colors.primary },
+  navItemActive: {},
+  navActiveBar: {
+    position: 'absolute',
+    left: 0,
+    top: 8,
+    bottom: 8,
+    width: 3,
+    borderTopRightRadius: 3,
+    borderBottomRightRadius: 3,
+    backgroundColor: Colors.sidebarActiveText,
+  },
   navLabel: {
     flex: 1,
     fontSize: 14,
@@ -454,18 +516,19 @@ const styles = StyleSheet.create({
     height: 20,
     paddingHorizontal: 5,
     borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: Colors.borderLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
   navBadgeActive: {
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.copper,
   },
   navBadgeText: {
     fontSize: 10,
     fontWeight: '700',
-    color: Colors.sidebarActiveText,
+    color: Colors.textSecondary,
   },
+  navBadgeTextActive: { color: '#FFFFFF' },
   navSubItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -476,7 +539,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     marginBottom: 1,
   },
-  navSubItemActive: { backgroundColor: 'rgba(255,255,255,0.15)' },
+  navSubItemActive: { backgroundColor: Colors.sidebarItem },
   navSubLabel: {
     flex: 1,
     fontSize: 13,
@@ -499,17 +562,30 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
     opacity: 0.9,
   },
+  footerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
   signOutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
   },
   signOutText: {
     color: Colors.sidebarText,
     fontSize: 14,
     fontWeight: '500',
+  },
+  versionText: {
+    color: Colors.textMuted,
+    fontSize: 11,
+    paddingHorizontal: 20,
+    paddingTop: 2,
   },
 });

@@ -856,7 +856,7 @@ export default function InboxScreen() {
       )}
 
       {loading ? (
-        <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+        <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>
       ) : error && threads.length === 0 ? (
         <View style={styles.center}>
           <Ionicons name="warning-outline" size={32} color={Colors.error} />
@@ -900,7 +900,7 @@ export default function InboxScreen() {
                   force: true,
                 });
               }}
-              tintColor={Colors.primary}
+              tintColor={Colors.copper}
             />
           }
           ListEmptyComponent={
@@ -915,7 +915,7 @@ export default function InboxScreen() {
           ListFooterComponent={
             loadingMore ? (
               <View style={styles.footerLoader}>
-                <ActivityIndicator color={Colors.primary} size="small" />
+                <ActivityIndicator color={Colors.copper} size="small" />
               </View>
             ) : null
           }
@@ -1271,6 +1271,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: Gmail.searchBg,
     borderRadius: 28,
+    borderWidth: 1,
+    borderColor: Gmail.border,
   },
   searchInput: { flex: 1, fontSize: 16, color: Gmail.text, padding: 0 },
   filterPanel: {
@@ -1489,13 +1491,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 14,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 14,
-    backgroundColor: Gmail.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Gmail.divider,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 14,
+    backgroundColor: Gmail.searchBg,
+    borderWidth: 1,
+    borderColor: Gmail.border,
+    shadowColor: '#14120E',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
-  threadRowSelected: { backgroundColor: Gmail.blueLight },
+  threadRowSelected: { backgroundColor: Gmail.blueLight, borderColor: Gmail.blue },
   avatar: {
     width: 40,
     height: 40,

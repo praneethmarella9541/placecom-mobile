@@ -62,7 +62,7 @@ export default function SmsScreen() {
         />
       </View>
       {loading ? (
-        <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>
+        <View style={styles.center}><ActivityIndicator color={Colors.copper} /></View>
       ) : (
         <FlatList
           data={filtered}
@@ -70,7 +70,7 @@ export default function SmsScreen() {
           renderItem={({ item }) => (
             <ConvRow conv={item} onPress={() => router.push(`/(workspace)/sms/${encodeURIComponent(item.peer_e164)}` as any)} />
           )}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.copper} />}
           ListEmptyComponent={<EmptyState icon="chatbubble-outline" title="No SMS conversations" subtitle="Tap + to start a new conversation" />}
           contentContainerStyle={conversations.length === 0 ? { flex: 1 } : undefined}
         />

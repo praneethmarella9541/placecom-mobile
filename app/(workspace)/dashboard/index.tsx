@@ -19,7 +19,7 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; accent: string }
   failed: { bg: '#FEE2E2', text: '#991B1B', accent: '#DC2626' },
 };
 
-const STAT_ACCENTS = ['#1A73E8', '#128C7E', '#C45C1A'] as const;
+const STAT_ACCENTS = ['#2563EB', '#128C7E', '#C45C1A'] as const;
 
 export default function DashboardScreen() {
   const { openDrawer } = useDrawer();

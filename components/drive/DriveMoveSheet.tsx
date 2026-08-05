@@ -131,7 +131,7 @@ export function DriveMoveSheet({
               }
               renderItem={({ item }) => (
                 <TouchableOpacity style={styles.folderRow} onPress={() => enterFolder(item)}>
-                  <DriveFileIcon mimeType={item.mimeType} size="sm" />
+                  <DriveFileIcon mimeType={item.mimeType} size="sm" variant="outline" />
                   <Text style={styles.folderName} numberOfLines={1}>
                     {item.name}
                   </Text>

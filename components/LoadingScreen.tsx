@@ -9,7 +9,7 @@ interface Props {
 export default function LoadingScreen({ message = 'Loading...' }: Props) {
   return (
     <View style={styles.container}>
-      <ActivityIndicator size="large" color={Colors.primary} />
+      <ActivityIndicator size="large" color={Colors.copper} />
       <Text style={styles.message}>{message}</Text>
     </View>
   );

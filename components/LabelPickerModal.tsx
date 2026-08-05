@@ -124,7 +124,7 @@ export function LabelPickerModal({
               disabled={creating}
             >
               {creating ? (
-                <ActivityIndicator size="small" color={Colors.primary} />
+                <ActivityIndicator size="small" color={Colors.copper} />
               ) : (
                 <Ionicons name="add" size={16} color={Colors.primary} />
               )}
